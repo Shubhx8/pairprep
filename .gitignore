@@ -10,3 +10,5 @@ coverage/
 .vite/
 playwright-report/
 test-results/
+docs/
+AGENTS.md

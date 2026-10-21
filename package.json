@@ -1,0 +1,23 @@
+{
+  "name": "pairprep",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real-time collaborative interview and pair-programming platform",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run --workspaces --if-present build",
+    "dev:server": "npm run --workspace=apps/server dev",
+    "dev:web": "npm run --workspace=apps/web dev",
+    "dev": "npm run dev:server",
+    "typecheck": "npm run --workspaces --if-present typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

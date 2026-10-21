@@ -100,12 +100,15 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           port: 22
           script: |
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             cd /home/${{ secrets.VM_USERNAME || 'azureuser' }}/pairprep
-            git pull origin master
-            export PATH=/home/${{ secrets.VM_USERNAME || 'azureuser' }}/.nvm/versions/node/v24.22.0/bin:$PATH
-            npm install --omit=dev
+            git fetch origin master
+            git reset --hard origin/master
+            npm install
             npm run build
             pm2 restart pairprep-backend
             sleep 3
             curl -f http://localhost:3000/healthz || exit 1
             echo "Production deployment and health check verified successfully."
+

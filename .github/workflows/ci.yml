@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD Pipeline
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   verify:
@@ -42,3 +46,66 @@ jobs:
 
       - name: Build all workspaces
         run: npm run build
+
+  deploy:
+    name: Build Container & Deploy to Azure VM
+    needs: verify
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve lowercase repository owner
+        id: repo_owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER@L}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo_owner.outputs.OWNER }}/pairprep-server:${{ github.sha }}
+            ghcr.io/${{ steps.repo_owner.outputs.OWNER }}/pairprep-server:latest
+
+      - name: Check for Deploy Secrets
+        id: check_secrets
+        run: |
+          if [ -n "${{ secrets.VM_SSH_KEY }}" ]; then
+            echo "HAS_SECRETS=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "HAS_SECRETS=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::VM_SSH_KEY not yet configured in GitHub Secrets. Image was built and pushed to GHCR."
+          fi
+
+      - name: Deploy to Azure VM over SSH
+        if: steps.check_secrets.outputs.HAS_SECRETS == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST || '52.175.53.13' }}
+          username: ${{ secrets.VM_USERNAME || 'azureuser' }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: 22
+          script: |
+            cd /home/${{ secrets.VM_USERNAME || 'azureuser' }}/pairprep
+            git pull origin master
+            export PATH=/home/${{ secrets.VM_USERNAME || 'azureuser' }}/.nvm/versions/node/v24.22.0/bin:$PATH
+            npm install --omit=dev
+            npm run build
+            pm2 restart pairprep-backend
+            sleep 3
+            curl -f http://localhost:3000/healthz || exit 1
+            echo "Production deployment and health check verified successfully."

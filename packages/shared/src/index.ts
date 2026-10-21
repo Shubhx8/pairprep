@@ -13,6 +13,18 @@ export const PingResponseSchema = z.object({
 export type PingResponse = z.infer<typeof PingResponseSchema>;
 
 /**
+ * PRD 8.4 / OBS-4: Health endpoint schema
+ */
+export const HealthResponseSchema = z.object({
+  status: z.enum(["ok", "degraded", "down"]),
+  uptime: z.number().nonnegative(),
+  timestamp: z.string(),
+  version: z.string(),
+});
+
+export type HealthResponse = z.infer<typeof HealthResponseSchema>;
+
+/**
  * PRD 6.2 / 12: Supported User Roles in PairPrep rooms
  */
 export const UserRoleSchema = z.enum([

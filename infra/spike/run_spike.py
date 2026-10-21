@@ -81,7 +81,7 @@ def run_container(image: str, cmd: list[str], input_data: str = ""):
         verdict = "PROCESS_LIMIT_EXCEEDED (FORK BOMB BLOCKED)"
     elif "[OUTPUT TRUNCATED" in stdout or len(stdout.encode('utf-8')) >= OUTPUT_CAP_BYTES:
         verdict = "OUTPUT_LIMIT_EXCEEDED (CAPPED)"
-    elif "Network is unreachable" in stderr or "Cannot assign requested address" in stderr or "Address not available" in stderr:
+    elif "Network unreachable" in stderr or "Network is unreachable" in stderr or "Cannot assign requested address" in stderr or "Address not available" in stderr:
         verdict = "NETWORK_CALL_BLOCKED"
     elif exit_code != 0:
         verdict = f"RUNTIME_ERROR (exit {exit_code})"

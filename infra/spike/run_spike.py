@@ -16,7 +16,7 @@ import sys
 DOCKER_LIMITS = [
     "--network", "none",
     "--read-only",
-    "--tmpfs", "/tmp:rw,nosuid,size=16m",
+    "--tmpfs", "/tmp:rw,exec,nosuid,mode=1777,size=16m",
     "--memory", "128m",
     "--memory-swap", "128m",
     "--cpus", "0.5",
@@ -81,7 +81,7 @@ def run_container(image: str, cmd: list[str], input_data: str = ""):
         verdict = "PROCESS_LIMIT_EXCEEDED (FORK BOMB BLOCKED)"
     elif "[OUTPUT TRUNCATED" in stdout or len(stdout.encode('utf-8')) >= OUTPUT_CAP_BYTES:
         verdict = "OUTPUT_LIMIT_EXCEEDED (CAPPED)"
-    elif "Address not available" in stderr or "Network is unreachable" in stderr:
+    elif "Network is unreachable" in stderr or "Cannot assign requested address" in stderr or "Address not available" in stderr:
         verdict = "NETWORK_CALL_BLOCKED"
     elif exit_code != 0:
         verdict = f"RUNTIME_ERROR (exit {exit_code})"
@@ -101,14 +101,31 @@ def main():
 
     results = []
 
-    # 1. Hello World Benchmarks
+    cpp_hello = """#include <iostream>
+int main() {
+    std::cout << "Hello from C++!" << std::endl;
+    return 0;
+}
+"""
+
+    cpp_echo = """#include <iostream>
+#include <string>
+int main() {
+    std::string s;
+    std::cin >> s;
+    std::cout << "ECHO: " << s << std::endl;
+    return 0;
+}
+"""
+
+    # 1. Baseline Language Execution
     benchmarks = [
         ("Python Hello World", "python", ["python3", "-c", "print('Hello from Python!')"], ""),
         ("Python Stdin Echo", "python", ["python3", "-c", "import sys; print('ECHO:', sys.stdin.read().strip())"], "PairPrep Echo 123"),
         ("Node.js Hello World", "node", ["node", "-e", "console.log('Hello from Node.js!');"], ""),
         ("Node.js Stdin Echo", "node", ["node", "-e", "process.stdin.on('data', d => console.log('ECHO:', d.toString().trim()));"], "Node Echo 456"),
-        ("C++ Hello World", "cpp", ["sh", "-c", "echo '#include <iostream>\nint main(){ std::cout << \"Hello from C++!\\n\"; }' > /tmp/main.cpp && g++ /tmp/main.cpp -o /tmp/a.out && /tmp/a.out"], ""),
-        ("C++ Stdin Echo", "cpp", ["sh", "-c", "echo '#include <iostream>\n#include <string>\nint main(){ std::string s; std::cin >> s; std::cout << \"ECHO: \" << s << std::endl; }' > /tmp/main.cpp && g++ /tmp/main.cpp -o /tmp/a.out && /tmp/a.out"], "CppEcho789"),
+        ("C++ Hello World", "cpp", ["sh", "-c", f"cat << 'EOF' > /tmp/main.cpp\n{cpp_hello}\nEOF\ng++ /tmp/main.cpp -o /tmp/a.out && /tmp/a.out"], ""),
+        ("C++ Stdin Echo", "cpp", ["sh", "-c", f"cat << 'EOF' > /tmp/main.cpp\n{cpp_echo}\nEOF\ng++ /tmp/main.cpp -o /tmp/a.out && /tmp/a.out"], "CppEcho789"),
     ]
 
     print("\n[+] Running Baseline Language Execution Benchmarks...")
@@ -155,9 +172,9 @@ def main():
             "Should truncate at 1 MB limit and terminate safely"
         ),
         (
-            "Network Call Attack (curl outside)",
+            "Network Call Attack (raw socket)",
             "python",
-            ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://google.com', timeout=2)"],
+            ["python3", "-c", "import socket; s = socket.socket(); s.connect(('8.8.8.8', 53))"],
             "",
             "Should fail immediately with Network Unreachable"
         ),

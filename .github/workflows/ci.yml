@@ -111,4 +111,3 @@ jobs:
             sleep 3
             curl -f http://localhost:3000/healthz || exit 1
             echo "Production deployment and health check verified successfully."
-

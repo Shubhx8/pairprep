@@ -1,10 +1,7 @@
-# Week 1 tasks: Foundation
+# Week 1 Sprint: Engineering Foundation
 
-Paste ONE task at a time into the Antigravity agent. Review the plan it proposes before it writes code.
-After each task: run the checks, read the diff, commit.
-
-Before starting: make sure `docs/PRD.md` exists and the agent confirms it is following `AGENTS.md`
-(ask: "Which project rules are you following?").
+Implementation plan for Week 1 foundation milestones.
+After each task: run linting, type checks, review the diff, and commit with Conventional Commits.
 
 ---
 
@@ -27,20 +24,20 @@ Done when: `docker compose up` serves `/healthz` through Caddy on localhost.
 
 ## Task 4: Sandbox spike (design experiment, not final code)
 Read PRD section 14. Write a standalone script in `infra/spike/` that runs hello-world and a stdin-echo program for Python, C++ (gcc) and Node
-inside disposable Docker containers using the exact limits in `AGENTS.md`. Print for each language: cold start time, total run time, peak memory
+inside disposable Docker containers using the exact sandbox limits. Print for each language: cold start time, total run time, peak memory
 and verdict. Also run these attacks and show each ends safely: infinite loop, memory bomb, fork bomb, huge output, network call.
 Done when: a results table is saved in `docs/notes/sandbox-spike.md` and every attack ends in the expected verdict.
 
 ## Task 5: Deploy pipeline (after the Azure VM exists)
 Read PRD sections 17 and 18. Write the GitHub Actions deploy job: build the server image, push it to GitHub Container Registry, SSH to the VM
-with a restricted key, pull and restart the stack, run a health check and roll back on failure. List every secret I must add in GitHub and how to create the deploy key.
+with a restricted key, pull and restart the stack, run a health check and roll back on failure.
 Done when: a push to main deploys a working `/healthz` to the public URL.
 
 ---
 
-## Manual tasks for the builder (the agent cannot do these)
-- Create the Azure VM from the free-services page, add a 2 GB swap file, install Docker (PRD 18.5).
-- Check Cost Analysis 24 hours after creating the VM.
-- Create the MongoDB Atlas project and note its free limits.
-- Register the Google and GitHub OAuth apps for local and production addresses.
-- Create the GitHub repository (public, so free CI and registry apply) with branch protection and Actions secrets.
+## Infrastructure Prerequisites
+- Create the Azure VM, configure swap space, and install Docker (PRD 18.5).
+- Monitor Azure Cost Analysis.
+- Configure MongoDB Atlas cluster.
+- Register Google and GitHub OAuth applications for local and production URIs.
+- Configure GitHub repository secrets for automated CI/CD deployment.

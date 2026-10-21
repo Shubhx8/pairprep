@@ -11,3 +11,8 @@ coverage/
 playwright-report/
 test-results/
 *.tsbuildinfo
+
+# Internal agent & AI instructions (keep private from GitHub)
+AGENTS.md
+.agents/
+.gemini/

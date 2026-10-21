@@ -12,10 +12,24 @@
     "dev:server": "npm run --workspace=apps/server dev",
     "dev:web": "npm run --workspace=apps/web dev",
     "dev": "npm run dev:server",
-    "typecheck": "npm run --workspaces --if-present typecheck"
+    "typecheck": "npm run --workspaces --if-present typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "ci": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
-    "typescript": "^5.7.3"
+    "@eslint/js": "^9.21.0",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^9.21.0",
+    "prettier": "^3.5.2",
+    "supertest": "^7.0.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.25.0",
+    "vitest": "^3.0.6"
   },
   "engines": {
     "node": ">=20.0.0"

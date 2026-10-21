@@ -18,21 +18,22 @@ PairPrep is built as an **npm workspaces** monorepo using **strict TypeScript**:
 
 ## Tech Stack
 
-| Layer | Technology |
-| :--- | :--- |
-| **Frontend** | React, Vite, TypeScript, Tailwind CSS, Monaco Editor |
-| **Real-Time Sync** | Yjs (CRDT), Hocuspocus WebSocket server, Socket.IO |
-| **Backend API** | Node.js LTS, Express, TypeScript |
-| **Validation** | Zod (Shared between client & server) |
-| **Database** | MongoDB Atlas with Mongoose |
+| Layer                 | Technology                                                                           |
+| :-------------------- | :----------------------------------------------------------------------------------- |
+| **Frontend**          | React, Vite, TypeScript, Tailwind CSS, Monaco Editor                                 |
+| **Real-Time Sync**    | Yjs (CRDT), Hocuspocus WebSocket server, Socket.IO                                   |
+| **Backend API**       | Node.js LTS, Express, TypeScript                                                     |
+| **Validation**        | Zod (Shared between client & server)                                                 |
+| **Database**          | MongoDB Atlas with Mongoose                                                          |
 | **Execution Sandbox** | Disposable Docker containers with strict memory (128 MB), CPU, and network isolation |
-| **Proxy & TLS** | Caddy (automated Let's Encrypt certificates) |
+| **Proxy & TLS**       | Caddy (automated Let's Encrypt certificates)                                         |
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
+
 - Node.js >= 20.0.0
 - npm >= 10.0.0
 - Docker (for local code execution runner)
@@ -83,4 +84,5 @@ npm run build
 ---
 
 ## License
+
 MIT

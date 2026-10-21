@@ -19,7 +19,8 @@ app.get("/api/ping", (_req: Request, res: Response) => {
     status: "ok",
     message: "PairPrep backend & shared Zod schemas wired successfully",
     timestamp: new Date().toISOString(),
-    environment: (process.env["NODE_ENV"] as PingResponse["environment"]) || "development",
+    environment:
+      (process.env["NODE_ENV"] as PingResponse["environment"]) || "development",
   };
 
   // Runtime assertion with Zod to enforce schema contract
@@ -27,8 +28,10 @@ app.get("/api/ping", (_req: Request, res: Response) => {
   res.json(validated);
 });
 
-app.listen(PORT, () => {
-  console.log(`[PairPrep Server] running on http://localhost:${PORT}`);
-});
+if (process.env["NODE_ENV"] !== "test") {
+  app.listen(PORT, () => {
+    console.log(`[PairPrep Server] running on http://localhost:${PORT}`);
+  });
+}
 
 export default app;

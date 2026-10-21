@@ -28,10 +28,6 @@ export type UserRole = z.infer<typeof UserRoleSchema>;
 /**
  * PRD 6.4: Supported Execution Languages
  */
-export const SupportedLanguageSchema = z.enum([
-  "python",
-  "cpp",
-  "javascript",
-]);
+export const SupportedLanguageSchema = z.enum(["python", "cpp", "javascript"]);
 
 export type SupportedLanguage = z.infer<typeof SupportedLanguageSchema>;

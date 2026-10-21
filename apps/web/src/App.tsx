@@ -20,7 +20,7 @@ export default function App() {
         throw new Error(`Server responded with HTTP ${res.status}`);
       }
       const rawJson: unknown = await res.json();
-      
+
       // Strict runtime verification via shared Zod schema
       const parseResult = PingResponseSchema.safeParse(rawJson);
       if (!parseResult.success) {
@@ -57,8 +57,8 @@ export default function App() {
               data?.status === "ok"
                 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
                 : error
-                ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                  ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
             }`}
           >
             {loading ? "Checking..." : data?.status === "ok" ? "Online" : "Offline"}
@@ -87,7 +87,9 @@ export default function App() {
             <div className="space-y-3 bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 text-sm">
               <div className="flex justify-between items-center py-1">
                 <span className="text-slate-400">Backend Status:</span>
-                <span className="font-mono text-emerald-400 font-semibold">{data.status}</span>
+                <span className="font-mono text-emerald-400 font-semibold">
+                  {data.status}
+                </span>
               </div>
               <div className="flex justify-between items-center py-1">
                 <span className="text-slate-400">Message:</span>
@@ -106,7 +108,8 @@ export default function App() {
 
           <div className="pt-2">
             <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Shared Types Verified from <code className="text-slate-300">@pairprep/shared</code>:
+              Shared Types Verified from{" "}
+              <code className="text-slate-300">@pairprep/shared</code>:
             </h3>
             <div className="flex flex-wrap gap-1.5">
               {UserRoleSchema.options.map((role) => (
@@ -130,7 +133,9 @@ export default function App() {
         </div>
 
         <div className="mt-8 pt-4 border-t border-slate-800 flex justify-between items-center">
-          <span className="text-xs text-slate-500 font-mono">Week 1 · Task 1: Monorepo Scaffold</span>
+          <span className="text-xs text-slate-500 font-mono">
+            Week 1 · Task 1: Monorepo Scaffold
+          </span>
           <button
             onClick={() => void fetchStatus()}
             disabled={loading}

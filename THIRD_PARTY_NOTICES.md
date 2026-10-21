@@ -4,4 +4,4 @@ Record every theme, font, icon set and bundled asset here with its name, source 
 Only open licenses are allowed (see UIX-13 in docs/PRD.md).
 
 | Item | Type | License | Source |
-| --- | --- | --- | --- |
+| ---- | ---- | ------- | ------ |

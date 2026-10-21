@@ -4,6 +4,9 @@ import {
   HealthResponseSchema,
   UserRoleSchema,
   SupportedLanguageSchema,
+  RoomSchema,
+  CreateRoomRequestSchema,
+  JoinRoomRequestSchema,
 } from "../index.js";
 
 describe("Shared Zod Schemas", () => {
@@ -109,6 +112,91 @@ describe("Shared Zod Schemas", () => {
     it("rejects unsupported languages", () => {
       expect(SupportedLanguageSchema.safeParse("java").success).toBe(false);
       expect(SupportedLanguageSchema.safeParse("rust").success).toBe(false);
+    });
+  });
+
+  describe("Room & Member Schemas", () => {
+    it("validates valid room and enforces 128-bit slug and max 6 participants", () => {
+      const validRoom = {
+        id: "room-uuid-1",
+        slug: "a1b2c3d4e5f678901234567890abcdef",
+        title: "Algorithms Practice",
+        type: "practice",
+        language: "python",
+        status: "open",
+        ownerId: "user-owner-1",
+        members: [
+          {
+            id: "user-owner-1",
+            displayName: "Aarav",
+            role: "owner",
+            color: "#3B82F6",
+            isGuest: false,
+            joinedAt: new Date().toISOString(),
+          },
+        ],
+        createdAt: new Date().toISOString(),
+      };
+
+      const result = RoomSchema.safeParse(validRoom);
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects short slugs (less than 16 chars/128 bits)", () => {
+      const roomWithShortSlug = {
+        id: "room-uuid-1",
+        slug: "short-slug",
+        title: "Test",
+        type: "practice",
+        language: "python",
+        status: "open",
+        ownerId: "user-owner-1",
+        members: [],
+        createdAt: new Date().toISOString(),
+      };
+
+      expect(RoomSchema.safeParse(roomWithShortSlug).success).toBe(false);
+    });
+
+    it("enforces PRD ROOM-4 max 6 participants cap", () => {
+      const members = Array.from({ length: 7 }, (_, i) => ({
+        id: `user-${i}`,
+        displayName: `User ${i}`,
+        role: "editor",
+        color: "#3B82F6",
+        isGuest: true,
+        joinedAt: new Date().toISOString(),
+      }));
+
+      const roomWith7Members = {
+        id: "room-uuid-1",
+        slug: "a1b2c3d4e5f678901234567890abcdef",
+        title: "Test Full Room",
+        type: "practice",
+        language: "python",
+        status: "open",
+        ownerId: "user-owner-1",
+        members,
+        createdAt: new Date().toISOString(),
+      };
+
+      expect(RoomSchema.safeParse(roomWith7Members).success).toBe(false);
+    });
+
+    it("validates CreateRoomRequestSchema defaults", () => {
+      const parsed = CreateRoomRequestSchema.parse({
+        title: "Dynamic Programming Session",
+      });
+      expect(parsed.type).toBe("practice");
+      expect(parsed.language).toBe("python");
+      expect(parsed.ownerName).toBe("Anonymous Host");
+    });
+
+    it("rejects invalid JoinRoomRequestSchema", () => {
+      expect(JoinRoomRequestSchema.safeParse({ displayName: "" }).success).toBe(false);
+      expect(
+        JoinRoomRequestSchema.safeParse({ displayName: "A".repeat(33) }).success
+      ).toBe(false);
     });
   });
 });

@@ -8,11 +8,12 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run --workspaces --if-present build",
+    "build:shared": "npm run --workspace=packages/shared build",
+    "build": "npm run build:shared && npm run --workspaces --if-present build",
     "dev:server": "npm run --workspace=apps/server dev",
     "dev:web": "npm run --workspace=apps/web dev",
     "dev": "npm run dev:server",
-    "typecheck": "npm run --workspaces --if-present typecheck",
+    "typecheck": "npm run build:shared && npm run --workspaces --if-present typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format:check": "prettier --check .",

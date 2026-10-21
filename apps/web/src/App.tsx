@@ -112,7 +112,7 @@ export default function App() {
               <code className="text-slate-300">@pairprep/shared</code>:
             </h3>
             <div className="flex flex-wrap gap-1.5">
-              {UserRoleSchema.options.map((role) => (
+              {UserRoleSchema.options.map((role: string) => (
                 <span
                   key={role}
                   className="px-2 py-0.5 text-xs rounded bg-slate-800 text-slate-300 border border-slate-700/60"
@@ -120,7 +120,7 @@ export default function App() {
                   role:{role}
                 </span>
               ))}
-              {SupportedLanguageSchema.options.map((lang) => (
+              {SupportedLanguageSchema.options.map((lang: string) => (
                 <span
                   key={lang}
                   className="px-2 py-0.5 text-xs rounded bg-indigo-950/50 text-indigo-300 border border-indigo-800/50"

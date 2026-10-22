@@ -1,0 +1,86 @@
+import { describe, it, expect } from "vitest";
+import { loadConfig } from "../config.js";
+
+describe("Server Config Module (T01)", () => {
+  it("config: defaults PORT to 3000 when PORT is not provided in environment", () => {
+    const mockEnv = {
+      NODE_ENV: "development",
+    };
+
+    const cfg = loadConfig(mockEnv as unknown as NodeJS.ProcessEnv);
+    expect(cfg.PORT).toBe(3000);
+  });
+
+  it("config: successfully validates and loads complete environment schema", () => {
+    const mockEnv = {
+      NODE_ENV: "production",
+      PORT: "3000",
+      MONGODB_URI: "mongodb+srv://user:pass@cluster0.mongodb.net/pairprep",
+      SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+      SITE_ORIGIN: "https://pairprep-live.eastasia.cloudapp.azure.com",
+      GIT_SHA: "commit-sha-12345",
+      RATE_LIMIT_MAX: "50",
+    };
+
+    const cfg = loadConfig(mockEnv as unknown as NodeJS.ProcessEnv);
+    expect(cfg.NODE_ENV).toBe("production");
+    expect(cfg.PORT).toBe(3000);
+    expect(cfg.SITE_ORIGIN).toBe("https://pairprep-live.eastasia.cloudapp.azure.com");
+    expect(cfg.GIT_SHA).toBe("commit-sha-12345");
+    expect(cfg.RATE_LIMIT_MAX).toBe(50);
+  });
+
+  it("config: allows MONGODB_URI and SESSION_SECRET to be optional in T01", () => {
+    const minimalEnv = {
+      NODE_ENV: "test",
+    };
+
+    const cfg = loadConfig(minimalEnv as unknown as NodeJS.ProcessEnv);
+    expect(cfg.MONGODB_URI).toBeUndefined();
+    expect(cfg.SESSION_SECRET).toBeUndefined();
+    expect(cfg.PORT).toBe(3000);
+  });
+
+  it("config: throws when invalid PORT is provided", () => {
+    expect(() =>
+      loadConfig({
+        PORT: "not-a-number",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/PORT/);
+
+    expect(() =>
+      loadConfig({
+        PORT: "70000", // > 65535
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/PORT/);
+  });
+
+  it("config: throws when invalid NODE_ENV is provided", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "staging", // not development/production/test
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/NODE_ENV/);
+  });
+
+  it("config: startup error message lists missing variable names and contains no secret values", () => {
+    const invalidEnv = {
+      PORT: "invalid-port",
+      MONGODB_URI: "invalid-uri-scheme",
+      SESSION_SECRET: "too-short",
+    };
+
+    try {
+      loadConfig(invalidEnv as unknown as NodeJS.ProcessEnv);
+      expect.unreachable("Should have thrown error");
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      expect(errorMessage).toContain("PORT");
+      expect(errorMessage).toContain("MONGODB_URI");
+      expect(errorMessage).toContain("SESSION_SECRET");
+      // Assert secret values are NOT leaked in the error message
+      expect(errorMessage).not.toContain("invalid-uri-scheme");
+      expect(errorMessage).not.toContain("too-short");
+    }
+  });
+});

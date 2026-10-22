@@ -53,8 +53,7 @@ describe("Shared Zod Schemas", () => {
     it("validates a compliant health response payload", () => {
       const payload = {
         status: "ok",
-        uptime: 124.5,
-        timestamp: new Date().toISOString(),
+        uptimeSec: 124.5,
         version: "0.1.0",
       };
 
@@ -62,16 +61,16 @@ describe("Shared Zod Schemas", () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.status).toBe("ok");
-        expect(result.data.uptime).toBeGreaterThanOrEqual(0);
+        expect(result.data.uptimeSec).toBeGreaterThanOrEqual(0);
+        expect(result.data.version).toBe("0.1.0");
       }
     });
 
-    it("rejects negative uptime or invalid status", () => {
+    it("rejects negative uptimeSec or invalid status", () => {
       expect(
         HealthResponseSchema.safeParse({
           status: "healthy", // not ok/degraded/down
-          uptime: 10,
-          timestamp: new Date().toISOString(),
+          uptimeSec: 10,
           version: "0.1.0",
         }).success
       ).toBe(false);
@@ -79,8 +78,7 @@ describe("Shared Zod Schemas", () => {
       expect(
         HealthResponseSchema.safeParse({
           status: "ok",
-          uptime: -5,
-          timestamp: new Date().toISOString(),
+          uptimeSec: -5,
           version: "0.1.0",
         }).success
       ).toBe(false);

@@ -14,12 +14,14 @@ export type PingResponse = z.infer<typeof PingResponseSchema>;
 
 /**
  * PRD 8.4 / OBS-4: Health endpoint schema
+ * Returns status, uptimeSec, and version per T01 / PRD 13.1
  */
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "down"]),
-  uptime: z.number().nonnegative(),
-  timestamp: z.string(),
+  uptimeSec: z.number().nonnegative(),
   version: z.string(),
+  uptime: z.number().nonnegative().optional(),
+  timestamp: z.string().optional(),
 });
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
@@ -139,3 +141,18 @@ export const ApiErrorSchema = z.object({
 });
 
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+
+/**
+ * PRD 13.1 & T01 Standard unified API error format:
+ * { "error": { "code": "STABLE_CODE", "message": "...", "requestId": "..." } }
+ */
+export const ApiErrorResponseSchema = z.object({
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    requestId: z.string(),
+    fields: z.record(z.string()).optional(),
+  }),
+});
+
+export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;

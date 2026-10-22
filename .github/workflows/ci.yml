@@ -19,6 +19,17 @@ jobs:
     name: Lint, Typecheck, Test & Build
     runs-on: ubuntu-latest
 
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -42,6 +53,8 @@ jobs:
         run: npm run typecheck
 
       - name: Run unit & integration tests (Vitest)
+        env:
+          MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep_test"
         run: npm run test
 
       - name: Build all workspaces

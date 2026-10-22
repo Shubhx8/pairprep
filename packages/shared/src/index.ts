@@ -13,13 +13,14 @@ export const PingResponseSchema = z.object({
 export type PingResponse = z.infer<typeof PingResponseSchema>;
 
 /**
- * PRD 8.4 / OBS-4: Health endpoint schema
- * Returns status, uptimeSec, and version per T01 / PRD 13.1
+ * PRD 8.4 / OBS-4 & T03: Health endpoint schema
+ * Returns status, uptimeSec, version, and database state ("ok" | "down")
  */
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "down"]),
   uptimeSec: z.number().nonnegative(),
   version: z.string(),
+  db: z.enum(["ok", "down"]).default("ok"),
   uptime: z.number().nonnegative().optional(),
   timestamp: z.string().optional(),
 });
@@ -27,7 +28,43 @@ export const HealthResponseSchema = z.object({
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 
 /**
- * PRD 6.2 / 12: Supported User Roles in PairPrep rooms
+ * PRD 6.1 / 12: User Roles in system
+ */
+export const UserRoleTypeSchema = z.enum(["user", "owner-admin"]);
+export type UserRoleType = z.infer<typeof UserRoleTypeSchema>;
+
+/**
+ * UserPrivateDto: includes email, used ONLY for GET /me (PRD Section 12 & T03 User Review)
+ */
+export const UserPrivateDtoSchema = z.object({
+  id: z.string(),
+  provider: z.enum(["google", "github"]),
+  providerId: z.string(),
+  displayName: z.string(),
+  avatarUrl: z.string().optional(),
+  email: z.string().email(),
+  role: UserRoleTypeSchema,
+  createdAt: z.string(),
+  disabled: z.boolean().default(false),
+});
+
+export type UserPrivateDto = z.infer<typeof UserPrivateDtoSchema>;
+
+/**
+ * UserPublicDto: excludes email completely, used everywhere else to prevent accidental email leaks
+ */
+export const UserPublicDtoSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  avatarUrl: z.string().optional(),
+  role: UserRoleTypeSchema,
+  createdAt: z.string(),
+});
+
+export type UserPublicDto = z.infer<typeof UserPublicDtoSchema>;
+
+/**
+ * PRD 6.2 / 12: Supported Room Member Roles
  */
 export const UserRoleSchema = z.enum([
   "owner",
@@ -57,6 +94,7 @@ export type RoomStatus = z.infer<typeof RoomStatusSchema>;
 
 /**
  * PRD 6.7 / 7.6: Color-blind-safe palette for participants and cursors (max 6)
+ * Note: Colors are ephemeral UI/awareness state in Yjs, not persisted in the database model.
  */
 export const PARTICIPANT_PALETTE = [
   "#3B82F6", // Blue
@@ -68,18 +106,34 @@ export const PARTICIPANT_PALETTE = [
 ] as const;
 
 /**
- * PRD 6.2 / 12: Room Member Schema
+ * PRD 6.2 / 12: Room Member Schema (UI representation)
  */
 export const RoomMemberSchema = z.object({
   id: z.string(),
   displayName: z.string().min(1).max(32),
   role: UserRoleSchema,
-  color: z.string(),
+  color: z.string().optional(), // Ephemeral presentation only; not in DB model
   isGuest: z.boolean(),
   joinedAt: z.string(),
+  lastSeenAt: z.string().optional(),
 });
 
 export type RoomMember = z.infer<typeof RoomMemberSchema>;
+
+/**
+ * Database / API DTO for Room Member (strictly excludes color per T03)
+ */
+export const RoomMemberDtoSchema = z.object({
+  roomId: z.string(),
+  memberId: z.string(),
+  displayName: z.string(),
+  role: UserRoleSchema,
+  isGuest: z.boolean(),
+  joinedAt: z.string(),
+  lastSeenAt: z.string().optional(),
+});
+
+export type RoomMemberDto = z.infer<typeof RoomMemberDtoSchema>;
 
 /**
  * PRD 6.2 / 12: Full Room Model Schema
@@ -100,6 +154,96 @@ export const RoomSchema = z.object({
 });
 
 export type Room = z.infer<typeof RoomSchema>;
+
+/**
+ * PRD 12: Guest DTO Schema (auto-expires after 7 days)
+ */
+export const GuestDtoSchema = z.object({
+  id: z.string(),
+  displayName: z.string().min(1).max(32),
+  roomId: z.string(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+});
+
+export type GuestDto = z.infer<typeof GuestDtoSchema>;
+
+/**
+ * PRD 12: Document Update DTO Schema (append-only log)
+ */
+export const DocUpdateDtoSchema = z.object({
+  roomId: z.string(),
+  seq: z.number().int().nonnegative(),
+  authorId: z.string(),
+  ts: z.string(),
+  size: z.number().int().nonnegative(),
+});
+
+export type DocUpdateDto = z.infer<typeof DocUpdateDtoSchema>;
+
+/**
+ * PRD 12: Document Snapshot DTO Schema
+ */
+export const DocSnapshotDtoSchema = z.object({
+  roomId: z.string(),
+  seq: z.number().int().nonnegative(),
+  ts: z.string(),
+  text: z.string(),
+});
+
+export type DocSnapshotDto = z.infer<typeof DocSnapshotDtoSchema>;
+
+/**
+ * PRD 12: Room Message DTO Schema (max 1000 characters)
+ */
+export const MessageDtoSchema = z.object({
+  id: z.string(),
+  roomId: z.string(),
+  authorId: z.string(),
+  text: z.string().max(1000),
+  ts: z.string(),
+  kind: z.enum(["user", "system"]),
+});
+
+export type MessageDto = z.infer<typeof MessageDtoSchema>;
+
+/**
+ * PRD 12: Client Map DTO Schema (Yjs clientId mapping)
+ */
+export const ClientMapDtoSchema = z.object({
+  roomId: z.string(),
+  clientId: z.number().int(),
+  actorId: z.string(),
+  connectedAt: z.string(),
+});
+
+export type ClientMapDto = z.infer<typeof ClientMapDtoSchema>;
+
+/**
+ * PRD 12: Event Log DTO Schema
+ */
+export const EventDtoSchema = z.object({
+  id: z.string(),
+  roomId: z.string(),
+  userId: z.string(),
+  type: z.string(),
+  payload: z.record(z.unknown()).optional(),
+  ts: z.string(),
+});
+
+export type EventDto = z.infer<typeof EventDtoSchema>;
+
+/**
+ * PRD 6.6 / 12 & AD-3: Idempotency Key DTO Schema
+ */
+export const IdempotencyDtoSchema = z.object({
+  key: z.string(),
+  actorId: z.string(),
+  route: z.string(),
+  createdAt: z.string(),
+});
+
+export type IdempotencyDto = z.infer<typeof IdempotencyDtoSchema>;
 
 /**
  * PRD 13.1: API Request & Response Schemas

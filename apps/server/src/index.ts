@@ -12,6 +12,11 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import { notFoundHandler } from "./middleware/notFoundHandler.js";
 import { roomsRouter } from "./routes/rooms.js";
 import {
+  getDatabaseStatus,
+  connectDatabase,
+  disconnectDatabase,
+} from "./db/connection.js";
+import {
   PingResponse,
   PingResponseSchema,
   HealthResponse,
@@ -59,7 +64,22 @@ app.use(cookieParser());
 // Structured JSON request logging & X-Request-Id tagging
 app.use(requestLogger);
 
-// Authentication & guest session handling
+// PRD 8.4 / 13.1 / OBS-4 & T03: Stateless healthcheck endpoint returning { status, uptimeSec, version, db }
+// Placed BEFORE sessionMiddleware so health probes never set cookies or create guest sessions
+app.get("/healthz", (_req: Request, res: Response) => {
+  const uptimeSec = Math.round(process.uptime() * 100) / 100;
+  const healthData: HealthResponse = {
+    status: "ok",
+    uptimeSec,
+    version: config.GIT_SHA || "0.1.0",
+    db: getDatabaseStatus(),
+  };
+
+  const validated = HealthResponseSchema.parse(healthData);
+  res.json(validated);
+});
+
+// Authentication & guest session handling (scoped to authenticated/app routes)
 app.use(sessionMiddleware);
 
 // Mount Room API under /api/v1/rooms (PRD 13.1)
@@ -68,19 +88,6 @@ app.use("/api/v1/rooms", roomsRouter);
 // Root smoke test endpoint
 app.get("/", (_req: Request, res: Response) => {
   res.send("Hello from PairPrep Backend!");
-});
-
-// PRD 8.4 / 13.1 / OBS-4: Healthcheck endpoint returning { status, uptimeSec, version }
-app.get("/healthz", (_req: Request, res: Response) => {
-  const uptimeSec = Math.round(process.uptime() * 100) / 100;
-  const healthData: HealthResponse = {
-    status: "ok",
-    uptimeSec,
-    version: config.GIT_SHA || "0.1.0",
-  };
-
-  const validated = HealthResponseSchema.parse(healthData);
-  res.json(validated);
 });
 
 // Smoke ping endpoint
@@ -149,6 +156,7 @@ export function setupGracefulShutdown(
     server.close(async () => {
       clearInterval(idleInterval);
       try {
+        await disconnectDatabase();
         if (onShutdown) {
           await onShutdown();
         }
@@ -177,11 +185,21 @@ export function setupGracefulShutdown(
 let server: Server | undefined;
 
 if (process.env["NODE_ENV"] !== "test") {
-  server = app.listen(PORT, () => {
+  server = app.listen(PORT, async () => {
     rootLogger.info(
       { port: PORT, env: config.NODE_ENV },
       `[PairPrep Server] running on http://localhost:${PORT}`
     );
+    if (config.MONGODB_URI) {
+      try {
+        await connectDatabase(config.MONGODB_URI);
+      } catch (err) {
+        rootLogger.error(
+          { err },
+          "Initial MongoDB connection failed; server will continue running (healthz will report db: down)"
+        );
+      }
+    }
   });
   setupGracefulShutdown(server);
 }

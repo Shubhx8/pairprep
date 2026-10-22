@@ -2,6 +2,27 @@
     admin off
 }
 
-:80 {
-    reverse_proxy server:3000
+{$SITE_ADDRESS:http://localhost} {
+    encode gzip
+
+    # Security headers (HSTS in production only)
+    @https {
+        protocol https
+    }
+    header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    # Reverse proxy API, healthcheck, and real-time WebSocket routes to internal api service
+    @api {
+        path /api/* /healthz /socket.io/* /sync*
+    }
+    handle @api {
+        reverse_proxy api:3000
+    }
+
+    # Everything else is served as a static SPA with client-side routing fallback
+    handle {
+        root * /srv/web
+        try_files {path} /index.html
+        file_server
+    }
 }

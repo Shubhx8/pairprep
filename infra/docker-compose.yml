@@ -1,26 +1,38 @@
 services:
-  server:
+  api:
     build:
       context: ..
       dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
     environment:
       - NODE_ENV=production
       - PORT=3000
-    restart: unless-stopped
+      - NODE_OPTIONS=--max-old-space-size=384
+    env_file:
+      - path: ${ENV_FILE:-../.env}
+        required: false
     expose:
       - "3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   caddy:
     image: caddy:alpine
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
+    environment:
+      - SITE_ADDRESS=${SITE_ADDRESS:-http://localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${WEB_DIR:-../apps/web/dist}:/srv/web:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - server
+      - api
 
 volumes:
   caddy_data:

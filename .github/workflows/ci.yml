@@ -100,14 +100,58 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           port: 22
           script: |
+            set -e
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
             cd /home/${{ secrets.VM_USERNAME || 'azureuser' }}/pairprep
             git fetch origin main
             git reset --hard origin/main
+
+            # Build all packages including apps/web
             npm install
             npm run build
-            pm2 restart pairprep-backend
-            sleep 3
-            curl -f http://localhost:3000/healthz || exit 1
-            echo "Production deployment and health check verified successfully."
+
+            # Copy built web dist to /opt/pairprep/web for Caddy to mount read-only
+            mkdir -p /opt/pairprep/web
+            cp -r apps/web/dist/* /opt/pairprep/web/
+
+            # Determine Docker Compose executable
+            if docker compose version >/dev/null 2>&1; then
+              DOCKER_COMPOSE="docker compose"
+            else
+              DOCKER_COMPOSE="docker-compose"
+            fi
+
+            # Record current running image tag for rollback
+            PREV_IMAGE=$(docker inspect --format='{{.Config.Image}}' pairprep-api 2>/dev/null || echo "")
+
+            # Log into GHCR on VM to pull the newly built image
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+            export SERVER_IMAGE="ghcr.io/${{ steps.repo_owner.outputs.OWNER }}/pairprep-server:${{ github.sha }}"
+            export SITE_ADDRESS="pairprep-live.eastasia.cloudapp.azure.com"
+            export ENV_FILE="/opt/pairprep/.env"
+            export WEB_DIR="/opt/pairprep/web"
+
+            # Stop standalone PM2 server if running so port 3000 is managed exclusively by docker compose
+            pm2 stop pairprep-backend 2>/dev/null || true
+
+            # Pull image and start caddy + api services via docker compose
+            $DOCKER_COMPOSE -f infra/docker-compose.prod.yml pull api
+            $DOCKER_COMPOSE -f infra/docker-compose.prod.yml up -d
+
+            # Verification: both https://<SITE_ADDRESS>/healthz and https://<SITE_ADDRESS>/ must return 200
+            sleep 5
+            HEALTH_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" https://${SITE_ADDRESS}/healthz || echo "000")
+            WEB_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" https://${SITE_ADDRESS}/ || echo "000")
+
+            if [ "$HEALTH_CODE" != "200" ] || [ "$WEB_CODE" != "200" ]; then
+              echo "Smoke check failed (healthz: $HEALTH_CODE, web: $WEB_CODE). Rolling back..."
+              if [ -n "$PREV_IMAGE" ]; then
+                SERVER_IMAGE="$PREV_IMAGE" $DOCKER_COMPOSE -f infra/docker-compose.prod.yml up -d
+              fi
+              exit 1
+            fi
+
+            echo "One-origin hosting deployment verified successfully: https://${SITE_ADDRESS}/ and /healthz both returned 200."

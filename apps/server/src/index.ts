@@ -135,7 +135,9 @@ export function setupGracefulShutdown(
         typeof (server as unknown as { closeIdleConnections?: () => void })
           .closeIdleConnections === "function"
       ) {
-        (server as unknown as { closeIdleConnections: () => void }).closeIdleConnections();
+        (
+          server as unknown as { closeIdleConnections: () => void }
+        ).closeIdleConnections();
       }
     };
 

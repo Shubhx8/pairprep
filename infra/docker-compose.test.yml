@@ -1,0 +1,11 @@
+services:
+  mongo-test:
+    image: mongo:7.0
+    container_name: pairprep-mongo-test
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=pairprep_test
+    tmpfs:
+      - /data/db

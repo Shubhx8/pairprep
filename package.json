@@ -20,6 +20,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "db:test:up": "docker compose -f infra/docker-compose.test.yml up -d",
+    "db:test:down": "docker compose -f infra/docker-compose.test.yml down -v",
     "ci": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {

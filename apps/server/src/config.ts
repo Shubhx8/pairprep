@@ -1,4 +1,40 @@
 import { z } from "zod";
+import fs from "node:fs";
+import path from "node:path";
+
+/**
+ * Loads .env file into process.env if available (Node 20.6+ native loadEnvFile).
+ * Searches current working directory, workspace root, and parent directories.
+ */
+function loadEnvFileSafely(): void {
+  const candidates = [
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.cwd(), "../../.env"),
+    path.resolve(process.cwd(), "../.env"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        if (
+          typeof (process as unknown as { loadEnvFile?: (path: string) => void })
+            .loadEnvFile === "function"
+        ) {
+          (process as unknown as { loadEnvFile: (path: string) => void }).loadEnvFile(
+            candidate
+          );
+          break;
+        }
+      } catch {
+        // Continue searching if file load fails
+      }
+    }
+  }
+}
+
+if (process.env["NODE_ENV"] !== "test") {
+  loadEnvFileSafely();
+}
 
 export const ConfigSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),

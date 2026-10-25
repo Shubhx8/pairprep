@@ -12,7 +12,6 @@ PairPrep is built as an **npm workspaces** monorepo using **strict TypeScript**:
 - **`apps/server`**: Express API, Hocuspocus CRDT sync server, Socket.IO room events, and Docker sandbox runner.
 - **`packages/shared`**: Shared Zod schemas, TypeScript interfaces, and validation contracts used by both web and server.
 - **`infra`**: Production Docker configurations, sandbox runner scripts, and Caddy reverse proxy setup.
-- **`docs`**: Product Requirements Document ([PRD](docs/PRD.md)) and technical notes.
 
 ---
 

@@ -5,9 +5,10 @@ export interface IUser extends Document {
   providerId: string;
   displayName: string;
   avatarUrl?: string;
-  email: string;
+  email: string | null;
   role: "user" | "owner-admin";
   createdAt: Date;
+  lastLoginAt?: Date;
   disabled: boolean;
 }
 
@@ -17,9 +18,10 @@ const UserSchema = new Schema<IUser>(
     providerId: { type: String, required: true },
     displayName: { type: String, required: true, trim: true },
     avatarUrl: { type: String },
-    email: { type: String, required: true, lowercase: true, trim: true },
+    email: { type: String, default: null, lowercase: true, trim: true },
     role: { type: String, enum: ["user", "owner-admin"], default: "user" },
     createdAt: { type: Date, default: Date.now },
+    lastLoginAt: { type: Date },
     disabled: { type: Boolean, default: false },
   },
   { collection: "users" }

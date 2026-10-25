@@ -35,33 +35,118 @@ export type UserRoleType = z.infer<typeof UserRoleTypeSchema>;
 
 /**
  * UserPrivateDto: includes email, used ONLY for GET /me (PRD Section 12 & T03 User Review)
+ * Contains exactly: id, provider, displayName, avatarUrl, email, role, createdAt.
  */
-export const UserPrivateDtoSchema = z.object({
-  id: z.string(),
-  provider: z.enum(["google", "github"]),
-  providerId: z.string(),
-  displayName: z.string(),
-  avatarUrl: z.string().optional(),
-  email: z.string().email(),
-  role: UserRoleTypeSchema,
-  createdAt: z.string(),
-  disabled: z.boolean().default(false),
-});
+export const UserPrivateDtoSchema = z
+  .object({
+    id: z.string(),
+    provider: z.enum(["google", "github"]),
+    displayName: z.string(),
+    avatarUrl: z.string().optional(),
+    email: z.string().email().nullable(),
+    role: UserRoleTypeSchema,
+    createdAt: z.string(),
+  })
+  .strict();
 
 export type UserPrivateDto = z.infer<typeof UserPrivateDtoSchema>;
 
 /**
  * UserPublicDto: excludes email completely, used everywhere else to prevent accidental email leaks
  */
-export const UserPublicDtoSchema = z.object({
-  id: z.string(),
-  displayName: z.string(),
-  avatarUrl: z.string().optional(),
-  role: UserRoleTypeSchema,
-  createdAt: z.string(),
-});
+export const UserPublicDtoSchema = z
+  .object({
+    id: z.string(),
+    displayName: z.string(),
+    avatarUrl: z.string().optional(),
+    role: UserRoleTypeSchema,
+    createdAt: z.string(),
+  })
+  .strict();
 
 export type UserPublicDto = z.infer<typeof UserPublicDtoSchema>;
+
+/**
+ * Runtime mapping to ensure private fields (like email, providerId, disabled) are stripped
+ * and only the exact private DTO fields are returned. Never serializes a Mongoose doc directly.
+ */
+export function toUserPrivateDto(user: {
+  id?: string;
+  _id?: unknown;
+  provider: "google" | "github";
+  displayName: string;
+  avatarUrl?: string;
+  email?: string | null;
+  role: z.infer<typeof UserRoleTypeSchema>;
+  createdAt: string | Date;
+}): UserPrivateDto {
+  const userId = user.id ? String(user.id) : String(user._id ?? "");
+  const dto: Record<string, unknown> = {
+    id: userId,
+    provider: user.provider,
+    displayName: user.displayName,
+    email: user.email ?? null,
+    role: user.role,
+    createdAt:
+      typeof user.createdAt === "string" ? user.createdAt : user.createdAt.toISOString(),
+  };
+  if (user.avatarUrl) {
+    dto.avatarUrl = user.avatarUrl;
+  }
+  return UserPrivateDtoSchema.parse(dto);
+}
+
+/**
+ * Runtime mapping to ensure private fields (like email) are stripped and never cross network boundaries.
+ */
+export function toUserPublicDto(user: {
+  id?: string;
+  _id?: unknown;
+  displayName: string;
+  avatarUrl?: string;
+  role: z.infer<typeof UserRoleTypeSchema>;
+  createdAt: string | Date;
+}): UserPublicDto {
+  const userId = user.id ? String(user.id) : String(user._id ?? "");
+  const dto: Record<string, unknown> = {
+    id: userId,
+    displayName: user.displayName,
+    role: user.role,
+    createdAt:
+      typeof user.createdAt === "string" ? user.createdAt : user.createdAt.toISOString(),
+  };
+  if (user.avatarUrl) {
+    dto.avatarUrl = user.avatarUrl;
+  }
+  return UserPublicDtoSchema.parse(dto);
+}
+
+/**
+ * Strips control and formatting characters (\p{Cc}\p{Cf}), applies Unicode NFC normalization, and trims whitespace.
+ */
+export function sanitizeDisplayName(val: string): string {
+  return val
+    .normalize("NFC")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim();
+}
+
+/**
+ * PRD 6.1 AUTH-5 / T04: Display Name update schema
+ * Display name 1 to 40 code points after trimming, strip control characters, reject empty, strict mode.
+ */
+export const UpdateProfileDtoSchema = z
+  .object({
+    displayName: z
+      .string()
+      .transform(sanitizeDisplayName)
+      .refine((val) => [...val].length >= 1 && [...val].length <= 40, {
+        message: "Display name must be between 1 and 40 characters after trimming",
+      }),
+  })
+  .strict();
+
+export type UpdateProfileDto = z.infer<typeof UpdateProfileDtoSchema>;
 
 /**
  * PRD 6.2 / 12: Supported Room Member Roles

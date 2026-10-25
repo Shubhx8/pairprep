@@ -5,11 +5,18 @@ import helmet from "helmet";
 import { Server } from "node:http";
 import { config } from "./config.js";
 import { requestLogger, rootLogger } from "./middleware/logger.js";
-import { sessionMiddleware } from "./middleware/auth.js";
+import { createSessionMiddleware } from "./middleware/session.js";
+import passport from "passport";
+import "./auth/passport.js";
+import { csrfProtection } from "./middleware/csrf.js";
+import { authRateLimiter } from "./middleware/authRateLimiter.js";
 import { apiRateLimiter } from "./middleware/rateLimiter.js";
 import { validateContentType } from "./middleware/contentType.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { notFoundHandler } from "./middleware/notFoundHandler.js";
+import { requireAuth } from "./middleware/requireAuth.js";
+import { authRouter } from "./routes/auth.js";
+import { meRouter } from "./routes/me.js";
 import { roomsRouter } from "./routes/rooms.js";
 import {
   getDatabaseStatus,
@@ -48,10 +55,28 @@ app.use(
 // Global IP-based rate limiting (100 requests per minute per IP, configurable)
 app.use(apiRateLimiter);
 
-// CORS allowlist
+// CORS allowlist strictly allowing configured dev origins or production site origin
+const allowedOrigins =
+  config.NODE_ENV === "production"
+    ? [config.SITE_ORIGIN]
+    : [
+        config.SITE_ORIGIN,
+        config.CLIENT_ORIGIN,
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+      ].filter(Boolean);
+
 app.use(
   cors({
-    origin: config.NODE_ENV === "production" ? config.SITE_ORIGIN : true,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like curl, server-to-server, or same-origin)
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("CORS policy violation: origin not allowed"), false);
+    },
     credentials: true,
   })
 );
@@ -65,7 +90,7 @@ app.use(cookieParser());
 app.use(requestLogger);
 
 // PRD 8.4 / 13.1 / OBS-4 & T03: Stateless healthcheck endpoint returning { status, uptimeSec, version, db }
-// Placed BEFORE sessionMiddleware so health probes never set cookies or create guest sessions
+// Placed BEFORE sessionMiddleware and rate limiters so health probes never set cookies or create sessions
 app.get("/healthz", (_req: Request, res: Response) => {
   const uptimeSec = Math.round(process.uptime() * 100) / 100;
   const healthData: HealthResponse = {
@@ -79,11 +104,42 @@ app.get("/healthz", (_req: Request, res: Response) => {
   res.json(validated);
 });
 
-// Authentication & guest session handling (scoped to authenticated/app routes)
-app.use(sessionMiddleware);
+// PRD 6.1 / T04 Exact Middleware Chain:
+// 1. authRateLimiter mounted on /api/v1/auth BEFORE sessionMiddleware to prevent database session spam
+app.use("/api/v1/auth", authRateLimiter);
 
-// Mount Room API under /api/v1/rooms (PRD 13.1)
-app.use("/api/v1/rooms", roomsRouter);
+// 2. sessionMiddleware mounted strictly on /api routes
+app.use("/api", createSessionMiddleware());
+
+// 3. passport.initialize()
+app.use("/api", passport.initialize());
+
+// 4. passport.session()
+app.use("/api", passport.session());
+
+// Attach req.userId and req.isGuest for backward compatibility with rooms API from T01
+app.use("/api", (req: Request, _res: Response, next: express.NextFunction) => {
+  if (req.user) {
+    req.userId = req.user.id;
+    req.isGuest = false;
+  } else {
+    req.userId = undefined;
+    req.isGuest = true;
+  }
+  next();
+});
+
+// 5. csrfProtection (rejects untrusted state-changing requests with 403 CSRF_REJECTED)
+app.use("/api", csrfProtection);
+
+// 6. authRouter
+app.use("/api/v1/auth", authRouter);
+
+// 7. meRouter
+app.use("/api/v1/me", meRouter);
+
+// 8. roomsRouter (protected by requireAuth)
+app.use("/api/v1/rooms", requireAuth, roomsRouter);
 
 // Root smoke test endpoint
 app.get("/", (_req: Request, res: Response) => {

@@ -17,7 +17,7 @@ export interface IRoom extends Document {
 
 const RoomSchema = new Schema<IRoom>(
   {
-    slug: { type: String, required: true, unique: true, index: true },
+    slug: { type: String, required: true },
     title: { type: String, required: true, trim: true },
     type: { type: String, enum: ["practice", "interview"], default: "practice" },
     ownerId: { type: String, required: true },

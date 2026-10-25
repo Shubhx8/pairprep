@@ -17,25 +17,51 @@ export class UserRepo {
     providerId: string;
     displayName: string;
     avatarUrl?: string;
-    email: string;
+    email?: string | null;
     role?: "user" | "owner-admin";
   }): Promise<IUser> {
-    return UserModel.findOneAndUpdate(
-      { provider: data.provider, providerId: data.providerId },
-      {
-        $set: {
-          displayName: data.displayName,
-          avatarUrl: data.avatarUrl,
-          email: data.email,
-          ...(data.role ? { role: data.role } : {}),
-        },
-        $setOnInsert: {
-          createdAt: new Date(),
-          disabled: false,
-        },
+    const filter = { provider: data.provider, providerId: data.providerId };
+    const safeAvatarUrl =
+      data.avatarUrl && data.avatarUrl.startsWith("https://")
+        ? data.avatarUrl
+        : undefined;
+
+    const update = {
+      $setOnInsert: {
+        displayName: data.displayName,
+        avatarUrl: safeAvatarUrl,
+        role: data.role || "user",
+        createdAt: new Date(),
+        disabled: false,
       },
-      { upsert: true, new: true, runValidators: true }
-    ).exec();
+      $set: {
+        email: data.email ?? null,
+        lastLoginAt: new Date(),
+      },
+    };
+
+    try {
+      const user = await UserModel.findOneAndUpdate(filter, update, {
+        upsert: true,
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      }).exec();
+      return user!;
+    } catch (err: unknown) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code: number }).code === 11000
+      ) {
+        const existing = await UserModel.findOne(filter).exec();
+        if (existing) {
+          return existing;
+        }
+      }
+      throw err;
+    }
   }
 
   public async updateDisplayName(id: string, displayName: string): Promise<IUser | null> {

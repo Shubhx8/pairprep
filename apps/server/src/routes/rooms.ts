@@ -7,8 +7,10 @@ import {
   ApiErrorSchema,
 } from "@pairprep/shared";
 import { roomService, RoomError } from "../services/roomService.js";
+import { requireAuth } from "../middleware/requireAuth.js";
 
 export const roomsRouter = Router();
+roomsRouter.use(requireAuth);
 
 function getParam(param: string | string[] | undefined): string {
   if (Array.isArray(param)) return param[0] || "";
@@ -35,7 +37,7 @@ roomsRouter.post("/", (req: Request, res: Response) => {
   try {
     const { room, ownerMember } = roomService.createRoom(
       parseResult.data,
-      req.userId,
+      req.userId!,
       idempotencyKey
     );
 
@@ -96,7 +98,7 @@ roomsRouter.post("/:slug/join", (req: Request, res: Response) => {
     const { room, member } = roomService.joinRoom(
       slug,
       parseResult.data,
-      req.userId,
+      req.userId!,
       req.isGuest
     );
 
@@ -133,7 +135,7 @@ roomsRouter.patch("/:slug/members/:id", (req: Request, res: Response) => {
       slug,
       targetMemberId,
       parseResult.data.role,
-      req.userId
+      req.userId!
     );
 
     res.json({ room: updatedRoom });
@@ -150,7 +152,7 @@ roomsRouter.delete("/:slug/members/:id", (req: Request, res: Response) => {
   const targetMemberId = getParam(req.params.id);
 
   try {
-    const updatedRoom = roomService.removeMember(slug, targetMemberId, req.userId);
+    const updatedRoom = roomService.removeMember(slug, targetMemberId, req.userId!);
 
     res.json({ room: updatedRoom });
   } catch (err: unknown) {
@@ -165,7 +167,7 @@ roomsRouter.post("/:slug/end", (req: Request, res: Response) => {
   const slug = getParam(req.params.slug);
 
   try {
-    const endedRoom = roomService.endRoom(slug, req.userId);
+    const endedRoom = roomService.endRoom(slug, req.userId!);
     res.json({ room: endedRoom });
   } catch (err: unknown) {
     handleError(err, req, res);

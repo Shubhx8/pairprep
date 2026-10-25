@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { setupTestDb, teardownTestDb, clearTestDb } from "./testDb.js";
 import { userRepo } from "../../repos/userRepo.js";
 import { UserModel } from "../../models/users.js";
-import { UserPrivateDtoSchema, UserPublicDtoSchema } from "@pairprep/shared";
+import { toUserPrivateDto, UserPublicDtoSchema } from "@pairprep/shared";
 
 describe("User Model & Repository (PRD 12, AUTH-1, AUTH-2, AUTH-5)", () => {
   beforeAll(async () => {
@@ -47,17 +47,7 @@ describe("User Model & Repository (PRD 12, AUTH-1, AUTH-2, AUTH-5)", () => {
     });
 
     // UserPrivateDto must include email and pass validation
-    const privateDto = UserPrivateDtoSchema.parse({
-      id: user._id.toString(),
-      provider: user.provider,
-      providerId: user.providerId,
-      displayName: user.displayName,
-      avatarUrl: user.avatarUrl,
-      email: user.email,
-      role: user.role,
-      createdAt: user.createdAt.toISOString(),
-      disabled: user.disabled,
-    });
+    const privateDto = toUserPrivateDto(user);
     expect(privateDto.email).toBe("alex@secret-domain.com");
 
     // UserPublicDto must validate without email
@@ -72,11 +62,12 @@ describe("User Model & Repository (PRD 12, AUTH-1, AUTH-2, AUTH-5)", () => {
     expect((publicDto as unknown as { email?: string }).email).toBeUndefined();
   });
 
-  it("users: upsertUser updates display name and avatarUrl without modifying createdAt", async () => {
+  it("users: upsertUser preserves display name and avatarUrl on subsequent logins without modifying createdAt", async () => {
     const user1 = await userRepo.upsertUser({
       provider: "google",
       providerId: "google-uid-update",
       displayName: "Initial Name",
+      avatarUrl: "https://example.com/initial-avatar.png",
       email: "user@example.com",
     });
 
@@ -87,11 +78,12 @@ describe("User Model & Repository (PRD 12, AUTH-1, AUTH-2, AUTH-5)", () => {
       providerId: "google-uid-update",
       displayName: "Updated Name",
       avatarUrl: "https://example.com/new-avatar.png",
-      email: "user@example.com",
+      email: "user-new@example.com",
     });
 
-    expect(user2.displayName).toBe("Updated Name");
-    expect(user2.avatarUrl).toBe("https://example.com/new-avatar.png");
+    expect(user2.displayName).toBe("Initial Name");
+    expect(user2.avatarUrl).toBe("https://example.com/initial-avatar.png");
+    expect(user2.email).toBe("user-new@example.com");
     expect(user2.createdAt.getTime()).toBe(initialCreated);
   });
 });

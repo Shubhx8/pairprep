@@ -1,0 +1,56 @@
+### PairPrep API Examples (VS Code REST Client / IntelliJ HTTP Client)
+@baseUrl = http://localhost:3000
+
+### 1. Healthcheck (Stateless - Never sets cookies or creates sessions)
+GET {{baseUrl}}/healthz
+
+### 2. Initiate Google OAuth Flow
+# Browser will be redirected to Google Accounts with PKCE code_challenge and state
+GET {{baseUrl}}/api/v1/auth/google
+
+### 3. Initiate GitHub OAuth Flow
+# Browser will be redirected to GitHub OAuth authorization with state
+GET {{baseUrl}}/api/v1/auth/github
+
+### 4. Get Current User Profile (Unauthenticated -> 401 UNAUTHORIZED)
+GET {{baseUrl}}/api/v1/me
+
+### 5. Get Current User Profile (Authenticated)
+# Replace {{pairprep_session}} with your active session cookie value from browser
+GET {{baseUrl}}/api/v1/me
+Cookie: pairprep.sid=your_session_cookie_here
+
+### 6. Update Profile Display Name (Requires CSRF Header)
+PATCH {{baseUrl}}/api/v1/me
+Content-Type: application/json
+X-Requested-With: pairprep
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "displayName": "Alex Developer"
+}
+
+### 7. Update Profile Display Name - Missing CSRF Header (Returns 403 CSRF_REJECTED)
+PATCH {{baseUrl}}/api/v1/me
+Content-Type: application/json
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "displayName": "Alex Developer"
+}
+
+### 8. Logout (Destroys session in MongoDB and clears cookie)
+POST {{baseUrl}}/api/v1/auth/logout
+X-Requested-With: pairprep
+Cookie: pairprep.sid=your_session_cookie_here
+
+### 9. Create Room (Requires CSRF Header)
+POST {{baseUrl}}/api/v1/rooms
+Content-Type: application/json
+X-Requested-With: pairprep
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "title": "Algorithms Practice",
+  "language": "typescript"
+}

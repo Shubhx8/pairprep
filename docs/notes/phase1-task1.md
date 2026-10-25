@@ -1,8 +1,8 @@
-# Phase 1 — Task 1: Room Lifecycle, Unguessable Slugs, Roles & Guest Identity
+# Phase 1 — Task 1: Room Lifecycle, Unguessable Slugs, Roles & Permissions
 
 ## Overview & PRD Compliance
 
-Implements the room model, lifecycle management, cryptographically unguessable slugs, role assignment, participant limits, and guest identity as specified in PRD sections 6.1 (`AUTH-3`, `AUTH-4`), 6.2 (`ROOM-1` to `ROOM-5`), 6.6 (`CONC-3`), and 13.1.
+Implements the room model, lifecycle management, cryptographically unguessable slugs, role assignment, participant limits, and room permissions as specified in PRD sections 6.1 (`AUTH-4`), 6.2 (`ROOM-1` to `ROOM-5`), 6.6 (`CONC-3`), and 13.1. Room creation requires an authenticated user account (`ROOM-1` / `AUTH-4`), while anonymous guest participation via invite links is scheduled for T05 (`AUTH-3`).
 
 ---
 
@@ -17,17 +17,17 @@ Implements the room model, lifecycle management, cryptographically unguessable s
 
 - **Participant Limit**: Max 6 participants per room. When a 7th user attempts to join, the server rejects the request with HTTP 409 Conflict (`ROOM_FULL`).
 - **Roles**:
-  - `owner`: Room creator. Has permission to change member roles, remove members, and end the room.
+  - `owner`: Room creator (must be authenticated user). Has permission to change member roles, remove members, and end the room.
   - `interviewer`: Can run, view private tests, score, and control session timer.
   - `candidate`: Can edit code, test, and submit.
   - `editor`: Default collaborative peer in practice rooms.
   - `viewer`: Read-only observer. Cannot mutate code or execute runs.
 - **Color-Blind-Safe Palette**: Cycles through 6 distinct accessible colors (`#3B82F6`, `#10B981`, `#F59E0B`, `#8B5CF6`, `#EC4899`, `#14B8A6`) and pairs with initials.
 
-### 3. Guest Session Cookie Middleware (`AUTH-3`, `AUTH-4`)
+### 3. Room Access Control & Guest Joining
 
-- **Mechanism**: Extracts `pairprep_session` cookie. If not present, generates `guest_<uuid>` and sets an `HttpOnly`, `SameSite=Lax`, `Secure` cookie with a 7-day TTL.
-- **Purpose**: Enables frictionless 1-click room creation and link-based joining with zero signup barriers while preserving stable user identity and authorship across browser refreshes.
+- **Room Creation**: Restricted to authenticated users (`requireAuth`), setting the authenticated user as the room owner.
+- **Guest Join (`AUTH-3`)**: Frictionless 1-click joining via invite links without signup is handled in T05.
 
 ### 4. Idempotency Support (`CONC-3`)
 
@@ -46,7 +46,7 @@ Implements the room model, lifecycle management, cryptographically unguessable s
 ### 2. Live Production Verification (Azure VM)
 
 - **Host**: `https://pairprep-live.eastasia.cloudapp.azure.com`
-- **Room Creation**:
+- **Room Creation (Authenticated Owner per AUTH-4 / ROOM-1)**:
   ```json
   {
     "id": "04f318e8-4e54-43c0-b10d-16f24b3dbae8",
@@ -55,15 +55,16 @@ Implements the room model, lifecycle management, cryptographically unguessable s
     "status": "open",
     "members": [
       {
-        "displayName": "Anonymous Host",
+        "id": "usr_68b42918e4b01f92a",
+        "displayName": "Authenticated Host",
         "role": "owner",
         "color": "#3B82F6",
-        "isGuest": true
+        "isGuest": false
       }
     ]
   }
   ```
-- **Guest Join**:
+- **Guest Join (Deferred to T05 / AUTH-3)**:
   ```json
   {
     "displayName": "Candidate Rohan",
@@ -72,4 +73,4 @@ Implements the room model, lifecycle management, cryptographically unguessable s
     "isGuest": true
   }
   ```
-- **Public API Resolution**: `GET /api/v1/rooms/db6e833a322ee86b154b7600dcbe7e2b` returns HTTP 200 with both participants.
+- **Public API Resolution**: `GET /api/v1/rooms/db6e833a322ee86b154b7600dcbe7e2b` returns HTTP 200 with room details.

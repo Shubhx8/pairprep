@@ -7,6 +7,12 @@ import {
   RoomSchema,
   CreateRoomRequestSchema,
   JoinRoomRequestSchema,
+  toUserPublicDto,
+  UserPublicDtoSchema,
+  toUserPrivateDto,
+  UserPrivateDtoSchema,
+  UpdateProfileDtoSchema,
+  sanitizeDisplayName,
 } from "../index.js";
 
 describe("Shared Zod Schemas", () => {
@@ -195,6 +201,184 @@ describe("Shared Zod Schemas", () => {
       expect(
         JoinRoomRequestSchema.safeParse({ displayName: "A".repeat(33) }).success
       ).toBe(false);
+    });
+  });
+
+  describe("User DTOs & Runtime Stripping (T04 Part 2)", () => {
+    it("proves toUserPublicDto strictly strips email at runtime", () => {
+      const privateUserObject = {
+        id: "usr_12345",
+        displayName: "Alice Developer",
+        avatarUrl: "https://example.com/avatar.png",
+        email: "alice@confidential.com",
+        role: "user" as const,
+        createdAt: new Date().toISOString(),
+      };
+
+      const publicDto = toUserPublicDto(privateUserObject);
+
+      // Verify public properties exist
+      expect(publicDto.id).toBe("usr_12345");
+      expect(publicDto.displayName).toBe("Alice Developer");
+      expect(publicDto.avatarUrl).toBe("https://example.com/avatar.png");
+      expect(publicDto.role).toBe("user");
+
+      // Verify email is completely stripped and never crosses boundary
+      expect("email" in publicDto).toBe(false);
+      expect((publicDto as unknown as Record<string, unknown>).email).toBeUndefined();
+    });
+
+    it("UserPublicDtoSchema rejects objects with extraneous fields under strict mode", () => {
+      const objectWithEmail = {
+        id: "usr_12345",
+        displayName: "Alice Developer",
+        role: "user",
+        createdAt: new Date().toISOString(),
+        email: "leak@example.com",
+      };
+
+      const result = UserPublicDtoSchema.safeParse(objectWithEmail);
+      expect(result.success).toBe(false);
+    });
+
+    it("UpdateProfileDtoSchema rejects unrecognized fields under strict mode", () => {
+      const invalid = {
+        displayName: "Clean Name",
+        role: "admin", // Unrecognized field
+      };
+
+      const result = UpdateProfileDtoSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+    });
+
+    it("UpdateProfileDtoSchema rejects avatarUrl (display name only, AUTH-5)", () => {
+      const withAvatar = {
+        displayName: "Clean Name",
+        avatarUrl: "https://example.com/avatar.jpg",
+      };
+
+      const result = UpdateProfileDtoSchema.safeParse(withAvatar);
+      expect(result.success).toBe(false);
+    });
+
+    it("proves toUserPrivateDto asserts exact key set and excludes providerId, disabled, lastLoginAt, _id, __v", () => {
+      const fullMongooseUserLike = {
+        _id: "661234567890abcdef123456",
+        __v: 0,
+        id: "usr_full_123",
+        provider: "github" as const,
+        providerId: "gh_987654321",
+        displayName: "Bob Developer",
+        email: "bob@example.com",
+        avatarUrl: "https://github.com/avatar.png",
+        role: "user" as const,
+        disabled: false,
+        lastLoginAt: new Date(),
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      };
+
+      // With avatarUrl
+      const dtoWithAvatar = toUserPrivateDto(fullMongooseUserLike);
+      expect(Object.keys(dtoWithAvatar).sort()).toEqual([
+        "avatarUrl",
+        "createdAt",
+        "displayName",
+        "email",
+        "id",
+        "provider",
+        "role",
+      ]);
+      expect("providerId" in dtoWithAvatar).toBe(false);
+      expect("disabled" in dtoWithAvatar).toBe(false);
+      expect("lastLoginAt" in dtoWithAvatar).toBe(false);
+      expect("_id" in dtoWithAvatar).toBe(false);
+      expect("__v" in dtoWithAvatar).toBe(false);
+
+      // Without avatarUrl (avatarUrl must be absent from keys)
+      const userWithoutAvatar = {
+        ...fullMongooseUserLike,
+        avatarUrl: undefined,
+      };
+      const dtoWithoutAvatar = toUserPrivateDto(userWithoutAvatar);
+      expect(Object.keys(dtoWithoutAvatar).sort()).toEqual([
+        "createdAt",
+        "displayName",
+        "email",
+        "id",
+        "provider",
+        "role",
+      ]);
+      expect("avatarUrl" in dtoWithoutAvatar).toBe(false);
+    });
+
+    it("proves toUserPublicDto asserts exact key set and excludes email, providerId, disabled, lastLoginAt, _id, __v", () => {
+      const fullMongooseUserLike = {
+        _id: "661234567890abcdef123456",
+        __v: 0,
+        id: "usr_full_456",
+        provider: "google" as const,
+        providerId: "google_123456",
+        displayName: "Charlie Developer",
+        email: "charlie@example.com",
+        avatarUrl: "https://lh3.googleusercontent.com/avatar.png",
+        role: "user" as const,
+        disabled: false,
+        lastLoginAt: new Date(),
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      };
+
+      // With avatarUrl
+      const dtoWithAvatar = toUserPublicDto(fullMongooseUserLike);
+      expect(Object.keys(dtoWithAvatar).sort()).toEqual([
+        "avatarUrl",
+        "createdAt",
+        "displayName",
+        "id",
+        "role",
+      ]);
+      expect("email" in dtoWithAvatar).toBe(false);
+      expect("provider" in dtoWithAvatar).toBe(false);
+      expect("providerId" in dtoWithAvatar).toBe(false);
+      expect("disabled" in dtoWithAvatar).toBe(false);
+      expect("lastLoginAt" in dtoWithAvatar).toBe(false);
+      expect("_id" in dtoWithAvatar).toBe(false);
+      expect("__v" in dtoWithAvatar).toBe(false);
+
+      // Without avatarUrl
+      const userWithoutAvatar = {
+        ...fullMongooseUserLike,
+        avatarUrl: undefined,
+      };
+      const dtoWithoutAvatar = toUserPublicDto(userWithoutAvatar);
+      expect(Object.keys(dtoWithoutAvatar).sort()).toEqual([
+        "createdAt",
+        "displayName",
+        "id",
+        "role",
+      ]);
+      expect("avatarUrl" in dtoWithoutAvatar).toBe(false);
+    });
+
+    it("UserPrivateDtoSchema rejects objects with extraneous fields under strict mode", () => {
+      const objectWithExtraneous = {
+        id: "usr_12345",
+        provider: "google",
+        displayName: "Alice Developer",
+        email: "alice@example.com",
+        role: "user",
+        createdAt: new Date().toISOString(),
+        providerId: "leak_provider_id",
+      };
+
+      const result = UserPrivateDtoSchema.safeParse(objectWithExtraneous);
+      expect(result.success).toBe(false);
+    });
+
+    it("sanitizeDisplayName strips \\p{Cc} and \\p{Cf} characters and normalizes NFC", () => {
+      // Includes null byte (\u0000), backspace (\u0008), zero-width non-joiner (\u200C - Cf)
+      const dirty = "  User\u0000Name\u200C  ";
+      const cleaned = sanitizeDisplayName(dirty);
+      expect(cleaned).toBe("UserName");
     });
   });
 });

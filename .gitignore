@@ -12,7 +12,7 @@ playwright-report/
 test-results/
 *.tsbuildinfo
 
-# Internal documentation & specifications
+# Local documentation & specifications (kept local, hidden from GitHub)
 docs/
 
 # Internal agent & AI instructions (keep private from GitHub)
@@ -22,4 +22,3 @@ AGENTS.md
 .cursor/
 .vscode/
 .idea/
-

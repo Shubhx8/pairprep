@@ -5,6 +5,11 @@ coverage/
 package-lock.json
 *.tsbuildinfo
 .git/
+docs/
 AGENTS.md
 .agents/
 .gemini/
+.cursor/
+.vscode/
+.idea/
+

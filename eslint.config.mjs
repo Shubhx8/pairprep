@@ -9,6 +9,7 @@ export default tseslint.config(
       "**/build/**",
       "**/coverage/**",
       "**/*.tsbuildinfo",
+      "docs/**",
       "AGENTS.md",
       ".agents/**",
       ".gemini/**",

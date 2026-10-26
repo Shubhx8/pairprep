@@ -69,7 +69,11 @@ export class RoomMemberRepo {
     // 3. Conditional atomic increment
     const now = new Date();
     let updatedRoom = await RoomModel.findOneAndUpdate(
-      { _id: data.roomId, memberCount: { $lt: 6 }, status: { $nin: ["ended", "archived"] } },
+      {
+        _id: data.roomId,
+        memberCount: { $lt: 6 },
+        status: { $nin: ["ended", "archived"] },
+      },
       { $inc: { memberCount: 1 }, $set: { memberCountUpdatedAt: now } },
       { new: true }
     ).exec();
@@ -113,7 +117,11 @@ export class RoomMemberRepo {
 
           if (healed && healed.memberCount < 6) {
             updatedRoom = await RoomModel.findOneAndUpdate(
-              { _id: data.roomId, memberCount: { $lt: 6 }, status: { $nin: ["ended", "archived"] } },
+              {
+                _id: data.roomId,
+                memberCount: { $lt: 6 },
+                status: { $nin: ["ended", "archived"] },
+              },
               { $inc: { memberCount: 1 }, $set: { memberCountUpdatedAt: new Date() } },
               { new: true }
             ).exec();

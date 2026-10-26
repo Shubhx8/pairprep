@@ -80,7 +80,7 @@ export class RoomMemberRepo {
     if (!room) {
       throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
     }
-    if (room.status !== "open") {
+    if (room.status === "ended" || room.status === "archived") {
       throw new AppError(
         "This room is ended or archived and cannot be modified",
         409,
@@ -91,7 +91,7 @@ export class RoomMemberRepo {
     // 3. Conditional atomic increment
     const now = new Date();
     let updatedRoom = await RoomModel.findOneAndUpdate(
-      { _id: data.roomId, memberCount: { $lt: 6 }, status: "open" },
+      { _id: data.roomId, memberCount: { $lt: 6 }, status: { $nin: ["ended", "archived"] } },
       { $inc: { memberCount: 1 }, $set: { memberCountUpdatedAt: now } },
       { new: true }
     ).exec();
@@ -102,7 +102,7 @@ export class RoomMemberRepo {
       if (!currentRoom) {
         throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
       }
-      if (currentRoom.status !== "open") {
+      if (currentRoom.status === "ended" || currentRoom.status === "archived") {
         throw new AppError(
           "This room is ended or archived and cannot be modified",
           409,
@@ -135,7 +135,7 @@ export class RoomMemberRepo {
 
           if (healed && healed.memberCount < 6) {
             updatedRoom = await RoomModel.findOneAndUpdate(
-              { _id: data.roomId, memberCount: { $lt: 6 }, status: "open" },
+              { _id: data.roomId, memberCount: { $lt: 6 }, status: { $nin: ["ended", "archived"] } },
               { $inc: { memberCount: 1 }, $set: { memberCountUpdatedAt: new Date() } },
               { new: true }
             ).exec();

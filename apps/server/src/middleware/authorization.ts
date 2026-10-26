@@ -149,7 +149,7 @@ export function requireOpenRoom(req: Request, res: Response, next: NextFunction)
     return;
   }
 
-  if (req.room.status !== "open") {
+  if (req.room.status === "ended" || req.room.status === "archived") {
     res.status(409).json({
       error: {
         code: "ROOM_CLOSED",

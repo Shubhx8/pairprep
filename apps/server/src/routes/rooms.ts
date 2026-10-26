@@ -246,8 +246,8 @@ roomsRouter.post(
         return;
       }
 
-      // Check room status first
-      if (room.status !== "open") {
+      // Check room status first: closed means ended or archived
+      if (room.status === "ended" || room.status === "archived") {
         res.status(409).json({
           error: {
             code: "ROOM_CLOSED",

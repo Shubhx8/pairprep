@@ -13,7 +13,11 @@ test-results/
 *.tsbuildinfo
 
 # Local documentation & specifications (kept local, hidden from GitHub)
-docs/
+# Ignore heavy local-only spec files, but allow docs/notes/** and docs/api-examples.http
+docs/PRD.md
+docs/PHASE1-TASKS.md
+docs/PHASE2-TASKS.md
+docs/PHASE3-TASKS.md
 
 # Internal agent & AI instructions (keep private from GitHub)
 AGENTS.md

@@ -1,8 +1,8 @@
-﻿import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import request from "supertest";
 import crypto from "node:crypto";
-import express from "express";
 import { Writable } from "node:stream";
+import express from "express";
 import app from "../index.js";
 import { setupTestDb, teardownTestDb, clearTestDb } from "./db/testDb.js";
 import { userRepo } from "../repos/userRepo.js";
@@ -29,7 +29,7 @@ import { apiRateLimiter } from "../middleware/rateLimiter.js";
 import { signGuestCookie, GUEST_COOKIE_NAME } from "../middleware/identity.js";
 import { runArchiveAndPurgeJobOnce } from "../services/archiveJob.js";
 import { roomsRouter } from "../routes/rooms.js";
-import { createLogger, requestLogger } from "../middleware/logger.js";
+import { createLogger } from "../middleware/logger.js";
 
 describe("Room & Roles API (Task T05)", () => {
   beforeAll(async () => {
@@ -1219,7 +1219,9 @@ describe("Room & Roles API (Task T05)", () => {
      * rejected with 403 on any member-gated endpoint.
      */
     it("removed guest receives 403 FORBIDDEN on subsequent room actions", async () => {
-      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const { agent: ownerAgent } = await getAuthenticatedAgent({
+        displayName: "Owner",
+      });
       const roomRes = await ownerAgent
         .post("/api/v1/rooms")
         .set("X-Requested-With", "pairprep")
@@ -1251,13 +1253,15 @@ describe("Room & Roles API (Task T05)", () => {
 
       // Guest attempts to GET room details (member-gated full DTO requires membership)
       // The guest cookie is still valid (signed, not expired) but the guest is no longer a member.
-      // requireMember will return 403 FORBIDDEN.
       const afterRemoval = await request(app)
         .get(`/api/v1/rooms/${slug}`)
         .set("Cookie", guestCookie);
+      // Non-member receives public DTO on GET: room only, no currentMember or members
+      expect(afterRemoval.status).toBe(200);
+      expect(afterRemoval.body.currentMember).toBeUndefined();
+      expect(afterRemoval.body.members).toBeUndefined();
 
-      // GET /:slug returns 200 public DTO for non-members â€” but PATCH, DELETE, POST /end
-      // all require membership. Use PATCH (member + owner role required) to confirm 403.
+      // Use PATCH (member + owner role required) to confirm 403 FORBIDDEN
       const patchAfterRemoval = await request(app)
         .patch(`/api/v1/rooms/${slug}/members/${guestMemberDocId}`)
         .set("Cookie", guestCookie)
@@ -1270,20 +1274,21 @@ describe("Room & Roles API (Task T05)", () => {
       expect(patchAfterRemoval.body.error.message).not.toContain(slug);
       expect(patchAfterRemoval.body.error.message).not.toContain(roomId);
 
-      // Also verify GET /join on closed guest still returns 403 via requireMember
+      // Also verify POST /end on removed guest returns 403 via requireMember
       const endRes = await request(app)
         .post(`/api/v1/rooms/${slug}/end`)
         .set("Cookie", guestCookie)
         .set("X-Requested-With", "pairprep");
       expect(endRes.status).toBe(403);
       expect(endRes.body.error.code).toBe("FORBIDDEN");
+      expect(endRes.body.error.message).not.toContain(slug);
     });
 
     /**
      * REVIEWER TEST B: Request logs redact the slug in the path field.
-     * Uses a Writable stream wired into createLogger + requestLogger (same
-     * pattern as logger.test.ts) to capture real JSON log output and assert
-     * that the path field replaces the 22-char base64url slug with ":slug".
+     * Uses a Writable stream wired into createLogger (same pattern as logger.test.ts)
+     * to capture real JSON log output and assert that the path field replaces the
+     * 22-char base64url slug with ":slug".
      */
     it("request logs redact the 22-char slug in path field (real captured log output)", async () => {
       // Capture log output into an in-memory stream
@@ -1359,7 +1364,9 @@ describe("Room & Roles API (Task T05)", () => {
      * Exercises the two error codes the reviewer called out explicitly.
      */
     it("403 FORBIDDEN and 409 ROOM_FULL error bodies never echo the slug", async () => {
-      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const { agent: ownerAgent } = await getAuthenticatedAgent({
+        displayName: "Owner",
+      });
       const roomRes = await ownerAgent
         .post("/api/v1/rooms")
         .set("X-Requested-With", "pairprep")
@@ -1377,7 +1384,7 @@ describe("Room & Roles API (Task T05)", () => {
         });
       }
 
-      // 409 ROOM_FULL â€“ join attempt on a full room
+      // 409 ROOM_FULL – join attempt on a full room
       const fullRes = await request(app)
         .post(`/api/v1/rooms/${slug}/join`)
         .set("X-Requested-With", "pairprep")
@@ -1388,7 +1395,7 @@ describe("Room & Roles API (Task T05)", () => {
       const fullMsg: string = fullRes.body.error.message ?? "";
       expect(fullMsg).not.toContain(slug);
 
-      // 403 FORBIDDEN â€“ non-member tries a member-only action
+      // 403 FORBIDDEN – non-member tries a member-only action
       const { agent: nonMemberAgent } = await getAuthenticatedAgent({
         displayName: "Outsider",
       });

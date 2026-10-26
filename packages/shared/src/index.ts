@@ -353,7 +353,7 @@ export const CreateRoomRequestSchema = z.object({
   type: z.literal("practice").default("practice"),
   language: SupportedLanguageSchema.default("python"),
   timeLimitSec: z.number().min(300).max(7200).optional(),
-  ownerName: z.string().trim().min(1).max(32).optional(),
+  ownerName: z.string().trim().min(1).max(32).default("Anonymous Host"),
 });
 
 export type CreateRoomRequest = z.infer<typeof CreateRoomRequestSchema>;
@@ -362,8 +362,8 @@ export const JoinRoomRequestSchema = z.object({
   displayName: z
     .string()
     .transform(sanitizeDisplayName)
-    .refine((val) => [...val].length >= 1 && [...val].length <= 40, {
-      message: "Display name must be between 1 and 40 characters after trimming",
+    .refine((val) => [...val].length >= 1 && [...val].length <= 32, {
+      message: "Display name must be between 1 and 32 characters after trimming",
     }),
   role: z.enum(["editor", "viewer"]).optional(),
 });

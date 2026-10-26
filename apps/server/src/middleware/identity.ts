@@ -42,7 +42,8 @@ declare global {
  * Derives a dedicated 256-bit HMAC signing key from SESSION_SECRET with domain separation.
  */
 function getGuestSigningKey(): Buffer {
-  const secret = config.SESSION_SECRET || "fallback_secret_must_be_at_least_32_characters_long";
+  const secret =
+    config.SESSION_SECRET || "fallback_secret_must_be_at_least_32_characters_long";
   return crypto
     .createHmac("sha256", secret)
     .update("pairprep.guest-cookie-signing-v1")
@@ -54,10 +55,7 @@ function getGuestSigningKey(): Buffer {
  */
 export function signGuestCookie(guestId: string): string {
   const key = getGuestSigningKey();
-  const signature = crypto
-    .createHmac("sha256", key)
-    .update(guestId)
-    .digest("base64url");
+  const signature = crypto.createHmac("sha256", key).update(guestId).digest("base64url");
   return `${guestId}.${signature}`;
 }
 
@@ -196,11 +194,7 @@ export async function identify(
 /**
  * Guard requiring a principal (signed-in user OR verified guest).
  */
-export function requirePrincipal(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void {
+export function requirePrincipal(req: Request, res: Response, next: NextFunction): void {
   if (!req.principal) {
     const requestId =
       (res.getHeader("X-Request-Id") as string) ||
@@ -221,11 +215,7 @@ export function requirePrincipal(
 /**
  * Guard requiring an authenticated user (rejects guests with 401).
  */
-export function requireUser(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void {
+export function requireUser(req: Request, res: Response, next: NextFunction): void {
   if (!req.principal || req.principal.type !== "user") {
     const requestId =
       (res.getHeader("X-Request-Id") as string) ||

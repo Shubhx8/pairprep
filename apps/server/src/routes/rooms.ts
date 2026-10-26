@@ -11,7 +11,12 @@ import {
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo, RoomFullError } from "../repos/roomMemberRepo.js";
 import { guestRepo } from "../repos/guestRepo.js";
-import { requireUser, requirePrincipal, setGuestCookie, UserPrincipal } from "../middleware/identity.js";
+import {
+  requireUser,
+  requirePrincipal,
+  setGuestCookie,
+  UserPrincipal,
+} from "../middleware/identity.js";
 import {
   requireMember,
   requireRole,
@@ -256,6 +261,15 @@ roomsRouter.post(
       // 1. Signed-in user join (takes precedence over any guest cookie)
       if (req.principal?.type === "user") {
         const user = req.principal;
+        const existingMember = await roomMemberRepo.findMember(room.id, user.id);
+        if (existingMember) {
+          res.json({
+            room: toRoomDto(room),
+            currentMember: toRoomMemberDto(existingMember),
+          });
+          return;
+        }
+
         const member = await roomMemberRepo.addMember({
           roomId: room.id,
           memberId: user.id,
@@ -353,10 +367,10 @@ roomsRouter.post(
 roomsRouter.patch(
   "/:slug/members/:id",
   requirePrincipal,
+  idempotencyMiddleware,
   requireMember,
   requireRole(["owner"]),
   requireOpenRoom,
-  idempotencyMiddleware,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = getRequestId(req, res);
     const targetId = getParam(req.params.id);
@@ -459,9 +473,9 @@ roomsRouter.delete(
 roomsRouter.post(
   "/:slug/end",
   requirePrincipal,
+  idempotencyMiddleware,
   requireMember,
   requireRole(["owner"]),
-  idempotencyMiddleware,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const room = req.room!;
@@ -486,9 +500,9 @@ roomsRouter.post(
 roomsRouter.delete(
   "/:slug",
   requireUser,
+  idempotencyMiddleware,
   requireMember,
   requireRole(["owner"]),
-  idempotencyMiddleware,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const room = req.room!;

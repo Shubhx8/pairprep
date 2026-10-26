@@ -24,6 +24,7 @@ export const roomCreationLimiter = rateLimit({
       },
     });
   },
+  validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
 });
 
 /**
@@ -51,4 +52,5 @@ export const roomJoinLookupLimiter = rateLimit({
       },
     });
   },
+  validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
 });

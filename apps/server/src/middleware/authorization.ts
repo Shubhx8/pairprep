@@ -132,11 +132,7 @@ export function requireRole(allowedRoles: UserRole[]) {
  * Validates that the room is in "open" status.
  * Rejects ended or archived rooms with 409 ROOM_CLOSED.
  */
-export function requireOpenRoom(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void {
+export function requireOpenRoom(req: Request, res: Response, next: NextFunction): void {
   const requestId =
     (res.getHeader("X-Request-Id") as string) ||
     (req.headers["x-request-id"] as string) ||

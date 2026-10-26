@@ -44,11 +44,14 @@ export function startArchiveJob(): void {
 
   // Schedule daily interval (24 hours) unreferenced so it does not block process exit
   if (!archiveInterval) {
-    archiveInterval = setInterval(() => {
-      runArchiveAndPurgeJobOnce().catch((err) => {
-        rootLogger.error({ err }, "[ArchiveJob] Daily scheduled run failed");
-      });
-    }, 24 * 60 * 60 * 1000);
+    archiveInterval = setInterval(
+      () => {
+        runArchiveAndPurgeJobOnce().catch((err) => {
+          rootLogger.error({ err }, "[ArchiveJob] Daily scheduled run failed");
+        });
+      },
+      24 * 60 * 60 * 1000
+    );
     archiveInterval.unref();
   }
 }

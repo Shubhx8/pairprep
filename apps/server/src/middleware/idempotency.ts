@@ -52,8 +52,8 @@ export function idempotencyMiddleware(
   res: Response,
   next: NextFunction
 ): void {
-  const rawKey = (req.headers["idempotency-key"] ||
-    req.headers["x-idempotency-key"]) as string | undefined;
+  const rawKey = (req.headers["idempotency-key"] || req.headers["x-idempotency-key"]) as
+    string | undefined;
 
   if (!rawKey) {
     return next();
@@ -96,6 +96,10 @@ export function idempotencyMiddleware(
 
       if (reserveResult.status === "completed" && reserveResult.record) {
         const cached = reserveResult.record;
+        if (cached.statusCode === 204) {
+          res.status(204).end();
+          return;
+        }
         res.status(cached.statusCode || 200).json(cached.response || {});
         return;
       }
@@ -121,6 +125,10 @@ export function idempotencyMiddleware(
               return setupLeaseHandling(retryReserve.record.startedAt);
             }
             if (retryReserve.status === "completed" && retryReserve.record) {
+              if (retryReserve.record.statusCode === 204) {
+                res.status(204).end();
+                return;
+              }
               res
                 .status(retryReserve.record.statusCode || 200)
                 .json(retryReserve.record.response || {});
@@ -133,8 +141,7 @@ export function idempotencyMiddleware(
             res.status(422).json({
               error: {
                 code: "IDEMPOTENCY_KEY_REUSED",
-                message:
-                  "Idempotency key was previously used with a different payload",
+                message: "Idempotency key was previously used with a different payload",
                 requestId,
               },
             });
@@ -142,9 +149,11 @@ export function idempotencyMiddleware(
           }
 
           if (current.status === "completed") {
-            res
-              .status(current.statusCode || 200)
-              .json(current.response || {});
+            if (current.statusCode === 204) {
+              res.status(204).end();
+              return;
+            }
+            res.status(current.statusCode || 200).json(current.response || {});
             return;
           }
         }
@@ -152,8 +161,7 @@ export function idempotencyMiddleware(
         res.status(409).json({
           error: {
             code: "CONCURRENT_REQUEST_IN_PROGRESS",
-            message:
-              "A request with this idempotency key is currently being processed",
+            message: "A request with this idempotency key is currently being processed",
             requestId,
           },
         });
@@ -185,12 +193,7 @@ export function idempotencyMiddleware(
       finalized = true;
 
       const statusCode = res.statusCode;
-      if (
-        statusCode >= 200 &&
-        statusCode < 300 &&
-        responseBody &&
-        typeof responseBody === "object"
-      ) {
+      if (statusCode >= 200 && statusCode < 300) {
         // Cache DTO only, strictly fenced on startedAt lease
         await idempotencyRepo.completeKey(
           key,
@@ -198,7 +201,9 @@ export function idempotencyMiddleware(
           route,
           leaseStartedAt,
           statusCode,
-          responseBody as Record<string, unknown>
+          responseBody && typeof responseBody === "object"
+            ? (responseBody as Record<string, unknown>)
+            : {}
         );
       } else {
         // Delete key on any failure / non-2xx outcome, fenced on startedAt

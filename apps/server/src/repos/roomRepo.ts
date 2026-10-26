@@ -117,7 +117,12 @@ export class RoomRepo {
     status: "open" | "live" | "ended" | "archived"
   ): Promise<IRoom | null> {
     const now = new Date();
-    const update: { status: string; startedAt?: Date; endedAt?: Date; lastActivityAt: Date } = {
+    const update: {
+      status: string;
+      startedAt?: Date;
+      endedAt?: Date;
+      lastActivityAt: Date;
+    } = {
       status,
       lastActivityAt: now,
     };

@@ -1235,7 +1235,8 @@ describe("Room & Roles API (Task T05)", () => {
       expect(joinRes.status).toBe(200);
 
       const guestMemberDocId = joinRes.body.currentMember.id;
-      const guestCookie = (joinRes.headers["set-cookie"] as string[] | undefined)?.[0] || "";
+      const guestCookie =
+        (joinRes.headers["set-cookie"] as string[] | undefined)?.[0] || "";
       expect(guestCookie).toBeTruthy();
 
       // Owner removes the guest
@@ -1319,7 +1320,13 @@ describe("Room & Roles API (Task T05)", () => {
           );
 
           childLog[level](
-            { requestId: reqId, method: req.method, path: sanitizedPath, statusCode, durationMs },
+            {
+              requestId: reqId,
+              method: req.method,
+              path: sanitizedPath,
+              statusCode,
+              durationMs,
+            },
             "HTTP request completed"
           );
         });
@@ -1395,4 +1402,3 @@ describe("Room & Roles API (Task T05)", () => {
     });
   });
 });
-

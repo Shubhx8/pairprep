@@ -29,7 +29,7 @@ import { apiRateLimiter } from "../middleware/rateLimiter.js";
 import { signGuestCookie, GUEST_COOKIE_NAME } from "../middleware/identity.js";
 import { runArchiveAndPurgeJobOnce } from "../services/archiveJob.js";
 import { roomsRouter } from "../routes/rooms.js";
-import { createLogger } from "../middleware/logger.js";
+import { createLogger, createRequestLogger } from "../middleware/logger.js";
 
 describe("Room & Roles API (Task T05)", () => {
   beforeAll(async () => {
@@ -503,6 +503,11 @@ describe("Room & Roles API (Task T05)", () => {
         });
       }
 
+      let removalResult = false;
+      const removalOp = async () => {
+        removalResult = await roomMemberRepo.removeByMemberId(roomId, "seed_1");
+      };
+
       // Mix 8 concurrent operations: 6 joins, 1 removal, 1 stale trigger
       const ops = [
         ...Array.from({ length: 6 }).map((_, i) =>
@@ -511,7 +516,7 @@ describe("Room & Roles API (Task T05)", () => {
             .set("X-Requested-With", "pairprep")
             .send({ displayName: `Mixer ${i}` })
         ),
-        roomMemberRepo.removeMember(roomId, "seed_1"),
+        removalOp(),
         (async () => {
           await RoomModel.findByIdAndUpdate(roomId, {
             memberCountUpdatedAt: new Date(Date.now() - 75000),
@@ -521,10 +526,12 @@ describe("Room & Roles API (Task T05)", () => {
 
       await Promise.allSettled(ops);
 
+      expect(removalResult).toBe(true);
       const finalRoom = await RoomModel.findById(roomId);
       const actualDocs = await RoomMemberModel.countDocuments({ roomId });
       expect(finalRoom?.memberCount).toBeLessThanOrEqual(6);
       expect(actualDocs).toBeLessThanOrEqual(6);
+      expect(finalRoom?.memberCount).toBeGreaterThanOrEqual(actualDocs);
     });
 
     it("same-principal parallel join creates only 1 membership document", async () => {
@@ -626,6 +633,74 @@ describe("Room & Roles API (Task T05)", () => {
       expect(joinBRes.headers["set-cookie"]).toBeDefined();
       const cookieB = (joinBRes.headers["set-cookie"] as string[] | undefined)?.[0] || "";
       expect(cookieB).not.toBe(cookieA);
+
+      // Verify Room A membership is gone and Room A memberCount decremented
+      await new Promise((r) => setTimeout(r, 60));
+      const roomAMembers = await RoomMemberModel.find({ roomId: roomA.body.room.id });
+      expect(roomAMembers.length).toBe(1); // Only room owner remains
+      const updatedRoomA = await RoomModel.findById(roomA.body.room.id);
+      expect(updatedRoomA?.memberCount).toBe(1);
+    });
+
+    it("expired guest cookie clears cookie and returns 401 on protected route", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent();
+      const room = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Expired Cookie Room" });
+      const slug = room.body.room.slug;
+
+      // Join room as guest
+      const joinRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Soon Expired" });
+      const guestCookie =
+        (joinRes.headers["set-cookie"] as string[] | undefined)?.[0] || "";
+      const guestDoc = await GuestModel.findOne({ displayName: "Soon Expired" });
+      expect(guestDoc).not.toBeNull();
+      // Manually expire the guest document in MongoDB
+      await GuestModel.findByIdAndUpdate(guestDoc!._id, {
+        expiresAt: new Date(Date.now() - 10000),
+      });
+
+      // Attempt protected action with expired cookie
+      const res = await request(app)
+        .post(`/api/v1/rooms/${slug}/end`)
+        .set("Cookie", guestCookie)
+        .set("X-Requested-With", "pairprep");
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
+      expect(res.headers["set-cookie"]).toBeDefined(); // Cookie cleared
+    });
+
+    it("wrong-room guest cookie receives 403 FORBIDDEN on member actions in a different room", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent();
+      const roomA = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Room Alpha" });
+      const roomB = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Room Beta" });
+
+      // Guest joins Room A
+      const joinRes = await request(app)
+        .post(`/api/v1/rooms/${roomA.body.room.slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Alpha Guest" });
+      const cookieA = (joinRes.headers["set-cookie"] as string[] | undefined)?.[0] || "";
+
+      // Present Room A cookie for a member-gated action on Room B
+      const actionRes = await request(app)
+        .post(`/api/v1/rooms/${roomB.body.room.slug}/end`)
+        .set("Cookie", cookieA)
+        .set("X-Requested-With", "pairprep");
+
+      expect(actionRes.status).toBe(403);
+      expect(actionRes.body.error.code).toBe("FORBIDDEN");
     });
   });
 
@@ -1133,12 +1208,16 @@ describe("Room & Roles API (Task T05)", () => {
       const { agent, user } = await getAuthenticatedAgent();
       const key = crypto.randomUUID();
 
-      // Simulate a created room with this idempotency key
+      // Simulate a created room with this idempotency key where server crashed before owner member insert
       const created = await roomRepo.createRoom({
         title: "Crash Recovery Room",
         ownerId: user.id,
         idempotencyKey: key,
       });
+
+      // Assert no owner member exists prior to the retry
+      const ownerBefore = await roomMemberRepo.findMember(created.id, user.id);
+      expect(ownerBefore).toBeNull();
 
       // A retry arrives
       const res = await agent
@@ -1148,6 +1227,14 @@ describe("Room & Roles API (Task T05)", () => {
         .send({ title: "Crash Recovery Room" });
       expect(res.status).toBe(201);
       expect(res.body.room.id).toBe(created.id);
+      expect(res.body.currentMember).toBeDefined();
+      expect(res.body.currentMember.role).toBe("owner");
+      expect(res.body.currentMember.displayName).toBe(user.displayName);
+
+      // Verify owner member was created in DB
+      const ownerAfter = await roomMemberRepo.findMember(created.id, user.id);
+      expect(ownerAfter).not.toBeNull();
+      expect(ownerAfter?.memberId).toBe(user.id);
     });
 
     it("10. invalid UUID idempotency key returns 400 INVALID_IDEMPOTENCY_KEY", async () => {
@@ -1300,43 +1387,10 @@ describe("Room & Roles API (Task T05)", () => {
         },
       });
 
-      // Build a minimal test app wired with requestLogger using our capture logger
+      // Build a minimal test app wired directly with the production requestLogger factory
       const captureLogger = createLogger(captureStream);
       const testApp = express();
-
-      // Wire requestLogger manually, replacing rootLogger with captureLogger
-      testApp.use((req, res, next) => {
-        const start = performance.now();
-        const reqId = crypto.randomUUID();
-        res.setHeader("X-Request-Id", reqId);
-        const childLog = captureLogger.child({ requestId: reqId });
-
-        res.on("finish", () => {
-          const durationMs = Math.round((performance.now() - start) * 100) / 100;
-          const statusCode = res.statusCode;
-          const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
-          const rawUrl = req.originalUrl || req.url || "/";
-          const pathWithoutQuery = rawUrl.split("?")[0] || "/";
-
-          // Apply the same slug-redaction regex used in production requestLogger
-          const sanitizedPath = pathWithoutQuery.replace(
-            /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}(\/|$)/,
-            "$1:slug$2"
-          );
-
-          childLog[level](
-            {
-              requestId: reqId,
-              method: req.method,
-              path: sanitizedPath,
-              statusCode,
-              durationMs,
-            },
-            "HTTP request completed"
-          );
-        });
-        next();
-      });
+      testApp.use(createRequestLogger(captureLogger));
 
       // Attach a stub handler for the rooms/:slug path
       testApp.get("/api/v1/rooms/:slug", (_req, res) => {
@@ -1384,6 +1438,9 @@ describe("Room & Roles API (Task T05)", () => {
         });
       }
 
+      // Count guests before join attempt
+      const guestsBefore = await GuestModel.countDocuments({ roomId });
+
       // 409 ROOM_FULL – join attempt on a full room
       const fullRes = await request(app)
         .post(`/api/v1/rooms/${slug}/join`)
@@ -1394,6 +1451,10 @@ describe("Room & Roles API (Task T05)", () => {
       // Error message must not leak the slug
       const fullMsg: string = fullRes.body.error.message ?? "";
       expect(fullMsg).not.toContain(slug);
+
+      // Assert no orphan guest document after join failure
+      const guestsAfter = await GuestModel.countDocuments({ roomId });
+      expect(guestsAfter).toBe(guestsBefore);
 
       // 403 FORBIDDEN – non-member tries a member-only action
       const { agent: nonMemberAgent } = await getAuthenticatedAgent({

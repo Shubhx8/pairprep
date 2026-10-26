@@ -59,48 +59,58 @@ export const rootLogger = createLogger();
  * 4. Logs paths WITHOUT query strings to prevent OAuth/token leaks.
  * 5. Strictly never logs request bodies, code, or chat text per PRD OBS-1.
  */
-export function requestLogger(
-  req: RequestWithId,
-  res: Response,
-  next: NextFunction
-): void {
-  const start = performance.now();
-  const incomingId = req.headers["x-request-id"] as string | undefined;
+/**
+ * Factory creating request logging middleware.
+ * Uses rootLogger by default, or accepts a custom Logger instance (e.g. for testing log output streams).
+ */
+export function createRequestLogger(
+  logger: Logger = rootLogger
+): (req: RequestWithId, res: Response, next: NextFunction) => void {
+  return function requestLoggerMiddleware(
+    req: RequestWithId,
+    res: Response,
+    next: NextFunction
+  ): void {
+    const start = performance.now();
+    const incomingId = req.headers["x-request-id"] as string | undefined;
 
-  // Validate strict UUID format. If invalid or missing, generate a new UUID.
-  const requestId = isValidUUID(incomingId) ? incomingId! : crypto.randomUUID();
+    // Validate strict UUID format. If invalid or missing, generate a new UUID.
+    const requestId = isValidUUID(incomingId) ? incomingId! : crypto.randomUUID();
 
-  req.id = requestId;
-  res.setHeader("X-Request-Id", requestId);
+    req.id = requestId;
+    res.setHeader("X-Request-Id", requestId);
 
-  // Child logger tagged with requestId for contextual logging
-  req.log = rootLogger.child({ requestId });
+    // Child logger tagged with requestId for contextual logging
+    req.log = logger.child({ requestId });
 
-  res.on("finish", () => {
-    const durationMs = Math.round((performance.now() - start) * 100) / 100;
-    const statusCode = res.statusCode;
-    const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
+    res.on("finish", () => {
+      const durationMs = Math.round((performance.now() - start) * 100) / 100;
+      const statusCode = res.statusCode;
+      const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
 
-    // Strip query string from path to prevent secret/token leaks in logs
-    const rawUrl = req.originalUrl || req.url || "/";
-    const pathWithoutQuery = rawUrl.split("?")[0] || "/";
+      // Strip query string from path to prevent secret/token leaks in logs
+      const rawUrl = req.originalUrl || req.url || "/";
+      const pathWithoutQuery = rawUrl.split("?")[0] || "/";
 
-    // T05: Redact 16+ char base64url or hex slug tokens in /rooms/<slug>
-    const sanitizedPath = pathWithoutQuery.replace(
-      /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}(\/|$)/,
-      "$1:slug$2"
-    );
+      // T05: Redact 16+ char base64url or hex slug tokens in /rooms/<slug>
+      const sanitizedPath = pathWithoutQuery.replace(
+        /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}(\/|$)/,
+        "$1:slug$2"
+      );
 
-    const logData = {
-      requestId,
-      method: req.method,
-      path: sanitizedPath,
-      statusCode,
-      durationMs,
-    };
+      const logData = {
+        requestId,
+        method: req.method,
+        path: sanitizedPath,
+        statusCode,
+        durationMs,
+      };
 
-    req.log?.[level](logData, "HTTP request completed");
-  });
+      req.log?.[level](logData, "HTTP request completed");
+    });
 
-  next();
+    next();
+  };
 }
+
+export const requestLogger = createRequestLogger();

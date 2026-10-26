@@ -100,10 +100,19 @@ roomsRouter.post(
             trimmedIdempotencyKey
           );
           if (existing) {
-            const owner = await roomMemberRepo.findMember(existing.id, user.id);
+            let owner = await roomMemberRepo.findMember(existing.id, user.id);
+            if (!owner) {
+              owner = await roomMemberRepo.addMember({
+                roomId: existing.id,
+                memberId: user.id,
+                displayName: user.displayName,
+                role: "owner",
+                isGuest: false,
+              });
+            }
             res.status(201).json({
               room: toRoomDto(existing),
-              currentMember: owner ? toRoomMemberDto(owner) : undefined,
+              currentMember: toRoomMemberDto(owner),
             });
             return;
           }
@@ -327,14 +336,21 @@ roomsRouter.post(
 
       // Create new Room B guest document and membership first
       const guestDoc = await guestRepo.createGuest(displayName, room.id);
-      const member = await roomMemberRepo.addMember({
-        roomId: room.id,
-        memberId: guestDoc.id,
-        displayName: guestDoc.displayName,
-        role: "editor",
-        isGuest: true,
-        guestExpiresAt: guestDoc.expiresAt,
-      });
+      let member: IRoomMember;
+      try {
+        member = await roomMemberRepo.addMember({
+          roomId: room.id,
+          memberId: guestDoc.id,
+          displayName: guestDoc.displayName,
+          role: "editor",
+          isGuest: true,
+          guestExpiresAt: guestDoc.expiresAt,
+        });
+      } catch (addErr) {
+        // On join failure (e.g. ROOM_FULL), delete the guest created in that request
+        await guestRepo.deleteGuest(guestDoc.id);
+        throw addErr;
+      }
 
       // Set new cookie for Room B
       setGuestCookie(res, guestDoc.id);
@@ -343,7 +359,7 @@ roomsRouter.post(
       if (oldRoomId && oldGuestId) {
         (async () => {
           try {
-            await roomMemberRepo.removeMember(oldRoomId, oldGuestId);
+            await roomMemberRepo.removeByMemberId(oldRoomId, oldGuestId);
             await guestRepo.deleteGuest(oldGuestId);
           } catch {
             // Ignore best-effort cleanup errors

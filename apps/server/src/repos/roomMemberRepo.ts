@@ -219,6 +219,26 @@ export class RoomMemberRepo {
   }
 
   /**
+   * Removes participant by memberId (user id or guest id) and atomically decrements memberCount
+   * if document was deleted and memberCount > 1.
+   */
+  public async removeByMemberId(roomId: string, memberId: string): Promise<boolean> {
+    const result = await RoomMemberModel.findOneAndDelete({
+      roomId,
+      memberId,
+    }).exec();
+
+    if (result) {
+      await RoomModel.updateOne(
+        { _id: roomId, memberCount: { $gt: 1 } },
+        { $inc: { memberCount: -1 }, $set: { memberCountUpdatedAt: new Date() } }
+      ).exec();
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * PRD PER-2: Retrieve rooms owned or joined by user, ordered by joinedAt desc.
    * Uses compound (joinedAt, _id) cursor. Validates cursor strictly; throws 400 INVALID_CURSOR on bad cursor.
    */

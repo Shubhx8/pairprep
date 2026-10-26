@@ -15,9 +15,11 @@ test-results/
 # Local documentation & specifications (kept local, hidden from GitHub)
 # Ignore heavy local-only spec files, but allow docs/notes/** and docs/api-examples.http
 docs/PRD.md
-docs/PHASE1-TASKS.md
-docs/PHASE2-TASKS.md
-docs/PHASE3-TASKS.md
+docs/PHASE*-TASKS.md
+docs/TASKS-*.md
+docs/*.code-workspace
+docs/*plan*.md
+docs/*.txt
 
 # Internal agent & AI instructions (keep private from GitHub)
 AGENTS.md

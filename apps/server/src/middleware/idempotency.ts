@@ -211,7 +211,9 @@ export function idempotencyMiddleware(
       }
     };
 
-    res.on("finish", cleanup);
+    res.on("finish", () => {
+      cleanup().catch(() => {});
+    });
     res.on("close", () => {
       if (!res.writableEnded) {
         idempotencyRepo.deleteKey(key, actorId, route, leaseStartedAt).catch(() => {});

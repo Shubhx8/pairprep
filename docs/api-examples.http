@@ -1,0 +1,112 @@
+### PairPrep API Examples (VS Code REST Client / IntelliJ HTTP Client)
+@baseUrl = http://localhost:3000
+
+### 1. Healthcheck (Stateless - Never sets cookies or creates sessions)
+GET {{baseUrl}}/healthz
+
+### 2. Initiate Google OAuth Flow
+# Browser will be redirected to Google Accounts with PKCE code_challenge and state
+GET {{baseUrl}}/api/v1/auth/google
+
+### 3. Initiate GitHub OAuth Flow
+# Browser will be redirected to GitHub OAuth authorization with state
+GET {{baseUrl}}/api/v1/auth/github
+
+### 4. Get Current User Profile (Unauthenticated -> 401 UNAUTHORIZED)
+GET {{baseUrl}}/api/v1/me
+
+### 5. Get Current User Profile (Authenticated)
+# Replace {{pairprep_session}} with your active session cookie value from browser
+GET {{baseUrl}}/api/v1/me
+Cookie: pairprep.sid=your_session_cookie_here
+
+### 6. Update Profile Display Name (Requires CSRF Header)
+PATCH {{baseUrl}}/api/v1/me
+Content-Type: application/json
+X-Requested-With: pairprep
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "displayName": "Alex Developer"
+}
+
+### 7. Update Profile Display Name - Missing CSRF Header (Returns 403 CSRF_REJECTED)
+PATCH {{baseUrl}}/api/v1/me
+Content-Type: application/json
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "displayName": "Alex Developer"
+}
+
+### 8. Logout (Destroys session in MongoDB and clears cookie)
+POST {{baseUrl}}/api/v1/auth/logout
+X-Requested-With: pairprep
+Cookie: pairprep.sid=your_session_cookie_here
+
+### 9. Create Room (Requires CSRF Header & Optional Idempotency Key)
+POST {{baseUrl}}/api/v1/rooms
+Content-Type: application/json
+X-Requested-With: pairprep
+Idempotency-Key: e1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "title": "Algorithms Practice",
+  "language": "python"
+}
+
+### 10. List My Rooms (Cursor-Paginated)
+GET {{baseUrl}}/api/v1/rooms?limit=10
+Cookie: pairprep.sid=your_session_cookie_here
+
+### 11. Get Public Room Metadata (Unauthenticated or Non-Member)
+GET {{baseUrl}}/api/v1/rooms/your_room_slug_here
+
+### 12. Join Room as Guest (Receives HMAC-signed pairprep.guest cookie)
+POST {{baseUrl}}/api/v1/rooms/your_room_slug_here/join
+Content-Type: application/json
+X-Requested-With: pairprep
+
+{
+  "displayName": "Alice Guest"
+}
+
+### 13. Join Room as Signed-in User (Session Precedence)
+POST {{baseUrl}}/api/v1/rooms/your_room_slug_here/join
+Content-Type: application/json
+X-Requested-With: pairprep
+Cookie: pairprep.sid=your_session_cookie_here
+
+{
+  "displayName": "Alex Developer"
+}
+
+### 14. Change Participant Role (Owner Only, Editor or Viewer)
+PATCH {{baseUrl}}/api/v1/rooms/your_room_slug_here/members/target_member_id_here
+Content-Type: application/json
+X-Requested-With: pairprep
+Idempotency-Key: 11111111-2222-4333-8444-555555555555
+Cookie: pairprep.sid=owner_session_cookie_here
+
+{
+  "role": "viewer"
+}
+
+### 15. Remove Participant from Room (Owner Only)
+DELETE {{baseUrl}}/api/v1/rooms/your_room_slug_here/members/target_member_id_here
+X-Requested-With: pairprep
+Cookie: pairprep.sid=owner_session_cookie_here
+
+### 16. End Room Session (Owner Only, Idempotent)
+POST {{baseUrl}}/api/v1/rooms/your_room_slug_here/end
+X-Requested-With: pairprep
+Idempotency-Key: 22222222-3333-4444-8555-666666666666
+Cookie: pairprep.sid=owner_session_cookie_here
+
+### 17. Delete Room & Cascade All Resources (Owner Only, Cascades Children First)
+DELETE {{baseUrl}}/api/v1/rooms/your_room_slug_here
+X-Requested-With: pairprep
+Idempotency-Key: 33333333-4444-4555-8666-777777777777
+Cookie: pairprep.sid=owner_session_cookie_here
+

@@ -197,6 +197,9 @@ export class RoomMemberRepo {
     roomId: string,
     memberDocId: string
   ): Promise<IRoomMember | null> {
+    if (!mongoose.isValidObjectId(memberDocId)) {
+      return null;
+    }
     return RoomMemberModel.findOne({ roomId, _id: memberDocId }).exec();
   }
 
@@ -205,6 +208,9 @@ export class RoomMemberRepo {
     memberDocId: string,
     role: "owner" | "interviewer" | "candidate" | "editor" | "viewer"
   ): Promise<IRoomMember | null> {
+    if (!mongoose.isValidObjectId(memberDocId)) {
+      return null;
+    }
     return RoomMemberModel.findOneAndUpdate(
       { roomId, _id: memberDocId },
       { $set: { role, lastSeenAt: new Date() } },
@@ -216,6 +222,9 @@ export class RoomMemberRepo {
    * Removes participant and atomically decrements memberCount if document was deleted and memberCount > 1.
    */
   public async removeMember(roomId: string, memberDocId: string): Promise<boolean> {
+    if (!mongoose.isValidObjectId(memberDocId)) {
+      return false;
+    }
     const result = await RoomMemberModel.findOneAndDelete({
       roomId,
       _id: memberDocId,
@@ -251,6 +260,7 @@ export class RoomMemberRepo {
           !decoded ||
           typeof decoded !== "object" ||
           typeof decoded["id"] !== "string" ||
+          !mongoose.isValidObjectId(decoded["id"]) ||
           typeof decoded["joinedAt"] !== "string" ||
           isNaN(Date.parse(decoded["joinedAt"]))
         ) {

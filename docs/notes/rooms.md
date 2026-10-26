@@ -16,8 +16,8 @@ PairPrep supports dual-identity participation across authenticated users and ano
 1. **Signed-in User Precedence**: If a request carries a valid session cookie (`pairprep.sid`), `req.principal` resolves to `{ type: "user", id, displayName, email, role }`. Signed-in users always take strict precedence over any guest cookie present on the request.
 2. **HMAC-Signed Guest Cookie (`pairprep.guest`)**:
    - Format: `<guestId>.<base64url_hmac>`
-   - Key derivation uses domain separation via HKDF:
-     `key = crypto.hkdfSync("sha256", SESSION_SECRET, "", "pairprep-guest-cookie-key", 32)`
+   - Key derivation uses domain separation via HMAC with a dedicated label:
+     `key = crypto.createHmac("sha256", SESSION_SECRET).update("pairprep.guest-cookie-signing-v1").digest()`
    - Constant-time HMAC comparison: `crypto.timingSafeEqual` prevents side-channel timing attacks.
    - Database validation: Even if the signature matches, the server verifies the guest record exists in MongoDB and has not expired.
    - Tamper response: An invalid or expired guest cookie causes immediate cookie clearance (`res.clearCookie`) and treats the request as anonymous (returning 401 on protected routes).
@@ -93,5 +93,5 @@ Mutating operations (`POST /rooms`, `PATCH /rooms/:slug/members/:id`, `POST /roo
 
 3. **Dual Identity & Cryptographic Security**:
    - *Problem*: Users can be logged-in developers (via OAuth) or temporary interview candidates (guests). We need to prevent guest cookie forgery, session hijacking, and cross-room pollution.
-   - *Solution*: I implemented domain-separated HKDF key derivation from `SESSION_SECRET` to sign guest cookies (`<guestId>.<hmac>`). Verification uses `crypto.timingSafeEqual` to eliminate timing side-channels, combined with a MongoDB check to ensure the guest document is still valid and not expired. If a guest moves to another room, we create the new room membership first and dispatch cleanup of the old room best-effort, ensuring availability is never compromised.
+   - *Solution*: I implemented domain-separated HMAC key derivation from `SESSION_SECRET` with a purpose-specific label (`pairprep.guest-cookie-signing-v1`) to sign guest cookies (`<guestId>.<hmac>`). Verification uses `crypto.timingSafeEqual` to eliminate timing side-channels, combined with a MongoDB check to ensure the guest document is still valid and not expired. If a guest moves to another room, we create the new room membership first and dispatch cleanup of the old room best-effort, ensuring availability is never compromised.
 

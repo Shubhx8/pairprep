@@ -5,6 +5,9 @@ export interface IIdempotencyKey extends Document {
   actorId: string;
   route: string;
   requestHash: string;
+  status: "in_progress" | "completed";
+  statusCode?: number;
+  startedAt: Date;
   response?: Record<string, unknown>;
   createdAt: Date;
 }
@@ -15,6 +18,13 @@ const IdempotencyKeySchema = new Schema<IIdempotencyKey>(
     actorId: { type: String, required: true },
     route: { type: String, required: true },
     requestHash: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ["in_progress", "completed"],
+      default: "in_progress",
+    },
+    statusCode: { type: Number },
+    startedAt: { type: Date, default: Date.now },
     response: { type: Schema.Types.Mixed },
     createdAt: { type: Date, default: Date.now },
   },

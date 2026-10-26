@@ -73,3 +73,25 @@ Mutating operations (`POST /rooms`, `PATCH /rooms/:slug/members/:id`, `POST /roo
 - **Inactivity Archiving (`ROOM-6`)**: Rooms with no activity (`lastActivityAt`) for 30 consecutive days are transitioned to `"archived"` status by the background maintenance job.
 - **Expired Guest Member Purge**: Expired guest records are cleaned up from `room_members` via batch query on `guestExpiresAt`, decrementing `memberCount` per room in a single atomic `$inc`.
 - **Cascade Deletion Emptiness**: Room deletion cascades through all 8 dependent collections in child-first order (`room_members`, `doc_updates`, `doc_snapshots`, `messages`, `events`, `client_map`, `guests`, and finally `rooms`).
+
+---
+
+## 6. How to Explain This in an Interview
+
+### System Overview & Problem Statement
+"In PairPrep, rooms represent real-time collaborative coding environments capped at 6 concurrent participants. Week 1 used an in-memory implementation that lost state on restarts and suffered from concurrency race conditions. In Task T05, I designed and built the persistence layer, role-based authorization, cryptographic guest identity system, and an atomic idempotency engine using MongoDB without requiring heavyweight distributed locking like Redis Redlock."
+
+### Key Technical Challenges & Trade-offs
+1. **Atomic Concurrency vs. Distributed Transactions**:
+   - *Problem*: Multi-document transactions in MongoDB require replica sets and introduce higher latency and lock contention. How do we guarantee the 6-participant room limit under high-concurrency race conditions (e.g., 10 simultaneous joins)?
+   - *Solution*: I used a conditional atomic increment (`findOneAndUpdate` with `{ memberCount: { $lt: 6 } }`). The owner's slot is pre-allocated on room creation (`memberCount: 1`). Subsequent joins conditionally increment the counter. If insertion fails due to duplicate principal joining, the unique compound index `{ roomId: 1, memberId: 1 }` catches E11000, rolls back the extra increment, and returns the existing membership.
+   - *Self-Healing*: If transient failures cause counter drift, we self-heal using a fenced recount on `{ memberCount, memberCountUpdatedAt }`, but only if the timestamp is older than 60 seconds to avoid interfering with active concurrent joins.
+
+2. **Idempotency with Lease Fencing**:
+   - *Problem*: Network timeouts or client retries on `POST /rooms` or `DELETE /rooms/:slug` could lead to duplicate rooms or false 404 errors.
+   - *Solution*: I implemented an atomic reservation pattern in MongoDB. The first request wins the reservation lease with a `startedAt` timestamp. If the server crashes mid-flight, a stale lease (>30s) is safely acquired by the next retry. Responses are cached exclusively on 2xx completion, while non-2xx errors delete the reservation immediately so the client can retry cleanly.
+
+3. **Dual Identity & Cryptographic Security**:
+   - *Problem*: Users can be logged-in developers (via OAuth) or temporary interview candidates (guests). We need to prevent guest cookie forgery, session hijacking, and cross-room pollution.
+   - *Solution*: I implemented domain-separated HKDF key derivation from `SESSION_SECRET` to sign guest cookies (`<guestId>.<hmac>`). Verification uses `crypto.timingSafeEqual` to eliminate timing side-channels, combined with a MongoDB check to ensure the guest document is still valid and not expired. If a guest moves to another room, we create the new room membership first and dispatch cleanup of the old room best-effort, ensuring availability is never compromised.
+

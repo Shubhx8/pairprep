@@ -267,6 +267,38 @@ export class RoomMemberRepo {
 
     return { rooms: orderedRooms, nextCursor };
   }
+
+  /**
+   * Daily maintenance: purges expired guest members using distinct roomId query
+   * and atomically decrements memberCount per room by the number of purged members.
+   */
+  public async purgeExpiredGuestMembers(cutoffDate = new Date()): Promise<number> {
+    const roomIds = await RoomMemberModel.distinct("roomId", {
+      guestExpiresAt: { $lte: cutoffDate },
+    });
+
+    let totalPurged = 0;
+
+    for (const roomId of roomIds) {
+      const res = await RoomMemberModel.deleteMany({
+        roomId,
+        guestExpiresAt: { $lte: cutoffDate },
+      }).exec();
+
+      if (res.deletedCount > 0) {
+        totalPurged += res.deletedCount;
+        await RoomModel.updateOne(
+          { _id: roomId, memberCount: { $gt: res.deletedCount } },
+          {
+            $inc: { memberCount: -res.deletedCount },
+            $set: { memberCountUpdatedAt: new Date() },
+          }
+        ).exec();
+      }
+    }
+
+    return totalPurged;
+  }
 }
 
 export const roomMemberRepo = new RoomMemberRepo();

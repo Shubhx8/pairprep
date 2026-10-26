@@ -85,10 +85,16 @@ export function requestLogger(
     const rawUrl = req.originalUrl || req.url || "/";
     const pathWithoutQuery = rawUrl.split("?")[0] || "/";
 
+    // T05: Redact 16+ char base64url or hex slug tokens in /rooms/<slug>
+    const sanitizedPath = pathWithoutQuery.replace(
+      /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}(\/|$)/,
+      "$1:slug$2"
+    );
+
     const logData = {
       requestId,
       method: req.method,
-      path: pathWithoutQuery,
+      path: sanitizedPath,
       statusCode,
       durationMs,
     };

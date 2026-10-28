@@ -35,7 +35,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Idempotency middleware for mutating endpoints.
- * 1. Checks Idempotency-Key (or x-idempotency-key) header.
+ * 1. Checks Idempotency-Key header.
  * 2. Validates UUID format; rejects invalid UUID with 400 INVALID_IDEMPOTENCY_KEY.
  * 3. Hashes request method, full path, and canonically stringified payload.
  * 4. Reserves key with startedAt lease in idempotency_keys collection.

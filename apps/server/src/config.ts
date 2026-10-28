@@ -85,12 +85,20 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
     }
   }
 
-  // In production, require SESSION_SECRET (at least 32 characters) and SITE_ORIGIN
+  // In production, require MONGODB_URI, SESSION_SECRET (at least 32 characters), and https SITE_ORIGIN
   const isProd =
     rawEnv["NODE_ENV"] === "production" ||
     (result.success && result.data.NODE_ENV === "production");
 
   if (isProd) {
+    const mongoUri =
+      rawEnv["MONGODB_URI"] ?? (result.success ? result.data.MONGODB_URI : undefined);
+    if (!mongoUri || !mongoUri.trim()) {
+      if (!missingOrInvalid.includes("MONGODB_URI")) {
+        missingOrInvalid.push("MONGODB_URI");
+      }
+    }
+
     const secret =
       rawEnv["SESSION_SECRET"] ??
       (result.success ? result.data.SESSION_SECRET : undefined);
@@ -99,9 +107,10 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
         missingOrInvalid.push("SESSION_SECRET");
       }
     }
+
     const origin =
       rawEnv["SITE_ORIGIN"] ?? (result.success ? result.data.SITE_ORIGIN : undefined);
-    if (!origin || !origin.trim()) {
+    if (!origin || !origin.trim() || !origin.startsWith("https://")) {
       if (!missingOrInvalid.includes("SITE_ORIGIN")) {
         missingOrInvalid.push("SITE_ORIGIN");
       }

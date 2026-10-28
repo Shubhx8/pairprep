@@ -30,6 +30,7 @@ import { signGuestCookie, GUEST_COOKIE_NAME } from "../middleware/identity.js";
 import { runArchiveAndPurgeJobOnce } from "../services/archiveJob.js";
 import { roomsRouter } from "../routes/rooms.js";
 import { createLogger, createRequestLogger } from "../middleware/logger.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
 describe("Room & Roles API (Task T05)", () => {
   beforeAll(async () => {
@@ -1287,6 +1288,25 @@ describe("Room & Roles API (Task T05)", () => {
       expect(res2.body.room._id).toBeUndefined();
       expect(res2.body.currentMember.__v).toBeUndefined();
     });
+
+    it("12. x-idempotency-key alias is not accepted as an idempotency key", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const legacyKey = crypto.randomUUID();
+      const res1 = await agent
+        .post("/api/v1/rooms")
+        .set("x-idempotency-key", legacyKey)
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "No Alias Room 1" });
+      expect(res1.status).toBe(201);
+
+      const res2 = await agent
+        .post("/api/v1/rooms")
+        .set("x-idempotency-key", legacyKey)
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "No Alias Room 2" });
+      expect(res2.status).toBe(201);
+      expect(res2.body.room.id).not.toBe(res1.body.room.id);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1488,6 +1508,42 @@ describe("Room & Roles API (Task T05)", () => {
       expect(forbiddenRes.body.error.code).toBe("FORBIDDEN");
       const forbiddenMsg: string = forbiddenRes.body.error.message ?? "";
       expect(forbiddenMsg).not.toContain(slug);
+    });
+
+    it("500 raised inside a room route does not log the slug, and no logger prints req.originalUrl, req.url or req.path unredacted", async () => {
+      const logChunks: string[] = [];
+      const captureStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logChunks.push(chunk.toString());
+          callback();
+        },
+      });
+
+      const captureLogger = createLogger(captureStream);
+      const testApp = express();
+      testApp.use(createRequestLogger(captureLogger));
+
+      const realSlug = "aB3dEfGhIjKlMnOpQrStUv";
+      testApp.get("/api/v1/rooms/:slug", (_req, _res) => {
+        throw new Error("Simulated unhandled internal error");
+      });
+      testApp.use(errorHandler);
+
+      const res = await request(testApp).get(`/api/v1/rooms/${realSlug}`);
+      expect(res.status).toBe(500);
+
+      expect(logChunks.length).toBeGreaterThan(0);
+      const rawOutput = logChunks.join("");
+
+      expect(rawOutput).not.toContain(realSlug);
+
+      const parsed = JSON.parse(logChunks[logChunks.length - 1]!);
+      expect(parsed.path).toBe("/api/v1/rooms/:slug");
+      expect(parsed.statusCode).toBe(500);
+
+      expect(parsed.path).not.toContain(realSlug);
+      expect(parsed).not.toHaveProperty("originalUrl");
+      expect(parsed).not.toHaveProperty("url");
     });
   });
 });

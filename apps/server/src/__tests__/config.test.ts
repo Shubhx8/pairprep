@@ -84,11 +84,21 @@ describe("Server Config Module (T01)", () => {
     }
   });
 
-  it("config: in production mode requires SESSION_SECRET (32+ chars) and SITE_ORIGIN", () => {
+  it("config: in production mode requires MONGODB_URI, SESSION_SECRET (32+ chars) and https SITE_ORIGIN", () => {
+    // Missing MONGODB_URI in production
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+        SITE_ORIGIN: "https://pairprep.example.com",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/MONGODB_URI/);
+
     // Missing SESSION_SECRET in production
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
+        MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
         SITE_ORIGIN: "https://pairprep.example.com",
       } as unknown as NodeJS.ProcessEnv)
     ).toThrow(/SESSION_SECRET/);
@@ -97,28 +107,76 @@ describe("Server Config Module (T01)", () => {
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
+        MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
         SESSION_SECRET: "short_secret_under_32_chars",
         SITE_ORIGIN: "https://pairprep.example.com",
       } as unknown as NodeJS.ProcessEnv)
     ).toThrow(/SESSION_SECRET/);
 
+    // Non-https SITE_ORIGIN in production (http rejected)
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
+        SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+        SITE_ORIGIN: "http://pairprep.example.com",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/SITE_ORIGIN/);
+
     // Missing SITE_ORIGIN in production (with empty string)
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
+        MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
         SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
         SITE_ORIGIN: "   ",
       } as unknown as NodeJS.ProcessEnv)
     ).toThrow(/SITE_ORIGIN/);
 
+    // Fails with variable names only
+    try {
+      loadConfig({
+        NODE_ENV: "production",
+        MONGODB_URI: "",
+        SESSION_SECRET: "short",
+        SITE_ORIGIN: "http://insecure.com",
+      } as unknown as NodeJS.ProcessEnv);
+      expect.unreachable("Should have thrown error");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).toContain("MONGODB_URI");
+      expect(msg).toContain("SESSION_SECRET");
+      expect(msg).toContain("SITE_ORIGIN");
+      expect(msg).not.toContain("short");
+      expect(msg).not.toContain("http://insecure.com");
+    }
+
     // Valid production config succeeds
     const validProd = loadConfig({
       NODE_ENV: "production",
+      MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
       SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
       SITE_ORIGIN: "https://pairprep.example.com",
     } as unknown as NodeJS.ProcessEnv);
     expect(validProd.NODE_ENV).toBe("production");
+    expect(validProd.MONGODB_URI).toBe("mongodb://127.0.0.1:27017/pairprep");
     expect(validProd.SESSION_SECRET).toBe("abcdef1234567890abcdef1234567890abcdef12");
     expect(validProd.SITE_ORIGIN).toBe("https://pairprep.example.com");
+  });
+
+  it("config: keeps MONGODB_URI and SESSION_SECRET optional in development and test", () => {
+    const devConfig = loadConfig({
+      NODE_ENV: "development",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(devConfig.MONGODB_URI).toBeUndefined();
+    expect(devConfig.SESSION_SECRET).toBeUndefined();
+    expect(devConfig.SITE_ORIGIN).toBe("http://localhost:3000"); // http allowed in dev
+
+    const testConfig = loadConfig({
+      NODE_ENV: "test",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(testConfig.MONGODB_URI).toBeUndefined();
+    expect(testConfig.SESSION_SECRET).toBeUndefined();
+    expect(testConfig.SITE_ORIGIN).toBe("http://localhost:3000"); // http allowed in test
   });
 });

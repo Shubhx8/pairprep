@@ -12,9 +12,10 @@ playwright-report/
 test-results/
 *.tsbuildinfo
 
+ci-output.txt
+
 # Local documentation & specifications (kept local, hidden from GitHub)
-# Ignore heavy local-only spec files, but allow docs/notes/** and docs/api-examples.http
-docs/PRD.md
+# Ignore heavy local-only spec files, but allow docs/PRD.md, docs/notes/** and docs/api-examples.http
 docs/PHASE*-TASKS.md
 docs/TASKS-*.md
 docs/*.code-workspace

@@ -68,6 +68,7 @@ Mutating operations (`POST /rooms`, `PATCH /rooms/:slug/members/:id`, `POST /roo
 ---
 
 ## 5. Architectural Decisions & Scope Constraints
+- **Unambiguous Member `:id` Semantics**: In all room participant endpoints (`PATCH /api/v1/rooms/:slug/members/:id`, `DELETE /api/v1/rooms/:slug/members/:id`), `:id` strictly represents the unique MongoDB membership document `_id` (`RoomMemberModel._id`), never the underlying principal `memberId` (user ID or guest ID). Role updates and participant removals resolve records exclusively via `roomMemberRepo.findMemberByDocId(roomId, targetId)`, and passing a user or guest ID returns 404 `MEMBER_NOT_FOUND`.
 - **No Leave Endpoint in Phase 1**: Voluntarily leaving a room is not implemented in Phase 1. Disconnection is handled at the network/session level, and rooms expire or are cleaned up via inactivity archiving.
 - **Kick Not Ban**: Member removal (`DELETE /api/v1/rooms/:slug/members/:id`) removes the user's active membership in the room. It does not establish a persistent ban list.
 - **Inactivity Archiving (`ROOM-6`)**: Rooms with no activity (`lastActivityAt`) for 30 consecutive days are transitioned to `"archived"` status by the background maintenance job.

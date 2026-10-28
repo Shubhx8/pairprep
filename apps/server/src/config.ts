@@ -93,7 +93,10 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
   if (isProd) {
     const mongoUri =
       rawEnv["MONGODB_URI"] ?? (result.success ? result.data.MONGODB_URI : undefined);
-    if (!mongoUri || !mongoUri.trim()) {
+    const isValidMongoUri =
+      typeof mongoUri === "string" &&
+      (mongoUri.startsWith("mongodb://") || mongoUri.startsWith("mongodb+srv://"));
+    if (!mongoUri || !mongoUri.trim() || !isValidMongoUri) {
       if (!missingOrInvalid.includes("MONGODB_URI")) {
         missingOrInvalid.push("MONGODB_URI");
       }
@@ -110,7 +113,11 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
 
     const origin =
       rawEnv["SITE_ORIGIN"] ?? (result.success ? result.data.SITE_ORIGIN : undefined);
-    if (!origin || !origin.trim() || !origin.startsWith("https://")) {
+    const isHttps = typeof origin === "string" && origin.startsWith("https://");
+    const isHttpLocalhost =
+      typeof origin === "string" &&
+      (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1"));
+    if (!origin || !origin.trim() || (!isHttps && !isHttpLocalhost)) {
       if (!missingOrInvalid.includes("SITE_ORIGIN")) {
         missingOrInvalid.push("SITE_ORIGIN");
       }

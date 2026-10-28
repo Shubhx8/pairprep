@@ -113,7 +113,17 @@ describe("Server Config Module (T01)", () => {
       } as unknown as NodeJS.ProcessEnv)
     ).toThrow(/SESSION_SECRET/);
 
-    // Non-https SITE_ORIGIN in production (http rejected)
+    // Invalid MONGODB_URI scheme in production (must be mongodb:// or mongodb+srv://)
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        MONGODB_URI: "postgres://user:pass@localhost:5432/db",
+        SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+        SITE_ORIGIN: "https://pairprep.example.com",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/MONGODB_URI/);
+
+    // Non-https SITE_ORIGIN in production (http rejected for non-localhost)
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
@@ -122,6 +132,15 @@ describe("Server Config Module (T01)", () => {
         SITE_ORIGIN: "http://pairprep.example.com",
       } as unknown as NodeJS.ProcessEnv)
     ).toThrow(/SITE_ORIGIN/);
+
+    // http is allowed for localhost in production
+    const localhostProd = loadConfig({
+      NODE_ENV: "production",
+      MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
+      SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+      SITE_ORIGIN: "http://localhost:3000",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(localhostProd.SITE_ORIGIN).toBe("http://localhost:3000");
 
     // Missing SITE_ORIGIN in production (with empty string)
     expect(() =>
@@ -151,15 +170,17 @@ describe("Server Config Module (T01)", () => {
       expect(msg).not.toContain("http://insecure.com");
     }
 
-    // Valid production config succeeds
+    // Valid production config with https and mongodb+srv succeeds
     const validProd = loadConfig({
       NODE_ENV: "production",
-      MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
+      MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/pairprep",
       SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
       SITE_ORIGIN: "https://pairprep.example.com",
     } as unknown as NodeJS.ProcessEnv);
     expect(validProd.NODE_ENV).toBe("production");
-    expect(validProd.MONGODB_URI).toBe("mongodb://127.0.0.1:27017/pairprep");
+    expect(validProd.MONGODB_URI).toBe(
+      "mongodb+srv://user:pass@cluster.mongodb.net/pairprep"
+    );
     expect(validProd.SESSION_SECRET).toBe("abcdef1234567890abcdef1234567890abcdef12");
     expect(validProd.SITE_ORIGIN).toBe("https://pairprep.example.com");
   });

@@ -18,6 +18,14 @@ export function isValidUUID(id?: string): boolean {
 }
 
 /**
+ * Returns the X-Request-Id header from the response.
+ */
+export function getRequestId(res: Response): string {
+  if (!res || typeof res.getHeader !== "function") return "";
+  return (res.getHeader("X-Request-Id") as string) || "";
+}
+
+/**
  * Creates a configured Pino logger instance with strict redaction of sensitive credentials.
  */
 export function createLogger(destination?: DestinationStream): Logger {

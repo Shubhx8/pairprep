@@ -172,7 +172,7 @@ describe("User Profile Endpoints (T04 / PRD 6.1 AUTH-5 / 13.1)", () => {
 
     expect(resEmpty.status).toBe(400);
     expect(resEmpty.body.error).toBeDefined();
-    expect(resEmpty.body.error.code).toBe("VALIDATION_FAILED");
+    expect(resEmpty.body.error.code).toBe("VALIDATION_ERROR");
 
     // 3. Name exceeding 40 characters -> rejected 400
     const resTooLong = await agent
@@ -181,7 +181,7 @@ describe("User Profile Endpoints (T04 / PRD 6.1 AUTH-5 / 13.1)", () => {
       .send({ displayName: "A".repeat(41) });
 
     expect(resTooLong.status).toBe(400);
-    expect(resTooLong.body.error.code).toBe("VALIDATION_FAILED");
+    expect(resTooLong.body.error.code).toBe("VALIDATION_ERROR");
   });
 
   it("me: PATCH /me rejects unrecognized extraneous fields under strict Zod validation", async () => {
@@ -195,7 +195,7 @@ describe("User Profile Endpoints (T04 / PRD 6.1 AUTH-5 / 13.1)", () => {
     });
 
     expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe("VALIDATION_FAILED");
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
   it("me: PATCH /me rejects avatarUrl with 400 (display name only, AUTH-5)", async () => {
@@ -210,6 +210,6 @@ describe("User Profile Endpoints (T04 / PRD 6.1 AUTH-5 / 13.1)", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBeDefined();
-    expect(res.body.error.code).toBe("VALIDATION_FAILED");
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 });

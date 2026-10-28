@@ -91,13 +91,6 @@ export class RoomRepo {
     return RoomModel.findOne({ ownerId, idempotencyKey }).exec();
   }
 
-  /**
-   * PRD PER-2: Retrieve rooms owned by a user, sorted newest first
-   */
-  public async listByOwner(ownerId: string): Promise<IRoom[]> {
-    return RoomModel.find({ ownerId }).sort({ createdAt: -1 }).exec();
-  }
-
   public async touchActivity(roomId: string): Promise<void> {
     await RoomModel.findByIdAndUpdate(roomId, {
       $set: { lastActivityAt: new Date() },

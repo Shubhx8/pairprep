@@ -175,24 +175,36 @@ describe("Session Management & Security (T04 / PRD 6.1 AUTH-4)", () => {
     expect(sessionCount).toBe(0);
   });
 
-  it("session: returns 503 DATABASE_UNAVAILABLE when session middleware encounters a store failure", async () => {
-    const express = (await import("express")).default;
-    const testApp = express();
+  it("session: returns fast 503 DATABASE_UNAVAILABLE when MONGODB_URI is unset (no hang)", async () => {
+    const originalUri = config.MONGODB_URI;
+    try {
+      config.MONGODB_URI = undefined;
+      const start = performance.now();
+      const res = await request(app).get("/api/v1/auth/google");
+      const duration = performance.now() - start;
 
-    testApp.use((_req, res) => {
-      res.status(503).json({
-        error: {
-          code: "DATABASE_UNAVAILABLE",
-          message: "Session service temporarily unavailable",
-          requestId: (res.getHeader("X-Request-Id") as string) || "mock-req-503",
-        },
-      });
-    });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toBeDefined();
+      expect(res.body.error.code).toBe("DATABASE_UNAVAILABLE");
+      expect(duration).toBeLessThan(1000); // Fast response, no 5s hang
+    } finally {
+      config.MONGODB_URI = originalUri;
+    }
+  });
 
-    const res = await request(testApp).get("/api/v1/me");
-    expect(res.status).toBe(503);
-    expect(res.body.error).toBeDefined();
-    expect(res.body.error.code).toBe("DATABASE_UNAVAILABLE");
-    expect(res.body.error.message).toBe("Session service temporarily unavailable");
+  it("session: returns 503 on database disconnect, then recovers cleanly upon reconnect", async () => {
+    // Disconnect the database
+    await mongoose.disconnect();
+
+    const disconnectedRes = await request(app).get("/api/v1/auth/google");
+    expect(disconnectedRes.status).toBe(503);
+    expect(disconnectedRes.body.error.code).toBe("DATABASE_UNAVAILABLE");
+
+    // Reconnect database
+    await setupTestDb("auth_session");
+
+    const recoveredRes = await request(app).get("/api/v1/auth/google");
+    expect(recoveredRes.status).toBe(302);
+    expect(recoveredRes.headers["set-cookie"]).toBeDefined();
   });
 });

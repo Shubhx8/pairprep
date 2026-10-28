@@ -79,7 +79,7 @@ describe("Room Model & Repository (PRD ROOM-1, ROOM-2, ROOM-6, PER-2)", () => {
       ownerId,
     });
 
-    const rooms = await roomRepo.listByOwner(ownerId);
+    const rooms = await RoomModel.find({ ownerId }).sort({ createdAt: -1 }).exec();
     expect(rooms.length).toBe(2);
     expect(rooms[0]?._id.toString()).toBe(r2._id.toString());
     expect(rooms[1]?._id.toString()).toBe(r1._id.toString());

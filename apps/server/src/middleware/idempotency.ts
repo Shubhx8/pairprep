@@ -47,19 +47,28 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  *    - 2xx response -> cached in collection, fenced strictly on startedAt
  *    - Non-2xx response or crash -> key deleted, fenced strictly on startedAt, allowing clean retries
  */
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      idempotencyKey?: string;
+    }
+  }
+}
+
 export function idempotencyMiddleware(
   req: Request,
   res: Response,
   next: NextFunction
 ): void {
-  const rawKey = (req.headers["idempotency-key"] || req.headers["x-idempotency-key"]) as
-    string | undefined;
+  const rawKey = req.headers["idempotency-key"] as string | undefined;
 
   if (!rawKey) {
     return next();
   }
 
   const key = rawKey.trim();
+  req.idempotencyKey = key;
   const requestId =
     (res.getHeader("X-Request-Id") as string) ||
     (req.headers["x-request-id"] as string) ||

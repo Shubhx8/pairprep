@@ -83,4 +83,42 @@ describe("Server Config Module (T01)", () => {
       expect(errorMessage).not.toContain("too-short");
     }
   });
+
+  it("config: in production mode requires SESSION_SECRET (32+ chars) and SITE_ORIGIN", () => {
+    // Missing SESSION_SECRET in production
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        SITE_ORIGIN: "https://pairprep.example.com",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/SESSION_SECRET/);
+
+    // Short SESSION_SECRET in production
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        SESSION_SECRET: "short_secret_under_32_chars",
+        SITE_ORIGIN: "https://pairprep.example.com",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/SESSION_SECRET/);
+
+    // Missing SITE_ORIGIN in production (with empty string)
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+        SITE_ORIGIN: "   ",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/SITE_ORIGIN/);
+
+    // Valid production config succeeds
+    const validProd = loadConfig({
+      NODE_ENV: "production",
+      SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+      SITE_ORIGIN: "https://pairprep.example.com",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(validProd.NODE_ENV).toBe("production");
+    expect(validProd.SESSION_SECRET).toBe("abcdef1234567890abcdef1234567890abcdef12");
+    expect(validProd.SITE_ORIGIN).toBe("https://pairprep.example.com");
+  });
 });

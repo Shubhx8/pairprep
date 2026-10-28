@@ -54,6 +54,14 @@ export function errorHandler(
     code = "PAYLOAD_TOO_LARGE";
     message = "Payload exceeds 100 KB limit";
   } else if (
+    errObj["type"] === "encoding.unsupported" ||
+    errObj["status"] === 415 ||
+    errObj["statusCode"] === 415
+  ) {
+    statusCode = 415;
+    code = "UNSUPPORTED_MEDIA_TYPE";
+    message = "Unsupported content encoding";
+  } else if (
     errObj["type"] === "entity.parse.failed" ||
     (err instanceof SyntaxError &&
       (errObj["status"] === 400 || errObj["statusCode"] === 400))

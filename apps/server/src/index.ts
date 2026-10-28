@@ -37,6 +37,10 @@ const PORT = config.PORT;
 // Trust proxy set to 1 for reverse proxy (Caddy on Azure VM per AD-1)
 app.set("trust proxy", 1);
 
+// Structured JSON request logging & X-Request-Id tagging mounted FIRST
+// Ensures all requests (including rate-limited, rejected CORS, and oversized bodies) are tagged and logged
+app.use(requestLogger);
+
 // Security headers with Helmet: CSP set to report-only mode for Monaco editor compatibility
 app.use(
   helmet({
@@ -76,19 +80,16 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(new Error("CORS policy violation: origin not allowed"), false);
+      return callback(null, false);
     },
     credentials: true,
   })
 );
 
-// Content-Type validation and strict 100 KB JSON payload size limit
+// Content-Type validation and strict 100 KB JSON payload size limit with inflate: false
 app.use(validateContentType);
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "100kb", inflate: false }));
 app.use(cookieParser());
-
-// Structured JSON request logging & X-Request-Id tagging
-app.use(requestLogger);
 
 // PRD 8.4 / 13.1 / OBS-4 & T03: Stateless healthcheck endpoint returning { status, uptimeSec, version, db }
 // Placed BEFORE sessionMiddleware and rate limiters so health probes never set cookies or create sessions
@@ -102,6 +103,20 @@ app.get("/healthz", (_req: Request, res: Response) => {
   };
 
   const validated = HealthResponseSchema.parse(healthData);
+  res.json(validated);
+});
+
+// Stateless smoke ping endpoint
+app.get("/api/ping", (_req: Request, res: Response) => {
+  const responseData: PingResponse = {
+    status: "ok",
+    message: "PairPrep backend & shared Zod schemas wired successfully",
+    timestamp: new Date().toISOString(),
+    environment:
+      (process.env["NODE_ENV"] as PingResponse["environment"]) || "development",
+  };
+
+  const validated = PingResponseSchema.parse(responseData);
   res.json(validated);
 });
 
@@ -136,20 +151,6 @@ app.use("/api/v1/rooms", roomsRouter);
 // Root smoke test endpoint
 app.get("/", (_req: Request, res: Response) => {
   res.send("Hello from PairPrep Backend!");
-});
-
-// Smoke ping endpoint
-app.get("/api/ping", (_req: Request, res: Response) => {
-  const responseData: PingResponse = {
-    status: "ok",
-    message: "PairPrep backend & shared Zod schemas wired successfully",
-    timestamp: new Date().toISOString(),
-    environment:
-      (process.env["NODE_ENV"] as PingResponse["environment"]) || "development",
-  };
-
-  const validated = PingResponseSchema.parse(responseData);
-  res.json(validated);
 });
 
 // Central 404 handler for unknown routes

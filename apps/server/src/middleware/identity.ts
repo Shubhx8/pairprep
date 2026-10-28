@@ -32,8 +32,6 @@ declare global {
     interface Request {
       principal?: Principal;
       user?: IUser;
-      userId?: string;
-      isGuest?: boolean;
     }
   }
 }
@@ -145,8 +143,6 @@ export async function identify(
       role: passportUser.role,
       user: passportUser,
     };
-    req.userId = passportUser.id;
-    req.isGuest = false;
     return next();
   }
 
@@ -154,8 +150,6 @@ export async function identify(
 
   if (!rawGuestCookie) {
     req.principal = undefined;
-    req.userId = undefined;
-    req.isGuest = true;
     return next();
   }
 
@@ -163,8 +157,6 @@ export async function identify(
   if (!verifiedGuestId) {
     clearGuestCookie(res);
     req.principal = undefined;
-    req.userId = undefined;
-    req.isGuest = true;
     return next();
   }
 
@@ -173,8 +165,6 @@ export async function identify(
     if (!guestDoc || guestDoc.expiresAt.getTime() <= Date.now()) {
       clearGuestCookie(res);
       req.principal = undefined;
-      req.userId = undefined;
-      req.isGuest = true;
       return next();
     }
 
@@ -185,8 +175,6 @@ export async function identify(
       roomId: guestDoc.roomId,
       guest: guestDoc,
     };
-    req.userId = guestDoc.id;
-    req.isGuest = true;
     return next();
   } catch (err) {
     return next(err);

@@ -258,6 +258,8 @@ describe("Room & Roles API (Task T05)", () => {
         .set("X-Requested-With", "pairprep")
         .send({ role: "editor" });
       expect(patchOwner.status).toBe(200);
+      expect(patchOwner.body.member).toBeDefined();
+      expect(patchOwner.body.member.role).toBe("editor");
 
       // Endpoint 5: DELETE /api/v1/rooms/:slug/members/:id (Owner only)
       const delEditor = await editorAgent
@@ -327,7 +329,7 @@ describe("Room & Roles API (Task T05)", () => {
           type: "interview",
         });
       expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe("VALIDATION_FAILED");
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
     });
 
     it("strips control characters from title and rejects empty title", async () => {
@@ -339,10 +341,10 @@ describe("Room & Roles API (Task T05)", () => {
           title: "   \u0000\u001F   ", // empty after stripping
         });
       expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe("VALIDATION_FAILED");
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
     });
 
-    it("rate limit: 11th room creation within 1 hour returns 429 RATE_LIMITED", async () => {
+    it("rate limit: 11th room creation within 1 hour returns 429 RATE_LIMIT_EXCEEDED", async () => {
       const { agent } = await getAuthenticatedAgent();
       for (let i = 0; i < 10; i++) {
         const res = await agent
@@ -357,7 +359,7 @@ describe("Room & Roles API (Task T05)", () => {
         .set("X-Requested-With", "pairprep")
         .send({ title: "Room 11" });
       expect(blocked.status).toBe(429);
-      expect(blocked.body.error.code).toBe("RATE_LIMITED");
+      expect(blocked.body.error.code).toBe("RATE_LIMIT_EXCEEDED");
       expect(blocked.headers["retry-after"]).toBeDefined();
     });
 
@@ -731,7 +733,7 @@ describe("Room & Roles API (Task T05)", () => {
           .set("X-Requested-With", "pairprep")
           .send({ role: invalidRole });
         expect(res.status).toBe(400);
-        expect(res.body.error.code).toBe("VALIDATION_FAILED");
+        expect(res.body.error.code).toBe("VALIDATION_ERROR");
       }
     });
 
@@ -838,6 +840,25 @@ describe("Room & Roles API (Task T05)", () => {
         .delete(`/api/v1/rooms/${slug}`)
         .set("X-Requested-With", "pairprep");
       expect(delEnded.status).toBe(204);
+    });
+
+    it("POST /end on an archived room returns 409 ROOM_CLOSED", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent();
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Archived Room End" });
+      const slug = roomRes.body.room.slug;
+
+      // Mark room as archived directly in DB
+      await RoomModel.updateOne({ slug }, { $set: { status: "archived" } });
+
+      const res = await ownerAgent
+        .post(`/api/v1/rooms/${slug}/end`)
+        .set("X-Requested-With", "pairprep");
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("ROOM_CLOSED");
     });
 
     it("cascade deletion emptiness across all 8 collections (children first, room last)", async () => {

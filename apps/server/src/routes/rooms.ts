@@ -9,7 +9,7 @@ import {
   toRoomMemberDto,
 } from "@pairprep/shared";
 import { roomRepo } from "../repos/roomRepo.js";
-import { roomMemberRepo, RoomFullError } from "../repos/roomMemberRepo.js";
+import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { guestRepo } from "../repos/guestRepo.js";
 import {
   requireUser,
@@ -34,14 +34,6 @@ import { IRoomMember } from "../models/room_members.js";
 
 export const roomsRouter = Router();
 
-function getRequestId(req: Request, res: Response): string {
-  return (
-    (res.getHeader("X-Request-Id") as string) ||
-    (req.headers["x-request-id"] as string) ||
-    ""
-  );
-}
-
 function getParam(param: string | string[] | undefined): string {
   if (Array.isArray(param)) return param[0] || "";
   return param || "";
@@ -57,26 +49,22 @@ roomsRouter.post(
   idempotencyMiddleware,
   roomCreationLimiter,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const requestId = getRequestId(req, res);
-    const parseResult = CreateRoomRequestSchema.safeParse(req.body);
-
-    if (!parseResult.success) {
-      res.status(400).json({
-        error: {
-          code: "VALIDATION_FAILED",
-          message: parseResult.error.errors.map((e) => e.message).join(", "),
-          requestId,
-        },
-      });
-      return;
-    }
-
-    const user = req.principal as UserPrincipal;
-    const rawIdempotencyKey = (req.headers["idempotency-key"] ||
-      req.headers["x-idempotency-key"]) as string | undefined;
-    const trimmedIdempotencyKey = rawIdempotencyKey?.trim() || undefined;
-
     try {
+      const parseResult = CreateRoomRequestSchema.safeParse(req.body);
+
+      if (!parseResult.success) {
+        throw new AppError(
+          parseResult.error.errors.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
+      }
+
+      const user = req.principal as UserPrincipal;
+      const rawIdempotencyKey =
+        req.idempotencyKey || (req.headers["idempotency-key"] as string | undefined);
+      const trimmedIdempotencyKey = rawIdempotencyKey?.trim() || undefined;
+
       let room: IRoom;
       try {
         room = await roomRepo.createRoom({
@@ -152,21 +140,18 @@ roomsRouter.get(
   "/",
   requireUser,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const requestId = getRequestId(req, res);
-    const parseQuery = RoomListQuerySchema.safeParse(req.query);
-
-    if (!parseQuery.success) {
-      res.status(400).json({
-        error: {
-          code: "INVALID_CURSOR",
-          message: "Invalid pagination cursor",
-          requestId,
-        },
-      });
-      return;
-    }
-
     try {
+      const parseQuery = RoomListQuerySchema.safeParse(req.query);
+
+      if (!parseQuery.success) {
+        const hasLimitError = parseQuery.error.issues.some((i) =>
+          i.path.includes("limit")
+        );
+        if (hasLimitError) {
+          throw new AppError("Invalid limit parameter", 400, "VALIDATION_ERROR");
+        }
+        throw new AppError("Invalid pagination cursor", 400, "INVALID_CURSOR");
+      }
       const user = req.principal as UserPrincipal;
       const { rooms, nextCursor } = await roomMemberRepo.listMyRooms(
         user.id,
@@ -194,19 +179,11 @@ roomsRouter.get(
   roomJoinLookupLimiter,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const slug = getParam(req.params.slug);
-    const requestId = getRequestId(req, res);
 
     try {
       const room = await roomRepo.findBySlug(slug);
       if (!room) {
-        res.status(404).json({
-          error: {
-            code: "ROOM_NOT_FOUND",
-            message: "Room not found",
-            requestId,
-          },
-        });
-        return;
+        throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
       }
 
       const currentPrincipalId = req.principal?.id;
@@ -240,31 +217,20 @@ roomsRouter.post(
   roomJoinLookupLimiter,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const slug = getParam(req.params.slug);
-    const requestId = getRequestId(req, res);
 
     try {
       const room = await roomRepo.findBySlug(slug);
       if (!room) {
-        res.status(404).json({
-          error: {
-            code: "ROOM_NOT_FOUND",
-            message: "Room not found",
-            requestId,
-          },
-        });
-        return;
+        throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
       }
 
       // Check room status first: closed means ended or archived
       if (room.status === "ended" || room.status === "archived") {
-        res.status(409).json({
-          error: {
-            code: "ROOM_CLOSED",
-            message: "This room is ended or archived and cannot be modified",
-            requestId,
-          },
-        });
-        return;
+        throw new AppError(
+          "This room is ended or archived and cannot be modified",
+          409,
+          "ROOM_CLOSED"
+        );
       }
 
       // 1. Signed-in user join (takes precedence over any guest cookie)
@@ -297,14 +263,11 @@ roomsRouter.post(
       // 2. Guest join
       const parseResult = JoinRoomRequestSchema.safeParse(req.body);
       if (!parseResult.success) {
-        res.status(400).json({
-          error: {
-            code: "VALIDATION_FAILED",
-            message: parseResult.error.errors.map((e) => e.message).join(", "),
-            requestId,
-          },
-        });
-        return;
+        throw new AppError(
+          parseResult.error.errors.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
       }
 
       const displayName = parseResult.data.displayName;
@@ -355,16 +318,14 @@ roomsRouter.post(
       // Set new cookie for Room B
       setGuestCookie(res, guestDoc.id);
 
-      // Best-effort cleanup of old Room A membership afterwards
+      // Await cleanup of old Room A membership before responding (Item 13)
       if (oldRoomId && oldGuestId) {
-        (async () => {
-          try {
-            await roomMemberRepo.removeByMemberId(oldRoomId, oldGuestId);
-            await guestRepo.deleteGuest(oldGuestId);
-          } catch {
-            // Ignore best-effort cleanup errors
-          }
-        })();
+        try {
+          await roomMemberRepo.removeByMemberId(oldRoomId, oldGuestId);
+          await guestRepo.deleteGuest(oldGuestId);
+        } catch {
+          // Ignore best-effort cleanup errors so Room B join succeeds
+        }
       }
 
       res.json({
@@ -388,36 +349,24 @@ roomsRouter.patch(
   requireRole(["owner"]),
   requireOpenRoom,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const requestId = getRequestId(req, res);
-    const targetId = getParam(req.params.id);
-    const parseResult = UpdateMemberRoleRequestSchema.safeParse(req.body);
-
-    if (!parseResult.success) {
-      res.status(400).json({
-        error: {
-          code: "VALIDATION_FAILED",
-          message: parseResult.error.errors.map((e) => e.message).join(", "),
-          requestId,
-        },
-      });
-      return;
-    }
-
     try {
+      const targetId = getParam(req.params.id);
+      const parseResult = UpdateMemberRoleRequestSchema.safeParse(req.body);
+
+      if (!parseResult.success) {
+        throw new AppError(
+          parseResult.error.errors.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
+      }
+
       const room = req.room!;
-      const targetMember =
-        (await roomMemberRepo.findMemberByDocId(room.id, targetId)) ||
-        (await roomMemberRepo.findMember(room.id, targetId));
+      // Accept only the membership id
+      const targetMember = await roomMemberRepo.findMemberByDocId(room.id, targetId);
 
       if (!targetMember) {
-        res.status(404).json({
-          error: {
-            code: "MEMBER_NOT_FOUND",
-            message: "Participant not found in this room",
-            requestId,
-          },
-        });
-        return;
+        throw new AppError("Participant not found in this room", 404, "MEMBER_NOT_FOUND");
       }
 
       assertCanModifyMember(room, targetMember, "demote");
@@ -433,7 +382,7 @@ roomsRouter.patch(
 
       res.json({
         room: toRoomDto(updatedRoom || room),
-        currentMember: updatedMember ? toRoomMemberDto(updatedMember) : undefined,
+        member: updatedMember ? toRoomMemberDto(updatedMember) : undefined,
       });
     } catch (err) {
       handleRouteError(err, req, res, next);
@@ -451,24 +400,15 @@ roomsRouter.delete(
   requireRole(["owner"]),
   requireOpenRoom,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const requestId = getRequestId(req, res);
     const targetId = getParam(req.params.id);
 
     try {
       const room = req.room!;
-      const targetMember =
-        (await roomMemberRepo.findMemberByDocId(room.id, targetId)) ||
-        (await roomMemberRepo.findMember(room.id, targetId));
+      // Accept only the membership id
+      const targetMember = await roomMemberRepo.findMemberByDocId(room.id, targetId);
 
       if (!targetMember) {
-        res.status(404).json({
-          error: {
-            code: "MEMBER_NOT_FOUND",
-            message: "Participant not found in this room",
-            requestId,
-          },
-        });
-        return;
+        throw new AppError("Participant not found in this room", 404, "MEMBER_NOT_FOUND");
       }
 
       assertCanModifyMember(room, targetMember, "remove");
@@ -495,6 +435,15 @@ roomsRouter.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const room = req.room!;
+
+      // Ending an archived room returns 409 ROOM_CLOSED (Item 12)
+      if (room.status === "archived") {
+        throw new AppError(
+          "This room is archived and cannot be modified",
+          409,
+          "ROOM_CLOSED"
+        );
+      }
 
       // Idempotent: if already ended, return current ended room DTO
       if (room.status === "ended") {
@@ -532,34 +481,9 @@ roomsRouter.delete(
 
 function handleRouteError(
   err: unknown,
-  req: Request,
-  res: Response,
+  _req: Request,
+  _res: Response,
   next: NextFunction
 ): void {
-  const requestId = getRequestId(req, res);
-
-  if (err instanceof AppError) {
-    res.status(err.statusCode).json({
-      error: {
-        code: err.code,
-        message: err.message,
-        requestId,
-        fields: err.fields,
-      },
-    });
-    return;
-  }
-
-  if (err instanceof RoomFullError) {
-    res.status(err.statusCode).json({
-      error: {
-        code: err.code,
-        message: err.message,
-        requestId,
-      },
-    });
-    return;
-  }
-
   next(err);
 }

@@ -1,4 +1,4 @@
-import rateLimit from "express-rate-limit";
+import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { Request, Response } from "express";
 
 /**
@@ -7,8 +7,9 @@ import { Request, Response } from "express";
  */
 export const roomCreationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10,
-  keyGenerator: (req: Request) => req.principal?.id || req.ip || "unknown",
+  limit: 10,
+  keyGenerator: (req: Request) =>
+    req.principal?.id || ipKeyGenerator(req.ip || "127.0.0.1"),
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req: Request, res: Response) => {
@@ -16,15 +17,24 @@ export const roomCreationLimiter = rateLimit({
       (res.getHeader("X-Request-Id") as string) ||
       (req.headers["x-request-id"] as string) ||
       "";
+
+    if (!res.getHeader("Retry-After")) {
+      const reqWithRateLimit = req as Request & { rateLimit?: { resetTime?: Date } };
+      const resetTime = reqWithRateLimit.rateLimit?.resetTime;
+      const retryAfter = resetTime
+        ? Math.ceil((resetTime.getTime() - Date.now()) / 1000)
+        : 3600;
+      res.setHeader("Retry-After", String(Math.max(1, retryAfter)));
+    }
+
     res.status(429).json({
       error: {
-        code: "RATE_LIMITED",
+        code: "RATE_LIMIT_EXCEEDED",
         message: "Too many room creation requests, please try again later",
         requestId,
       },
     });
   },
-  validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
 });
 
 /**
@@ -34,8 +44,8 @@ export const roomCreationLimiter = rateLimit({
  */
 export const roomJoinLookupLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 60,
-  keyGenerator: (req: Request) => req.ip || "unknown",
+  limit: 60,
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || "127.0.0.1"),
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -44,13 +54,22 @@ export const roomJoinLookupLimiter = rateLimit({
       (res.getHeader("X-Request-Id") as string) ||
       (req.headers["x-request-id"] as string) ||
       "";
+
+    if (!res.getHeader("Retry-After")) {
+      const reqWithRateLimit = req as Request & { rateLimit?: { resetTime?: Date } };
+      const resetTime = reqWithRateLimit.rateLimit?.resetTime;
+      const retryAfter = resetTime
+        ? Math.ceil((resetTime.getTime() - Date.now()) / 1000)
+        : 60;
+      res.setHeader("Retry-After", String(Math.max(1, retryAfter)));
+    }
+
     res.status(429).json({
       error: {
-        code: "RATE_LIMITED",
+        code: "RATE_LIMIT_EXCEEDED",
         message: "Too many requests, please try again later",
         requestId,
       },
     });
   },
-  validate: { keyGeneratorIpFallback: false, xForwardedForHeader: false },
 });

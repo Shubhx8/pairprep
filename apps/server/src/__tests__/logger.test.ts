@@ -222,4 +222,76 @@ describe("Request ID & Structured Logging (T01 & PRD OBS-1)", () => {
     expect(fullLogText).not.toContain("SENSITIVE_PAYLOAD_XYZ");
     expect(fullLogText).not.toContain("print('SENSITIVE_PAYLOAD_XYZ')");
   });
+
+  it("logger: logs 429 and 413 responses with body requestId matching X-Request-Id header", async () => {
+    const { createRateLimiter } = await import("../middleware/rateLimiter.js");
+    const { errorHandler } = await import("../middleware/errorHandler.js");
+    const { createRequestLogger } = await import("../middleware/logger.js");
+
+    const rawLogs: string[] = [];
+    const testStream = new Writable({
+      write(chunk, _encoding, cb) {
+        rawLogs.push(chunk.toString());
+        cb();
+      },
+    });
+    const captureLogger = createLogger(testStream);
+
+    const testApp = express();
+    // 1. Logger first
+    testApp.use(createRequestLogger(captureLogger));
+    // 2. Limiter (limit 1 for fast test)
+    testApp.use(createRateLimiter({ limit: 1, windowMs: 60000 }));
+    // 3. Parser with 100kb limit
+    testApp.use(express.json({ limit: "100kb" }));
+
+    testApp.post("/test-limit", (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    testApp.use(errorHandler);
+
+    // Request 1: 200 OK (consumes quota)
+    const resOk = await request(testApp).post("/test-limit").send({ msg: "hello" });
+    expect(resOk.status).toBe(200);
+
+    // Request 2: 429 RATE_LIMIT_EXCEEDED
+    const res429 = await request(testApp).post("/test-limit").send({ msg: "blocked" });
+    expect(res429.status).toBe(429);
+    expect(res429.headers["x-request-id"]).toBeDefined();
+    expect(res429.body.error.requestId).toBe(res429.headers["x-request-id"]);
+
+    // Verify 429 was logged
+    const log429 = rawLogs.map((l) => JSON.parse(l)).find((e) => e.statusCode === 429);
+    expect(log429).toBeDefined();
+    expect(log429.requestId).toBe(res429.headers["x-request-id"]);
+
+    // Now test 413 on a fresh testApp without rate limiting
+    const rawLogs413: string[] = [];
+    const testStream413 = new Writable({
+      write(chunk, _encoding, cb) {
+        rawLogs413.push(chunk.toString());
+        cb();
+      },
+    });
+    const captureLogger413 = createLogger(testStream413);
+
+    const testApp413 = express();
+    testApp413.use(createRequestLogger(captureLogger413));
+    testApp413.use(express.json({ limit: "100kb" }));
+    testApp413.post("/test-large", (_req, res) => {
+      res.status(200).json({ ok: true });
+    });
+    testApp413.use(errorHandler);
+
+    const largePayload = { str: "x".repeat(110 * 1024) };
+    const res413 = await request(testApp413).post("/test-large").send(largePayload);
+    expect(res413.status).toBe(413);
+    expect(res413.headers["x-request-id"]).toBeDefined();
+    expect(res413.body.error.requestId).toBe(res413.headers["x-request-id"]);
+
+    // Verify 413 was logged
+    const log413 = rawLogs413.map((l) => JSON.parse(l)).find((e) => e.statusCode === 413);
+    expect(log413).toBeDefined();
+    expect(log413.requestId).toBe(res413.headers["x-request-id"]);
+  });
 });

@@ -53,7 +53,7 @@ export const ConfigSchema = z.object({
   SITE_ORIGIN: z.string().default("http://localhost:3000"),
   CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
-  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(30),
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(10),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_CALLBACK_URL: z.string().optional(),
@@ -74,22 +74,47 @@ export type Config = z.infer<typeof ConfigSchema>;
  */
 export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
   const result = ConfigSchema.safeParse(rawEnv);
+  const missingOrInvalid: string[] = [];
 
   if (!result.success) {
-    const invalidVarNames = Array.from(
-      new Set(
-        result.error.issues.map((issue) =>
-          issue.path.length > 0 ? String(issue.path[0]) : "UNKNOWN_VARIABLE"
-        )
-      )
-    );
+    for (const issue of result.error.issues) {
+      const varName = issue.path.length > 0 ? String(issue.path[0]) : "UNKNOWN_VARIABLE";
+      if (!missingOrInvalid.includes(varName)) {
+        missingOrInvalid.push(varName);
+      }
+    }
+  }
 
+  // In production, require SESSION_SECRET (at least 32 characters) and SITE_ORIGIN
+  const isProd =
+    rawEnv["NODE_ENV"] === "production" ||
+    (result.success && result.data.NODE_ENV === "production");
+
+  if (isProd) {
+    const secret =
+      rawEnv["SESSION_SECRET"] ??
+      (result.success ? result.data.SESSION_SECRET : undefined);
+    if (!secret || secret.length < 32) {
+      if (!missingOrInvalid.includes("SESSION_SECRET")) {
+        missingOrInvalid.push("SESSION_SECRET");
+      }
+    }
+    const origin =
+      rawEnv["SITE_ORIGIN"] ?? (result.success ? result.data.SITE_ORIGIN : undefined);
+    if (!origin || !origin.trim()) {
+      if (!missingOrInvalid.includes("SITE_ORIGIN")) {
+        missingOrInvalid.push("SITE_ORIGIN");
+      }
+    }
+  }
+
+  if (missingOrInvalid.length > 0) {
     throw new Error(
-      `Invalid or missing environment variables: ${invalidVarNames.join(", ")}`
+      `Invalid or missing environment variables: ${missingOrInvalid.join(", ")}`
     );
   }
 
-  return result.data;
+  return result.data!;
 }
 
 // Alias for backward compatibility

@@ -86,4 +86,32 @@ describe("User Model & Repository (PRD 12, AUTH-1, AUTH-2, AUTH-5)", () => {
     expect(user2.email).toBe("user-new@example.com");
     expect(user2.createdAt.getTime()).toBe(initialCreated);
   });
+
+  it("users: upsertUser preserves existing email when subsequent login provides null or undefined email", async () => {
+    await userRepo.upsertUser({
+      provider: "github",
+      providerId: "gh-null-email",
+      displayName: "GitHub Dev",
+      email: "original@example.com",
+    });
+
+    // Login again where OAuth provider returns undefined/null email (e.g. private email)
+    const userWithoutEmail = await userRepo.upsertUser({
+      provider: "github",
+      providerId: "gh-null-email",
+      displayName: "GitHub Dev",
+      email: undefined,
+    });
+
+    expect(userWithoutEmail.email).toBe("original@example.com");
+
+    const userWithNullEmail = await userRepo.upsertUser({
+      provider: "github",
+      providerId: "gh-null-email",
+      displayName: "GitHub Dev",
+      email: null,
+    });
+
+    expect(userWithNullEmail.email).toBe("original@example.com");
+  });
 });

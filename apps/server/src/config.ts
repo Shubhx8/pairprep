@@ -53,7 +53,7 @@ export const ConfigSchema = z.object({
   SITE_ORIGIN: z.string().default("http://localhost:3000"),
   CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
-  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(10),
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(30),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_CALLBACK_URL: z.string().optional(),

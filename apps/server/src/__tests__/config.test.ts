@@ -9,6 +9,14 @@ describe("Server Config Module (T01)", () => {
 
     const cfg = loadConfig(mockEnv as unknown as NodeJS.ProcessEnv);
     expect(cfg.PORT).toBe(3000);
+    expect(cfg.AUTH_RATE_LIMIT_MAX).toBe(30);
+  });
+
+  it("config: defaults AUTH_RATE_LIMIT_MAX to 30 when not provided in environment", () => {
+    const cfg = loadConfig({
+      NODE_ENV: "development",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(cfg.AUTH_RATE_LIMIT_MAX).toBe(30);
   });
 
   it("config: successfully validates and loads complete environment schema", () => {

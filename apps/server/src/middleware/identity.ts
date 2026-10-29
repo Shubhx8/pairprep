@@ -153,14 +153,14 @@ export async function identify(
     return next();
   }
 
-  const verifiedGuestId = verifyGuestCookie(rawGuestCookie);
-  if (!verifiedGuestId) {
-    clearGuestCookie(res);
-    req.principal = undefined;
-    return next();
-  }
-
   try {
+    const verifiedGuestId = verifyGuestCookie(rawGuestCookie);
+    if (!verifiedGuestId) {
+      clearGuestCookie(res);
+      req.principal = undefined;
+      return next();
+    }
+
     const guestDoc = await guestRepo.findById(verifiedGuestId);
     if (!guestDoc || guestDoc.expiresAt.getTime() <= Date.now()) {
       clearGuestCookie(res);

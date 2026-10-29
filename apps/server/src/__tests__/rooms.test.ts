@@ -31,6 +31,7 @@ import { runArchiveAndPurgeJobOnce } from "../services/archiveJob.js";
 import { roomsRouter } from "../routes/rooms.js";
 import { createLogger, createRequestLogger } from "../middleware/logger.js";
 import { errorHandler } from "../middleware/errorHandler.js";
+import { csrfProtection } from "../middleware/csrf.js";
 
 describe("Room & Roles API (Task T05)", () => {
   beforeAll(async () => {
@@ -1546,6 +1547,37 @@ describe("Room & Roles API (Task T05)", () => {
       expect(parsed).not.toHaveProperty("url");
     });
 
+    it("a CSRF-rejected POST to /api/v1/rooms/SECRETSLUG/join must not put SECRETSLUG in any log line", async () => {
+      const logChunks: string[] = [];
+      const captureStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logChunks.push(chunk.toString());
+          callback();
+        },
+      });
+
+      const captureLogger = createLogger(captureStream);
+      const testApp = express();
+      testApp.use(createRequestLogger(captureLogger));
+      testApp.use("/api", csrfProtection);
+      testApp.use("/api/v1/rooms", roomsRouter);
+
+      const res = await request(testApp)
+        .post("/api/v1/rooms/SECRETSLUG/join")
+        .send({ displayName: "CSRF Visitor" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+
+      expect(logChunks.length).toBeGreaterThan(0);
+      const rawOutput = logChunks.join("");
+      expect(rawOutput).not.toContain("SECRETSLUG");
+
+      const parsed = JSON.parse(logChunks[logChunks.length - 1]!);
+      expect(parsed.path).toBe("/api/v1/rooms/:slug/join");
+      expect(parsed.path).not.toContain("SECRETSLUG");
+    });
+
     it("anonymous GET /:slug returns 200 with the public DTO", async () => {
       const { agent: ownerAgent } = await getAuthenticatedAgent();
       const createRes = await ownerAgent
@@ -1627,6 +1659,44 @@ describe("Room & Roles API (Task T05)", () => {
       expect(joinRes.body.currentMember).toBeDefined();
       expect(joinRes.body.currentMember.displayName).toBe("CollaboratorUser");
       expect(joinRes.body.currentMember.role).toBe("editor");
+    });
+
+    it("join with a 40-character name returns 200 for a guest and a user", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({
+        displayName: "OwnerUser",
+      });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Max Length Test Room" });
+      const slug = roomRes.body.room.slug;
+
+      const name40Chars = "A".repeat(40);
+
+      // Guest join with 40-character displayName
+      const guestRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: name40Chars });
+
+      expect(guestRes.status).toBe(200);
+      expect(guestRes.body.currentMember.displayName).toBe(name40Chars);
+      expect(guestRes.body.currentMember.displayName.length).toBe(40);
+      expect(guestRes.body.currentMember.isGuest).toBe(true);
+
+      // Authenticated user join with 40-character displayName
+      const { agent: userAgent } = await getAuthenticatedAgent({
+        displayName: "B".repeat(40),
+      });
+      const userRes = await userAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({});
+
+      expect(userRes.status).toBe(200);
+      expect(userRes.body.currentMember.displayName).toBe("B".repeat(40));
+      expect(userRes.body.currentMember.displayName.length).toBe(40);
+      expect(userRes.body.currentMember.isGuest).toBe(false);
     });
   });
 

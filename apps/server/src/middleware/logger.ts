@@ -100,10 +100,14 @@ export function createRequestLogger(
       const rawUrl = req.originalUrl || req.url || "/";
       const pathWithoutQuery = rawUrl.split("?")[0] || "/";
 
-      // T05: Redact 16+ char base64url or hex slug tokens in /rooms/<slug>
-      const sanitizedPath = pathWithoutQuery.replace(
-        /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}(\/|$)/,
-        "$1:slug$2"
+      // T05: Redact room slugs and member ids in requestLogger by regex on the path
+      let sanitizedPath = pathWithoutQuery.replace(
+        /\/api\/v1\/rooms\/([^/]+)\/members\/([^/]+)(\/.*)?$/,
+        "/api/v1/rooms/:slug/members/:id$3"
+      );
+      sanitizedPath = sanitizedPath.replace(
+        /\/api\/v1\/rooms\/([^/]+)(\/.*)?$/,
+        "/api/v1/rooms/:slug$2"
       );
 
       const logData = {

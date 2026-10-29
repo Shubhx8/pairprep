@@ -16,7 +16,7 @@ const UserSchema = new Schema<IUser>(
   {
     provider: { type: String, enum: ["google", "github"], required: true },
     providerId: { type: String, required: true },
-    displayName: { type: String, required: true, trim: true },
+    displayName: { type: String, required: true, trim: true, maxlength: 40 },
     avatarUrl: { type: String },
     email: { type: String, default: null, lowercase: true, trim: true },
     role: { type: String, enum: ["user", "owner-admin"], default: "user" },

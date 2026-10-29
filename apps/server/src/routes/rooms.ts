@@ -31,6 +31,7 @@ import {
 import { AppError } from "../errors/AppError.js";
 import { IRoom } from "../models/rooms.js";
 import { IRoomMember } from "../models/room_members.js";
+import { rootLogger } from "../middleware/logger.js";
 
 export const roomsRouter = Router();
 
@@ -329,8 +330,9 @@ roomsRouter.post(
         try {
           await roomMemberRepo.removeByMemberId(oldRoomId, oldGuestId);
           await guestRepo.deleteGuest(oldGuestId);
-        } catch {
-          // Ignore best-effort cleanup errors so Room B join succeeds
+        } catch (err) {
+          const errorName = err instanceof Error ? err.name : "UnknownError";
+          rootLogger.warn({ errorName }, "Old room guest cleanup failed");
         }
       }
 

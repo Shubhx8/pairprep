@@ -15,7 +15,7 @@ const RoomMemberSchema = new Schema<IRoomMember>(
   {
     roomId: { type: String, required: true },
     memberId: { type: String, required: true },
-    displayName: { type: String, required: true, trim: true },
+    displayName: { type: String, required: true, trim: true, maxlength: 40 },
     role: {
       type: String,
       enum: ["owner", "interviewer", "candidate", "editor", "viewer"],

@@ -9,7 +9,7 @@ export interface IGuest extends Document {
 
 const GuestSchema = new Schema<IGuest>(
   {
-    displayName: { type: String, required: true, trim: true },
+    displayName: { type: String, required: true, trim: true, maxlength: 40 },
     roomId: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
     expiresAt: {

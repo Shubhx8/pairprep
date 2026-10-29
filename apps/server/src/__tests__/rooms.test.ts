@@ -1308,6 +1308,28 @@ describe("Room & Roles API (Task T05)", () => {
       expect(res2.status).toBe(201);
       expect(res2.body.room.id).not.toBe(res1.body.room.id);
     });
+
+    it("after a DELETE /rooms/:slug with an idempotency key, query idempotency_keys and assert route is /api/v1/rooms/:slug, not the real slug", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const createRes = await agent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Delete Idempotency Slug Test" });
+      expect(createRes.status).toBe(201);
+      const slug = createRes.body.room.slug;
+
+      const deleteKey = crypto.randomUUID();
+      const deleteRes = await agent
+        .delete(`/api/v1/rooms/${slug}`)
+        .set("Idempotency-Key", deleteKey)
+        .set("X-Requested-With", "pairprep");
+      expect(deleteRes.status).toBe(204);
+
+      const record = await IdempotencyKeyModel.findOne({ key: deleteKey });
+      expect(record).toBeDefined();
+      expect(record?.route).toBe("/api/v1/rooms/:slug");
+      expect(record?.route).not.toContain(slug);
+    });
   });
 
   // -------------------------------------------------------------------------

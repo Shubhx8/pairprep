@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import crypto from "node:crypto";
 import { idempotencyRepo } from "../repos/idempotencyRepo.js";
-import { isValidUUID } from "./logger.js";
+import { isValidUUID, rootLogger } from "./logger.js";
 
 /**
  * Deterministically serializes an object into a canonical JSON string with sorted keys.
@@ -27,7 +27,10 @@ export function computeRequestHash(req: Request): string {
     .createHash("sha256")
     .update(canonicalize(req.body ?? {}))
     .digest("hex");
-  const fullPath = `${req.baseUrl || ""}${req.path || ""}`;
+  const fullPath = `${req.baseUrl || ""}${req.path || ""}`.replace(
+    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/,
+    "$1:slug"
+  );
   return `${req.method}:${fullPath}:${payloadHash}`;
 }
 
@@ -86,7 +89,10 @@ export function idempotencyMiddleware(
   }
 
   const actorId = req.principal?.id || req.ip || "anonymous";
-  const route = `${req.baseUrl || ""}${req.path || ""}`;
+  const route = `${req.baseUrl || ""}${req.path || ""}`.replace(
+    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/,
+    "$1:slug"
+  );
   const requestHash = computeRequestHash(req);
 
   idempotencyRepo
@@ -221,7 +227,9 @@ export function idempotencyMiddleware(
     };
 
     res.on("finish", () => {
-      cleanup().catch(() => {});
+      cleanup().catch((err) => {
+        rootLogger.error({ err }, "idempotency cleanup failed");
+      });
     });
     res.on("close", () => {
       if (!res.writableEnded) {

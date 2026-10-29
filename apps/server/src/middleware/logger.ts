@@ -102,11 +102,11 @@ export function createRequestLogger(
 
       // T05: Redact room slugs and member ids in requestLogger by regex on the path
       let sanitizedPath = pathWithoutQuery.replace(
-        /\/api\/v1\/rooms\/([^/]+)\/members\/([^/]+)(\/.*)?$/,
+        /\/api\/v1\/rooms\/([^/]+)\/members\/([^/]+)(\/.*)?$/i,
         "/api/v1/rooms/:slug/members/:id$3"
       );
       sanitizedPath = sanitizedPath.replace(
-        /\/api\/v1\/rooms\/([^/]+)(\/.*)?$/,
+        /\/api\/v1\/rooms\/([^/]+)(\/.*)?$/i,
         "/api/v1/rooms/:slug$2"
       );
 

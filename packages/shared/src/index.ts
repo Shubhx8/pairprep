@@ -353,7 +353,7 @@ export const CreateRoomRequestSchema = z.object({
   type: z.literal("practice").default("practice"),
   language: SupportedLanguageSchema.default("python"),
   timeLimitSec: z.number().min(300).max(7200).optional(),
-  ownerName: z.string().trim().min(1).max(32).default("Anonymous Host"),
+  ownerName: z.string().trim().min(1).max(40).default("Anonymous Host"),
 });
 
 export type CreateRoomRequest = z.infer<typeof CreateRoomRequestSchema>;

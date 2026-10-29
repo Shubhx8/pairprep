@@ -1600,6 +1600,34 @@ describe("Room & Roles API (Task T05)", () => {
       expect(parsed.path).not.toContain("SECRETSLUG");
     });
 
+    it("POST to /API/V1/ROOMS/SECRETSLUG/join (upper-case) leaves SECRETSLUG out of the logs", async () => {
+      const logChunks: string[] = [];
+      const captureStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logChunks.push(chunk.toString());
+          callback();
+        },
+      });
+
+      const captureLogger = createLogger(captureStream);
+      const testApp = express();
+      testApp.use(createRequestLogger(captureLogger));
+      testApp.use("/api", csrfProtection);
+      testApp.use("/api/v1/rooms", roomsRouter);
+
+      await request(testApp)
+        .post("/API/V1/ROOMS/SECRETSLUG/join")
+        .send({ displayName: "CSRF Visitor" });
+
+      expect(logChunks.length).toBeGreaterThan(0);
+      const rawOutput = logChunks.join("");
+      expect(rawOutput).not.toContain("SECRETSLUG");
+
+      const parsed = JSON.parse(logChunks[logChunks.length - 1]!);
+      expect(parsed.path).toBe("/api/v1/rooms/:slug/join");
+      expect(parsed.path).not.toContain("SECRETSLUG");
+    });
+
     it("anonymous GET /:slug returns 200 with the public DTO", async () => {
       const { agent: ownerAgent } = await getAuthenticatedAgent();
       const createRes = await ownerAgent
@@ -1719,6 +1747,26 @@ describe("Room & Roles API (Task T05)", () => {
       expect(userRes.body.currentMember.displayName).toBe("B".repeat(40));
       expect(userRes.body.currentMember.displayName.length).toBe(40);
       expect(userRes.body.currentMember.isGuest).toBe(false);
+    });
+
+    it('join with "😀".repeat(40) as a guest returns 200', async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent();
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Emoji Test Room" });
+      const slug = roomRes.body.room.slug;
+
+      const emojiName = "😀".repeat(40);
+      const guestRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: emojiName });
+
+      expect(guestRes.status).toBe(200);
+      expect(guestRes.body.currentMember.displayName).toBe(emojiName);
+      expect([...guestRes.body.currentMember.displayName].length).toBe(40);
+      expect(guestRes.body.currentMember.isGuest).toBe(true);
     });
   });
 

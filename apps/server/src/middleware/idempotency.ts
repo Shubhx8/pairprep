@@ -28,7 +28,7 @@ export function computeRequestHash(req: Request): string {
     .update(canonicalize(req.body ?? {}))
     .digest("hex");
   const fullPath = `${req.baseUrl || ""}${req.path || ""}`.replace(
-    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/,
+    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/i,
     "$1:slug"
   );
   return `${req.method}:${fullPath}:${payloadHash}`;
@@ -90,7 +90,7 @@ export function idempotencyMiddleware(
 
   const actorId = req.principal?.id || req.ip || "anonymous";
   const route = `${req.baseUrl || ""}${req.path || ""}`.replace(
-    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/,
+    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/i,
     "$1:slug"
   );
   const requestHash = computeRequestHash(req);

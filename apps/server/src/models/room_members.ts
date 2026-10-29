@@ -15,7 +15,15 @@ const RoomMemberSchema = new Schema<IRoomMember>(
   {
     roomId: { type: String, required: true },
     memberId: { type: String, required: true },
-    displayName: { type: String, required: true, trim: true, maxlength: 40 },
+    displayName: {
+      type: String,
+      required: true,
+      trim: true,
+      validate: {
+        validator: (v: string) => [...v].length <= 40,
+        message: "displayName must not exceed 40 characters",
+      },
+    },
     role: {
       type: String,
       enum: ["owner", "interviewer", "candidate", "editor", "viewer"],

@@ -1545,5 +1545,110 @@ describe("Room & Roles API (Task T05)", () => {
       expect(parsed).not.toHaveProperty("originalUrl");
       expect(parsed).not.toHaveProperty("url");
     });
+
+    it("anonymous GET /:slug returns 200 with the public DTO", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent();
+      const createRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Public Room" });
+      expect(createRes.status).toBe(201);
+      const slug = createRes.body.room.slug;
+
+      // Unauthenticated / anonymous visitor (no session, no guest cookie)
+      const res = await request(app).get(`/api/v1/rooms/${slug}`);
+      expect(res.status).toBe(200);
+      expect(res.body.room).toBeDefined();
+      expect(res.body.room.slug).toBe(slug);
+      expect(res.body.room.title).toBe("Public Room");
+      expect(res.body.room.status).toBe("open");
+      // Public DTO must NOT leak currentMember or members list
+      expect(res.body.currentMember).toBeUndefined();
+      expect(res.body.members).toBeUndefined();
+    });
+
+    it("anonymous join returns 200 and sets the guest cookie", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent();
+      const createRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Joinable Room" });
+      expect(createRes.status).toBe(201);
+      const slug = createRes.body.room.slug;
+
+      // Anonymous join without any existing credentials
+      const joinRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Anon Guest" });
+
+      expect(joinRes.status).toBe(200);
+      expect(joinRes.body.room).toBeDefined();
+      expect(joinRes.body.currentMember).toBeDefined();
+      expect(joinRes.body.currentMember.displayName).toBe("Anon Guest");
+      expect(joinRes.body.currentMember.role).toBe("editor");
+      expect(joinRes.body.currentMember.isGuest).toBe(true);
+
+      // Verify guest cookie is set in response headers
+      const setCookieHeader = joinRes.headers["set-cookie"];
+      expect(setCookieHeader).toBeDefined();
+      const guestCookie = (
+        Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader]
+      ).find((c: string) => c.startsWith(`${GUEST_COOKIE_NAME}=`));
+      expect(guestCookie).toBeDefined();
+      expect(guestCookie).toContain("HttpOnly");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // CSRF Defense-in-Depth on All Mutating Room Routes
+  // -------------------------------------------------------------------------
+  describe("CSRF Protection on Room Routes", () => {
+    it("POST /api/v1/rooms rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const res = await agent.post("/api/v1/rooms").send({ title: "CSRF Test Room" });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("POST /api/v1/rooms/:slug/join rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const res = await request(app)
+        .post("/api/v1/rooms/dummy-slug/join")
+        .send({ displayName: "CSRF Visitor" });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("PATCH /api/v1/rooms/:slug/members/:id rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const res = await agent
+        .patch("/api/v1/rooms/dummy-slug/members/6ae25b55bd195c12272d8a2a")
+        .send({ role: "viewer" });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("DELETE /api/v1/rooms/:slug/members/:id rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const res = await agent.delete(
+        "/api/v1/rooms/dummy-slug/members/6ae25b55bd195c12272d8a2a"
+      );
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("POST /api/v1/rooms/:slug/end rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const res = await agent.post("/api/v1/rooms/dummy-slug/end");
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("DELETE /api/v1/rooms/:slug rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const res = await agent.delete("/api/v1/rooms/dummy-slug");
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
   });
 });

@@ -3,6 +3,7 @@ import MongoStore from "connect-mongo";
 import mongoose from "mongoose";
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import { config } from "../config.js";
+import { rootLogger } from "./logger.js";
 
 export const SESSION_COOKIE_NAME = "pairprep.sid";
 
@@ -72,6 +73,11 @@ export function createSessionMiddleware(): RequestHandler {
       handler(req, res, (err) => {
         if (err) {
           sessionHandler = null;
+          const errorName =
+            err && typeof err === "object" && "name" in err
+              ? String((err as { name: unknown }).name)
+              : "Error";
+          rootLogger.error({ errorName }, "Session store error");
           const requestId =
             (res.getHeader("X-Request-Id") as string) ||
             (req.headers["x-request-id"] as string) ||
@@ -87,8 +93,13 @@ export function createSessionMiddleware(): RequestHandler {
         }
         next();
       });
-    } catch {
+    } catch (err: unknown) {
       sessionHandler = null;
+      const errorName =
+        err && typeof err === "object" && "name" in err
+          ? String((err as { name: unknown }).name)
+          : "Error";
+      rootLogger.error({ errorName }, "Session middleware failure");
       const requestId =
         (res.getHeader("X-Request-Id") as string) ||
         (req.headers["x-request-id"] as string) ||

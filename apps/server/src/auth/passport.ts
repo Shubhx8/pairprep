@@ -69,10 +69,11 @@ export function configurePassport(): void {
                 : null) ||
               null;
 
-            const displayName =
+            const rawDisplayName =
               profile.displayName ||
               `${profile.name?.givenName || ""} ${profile.name?.familyName || ""}`.trim() ||
               "Google User";
+            const displayName = [...rawDisplayName].slice(0, 40).join("");
 
             const rawAvatar = profile.photos?.[0]?.value;
             const avatarUrl =
@@ -142,7 +143,9 @@ export function configurePassport(): void {
               verifiedEmail = verifiedItem?.value || null;
             }
 
-            const displayName = profile.displayName || profile.username || "GitHub User";
+            const rawDisplayName =
+              profile.displayName || profile.username || "GitHub User";
+            const displayName = [...rawDisplayName].slice(0, 40).join("");
             const rawAvatar = profile.photos?.[0]?.value;
             const avatarUrl =
               rawAvatar && rawAvatar.startsWith("https://") ? rawAvatar : undefined;

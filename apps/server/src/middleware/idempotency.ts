@@ -20,6 +20,19 @@ export function canonicalize(obj: unknown): string {
 }
 
 /**
+ * Normalizes a route path for idempotency storage and request hashing.
+ * Replaces room slugs with ':slug~' + first 16 hex chars of sha256(slug)
+ * to keep room-scoping while never persisting raw slugs in idempotency_keys.
+ */
+export function normalizeRoute(path: string): string {
+  return path.replace(/\/api\/v1\/rooms\/([^/]+)/i, (match, slug: string) => {
+    if (!slug || slug.startsWith(":slug")) return match;
+    const hash = crypto.createHash("sha256").update(slug).digest("hex").slice(0, 16);
+    return `/api/v1/rooms/:slug~${hash}`;
+  });
+}
+
+/**
  * Computes a deterministic request fingerprint: method + path + sha256(canonicalBody)
  */
 export function computeRequestHash(req: Request): string {
@@ -27,10 +40,7 @@ export function computeRequestHash(req: Request): string {
     .createHash("sha256")
     .update(canonicalize(req.body ?? {}))
     .digest("hex");
-  const fullPath = `${req.baseUrl || ""}${req.path || ""}`.replace(
-    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/i,
-    "$1:slug"
-  );
+  const fullPath = normalizeRoute(`${req.baseUrl || ""}${req.path || ""}`);
   return `${req.method}:${fullPath}:${payloadHash}`;
 }
 
@@ -89,10 +99,7 @@ export function idempotencyMiddleware(
   }
 
   const actorId = req.principal?.id || req.ip || "anonymous";
-  const route = `${req.baseUrl || ""}${req.path || ""}`.replace(
-    /(\/api\/v1\/rooms\/)[A-Za-z0-9_-]{16,}/i,
-    "$1:slug"
-  );
+  const route = normalizeRoute(`${req.baseUrl || ""}${req.path || ""}`);
   const requestHash = computeRequestHash(req);
 
   idempotencyRepo
@@ -228,7 +235,8 @@ export function idempotencyMiddleware(
 
     res.on("finish", () => {
       cleanup().catch((err) => {
-        rootLogger.error({ err }, "idempotency cleanup failed");
+        const errorName = err instanceof Error ? err.name : "UnknownError";
+        rootLogger.error({ errorName }, "idempotency cleanup failed");
       });
     });
     res.on("close", () => {

@@ -216,4 +216,64 @@ describe("OAuth 2.0 Real Strategies & Session DB-down (T04)", () => {
       },
     });
   });
+
+  it("strategies: clamps provider displayName exceeding 40 code points to 40 code points", async () => {
+    configurePassport();
+    const strategies = (
+      passport as unknown as { _strategies: Record<string, GoogleStrategyType> }
+    )._strategies;
+    const googleStrat = strategies["google"] as unknown as StrategyWithInternals;
+
+    const longDisplayName = "A".repeat(50);
+    const mockProfile = {
+      id: "google_long_name_123",
+      displayName: longDisplayName,
+      emails: [{ value: "long.name@example.com", verified: true }],
+    };
+
+    let savedUser: IUser | null = null;
+    await new Promise<void>((resolve) => {
+      googleStrat._verify(
+        {},
+        "mock_access",
+        "mock_refresh",
+        mockProfile,
+        (_err: unknown, user?: unknown) => {
+          savedUser = (user as IUser) || null;
+          resolve();
+        }
+      );
+    });
+
+    expect(savedUser).not.toBeNull();
+    expect(savedUser!.displayName.length).toBe(40);
+    expect([...savedUser!.displayName].length).toBe(40);
+    expect(savedUser!.displayName).toBe("A".repeat(40));
+
+    // Also verify with 50 emoji code points
+    const emojiDisplayName = "😀".repeat(50);
+    const mockEmojiProfile = {
+      id: "google_emoji_name_123",
+      displayName: emojiDisplayName,
+      emails: [{ value: "emoji.name@example.com", verified: true }],
+    };
+
+    let emojiUser: IUser | null = null;
+    await new Promise<void>((resolve) => {
+      googleStrat._verify(
+        {},
+        "mock_access",
+        "mock_refresh",
+        mockEmojiProfile,
+        (_err: unknown, user?: unknown) => {
+          emojiUser = (user as IUser) || null;
+          resolve();
+        }
+      );
+    });
+
+    expect(emojiUser).not.toBeNull();
+    expect([...emojiUser!.displayName].length).toBe(40);
+    expect(emojiUser!.displayName).toBe("😀".repeat(40));
+  });
 });

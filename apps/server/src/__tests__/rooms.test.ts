@@ -1309,7 +1309,50 @@ describe("Room & Roles API (Task T05)", () => {
       expect(res2.body.room.id).not.toBe(res1.body.room.id);
     });
 
-    it("after a DELETE /rooms/:slug with an idempotency key, query idempotency_keys and assert route is /api/v1/rooms/:slug, not the real slug", async () => {
+    it("same Idempotency-Key on DELETE for two different rooms must not replay the first room's 204 (second room really deleted)", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const roomA = await agent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Room A Delete" });
+      expect(roomA.status).toBe(201);
+      const slugA = roomA.body.room.slug;
+      const roomIdA = roomA.body.room.id;
+
+      const roomB = await agent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Room B Delete" });
+      expect(roomB.status).toBe(201);
+      const slugB = roomB.body.room.slug;
+      const roomIdB = roomB.body.room.id;
+
+      const sharedKey = crypto.randomUUID();
+
+      // Delete Room A with sharedKey
+      const resA = await agent
+        .delete(`/api/v1/rooms/${slugA}`)
+        .set("Idempotency-Key", sharedKey)
+        .set("X-Requested-With", "pairprep");
+      expect(resA.status).toBe(204);
+
+      // Verify Room A is deleted
+      const checkA = await RoomModel.findById(roomIdA);
+      expect(checkA).toBeNull();
+
+      // Delete Room B with the same sharedKey - must NOT replay Room A's 204
+      const resB = await agent
+        .delete(`/api/v1/rooms/${slugB}`)
+        .set("Idempotency-Key", sharedKey)
+        .set("X-Requested-With", "pairprep");
+      expect(resB.status).toBe(204);
+
+      // Verify Room B is really deleted, confirming no cached replay occurred
+      const checkB = await RoomModel.findById(roomIdB);
+      expect(checkB).toBeNull();
+    });
+
+    it("no idempotency_keys.route contains a raw slug", async () => {
       const { agent } = await getAuthenticatedAgent();
       const createRes = await agent
         .post("/api/v1/rooms")
@@ -1326,9 +1369,9 @@ describe("Room & Roles API (Task T05)", () => {
       expect(deleteRes.status).toBe(204);
 
       const record = await IdempotencyKeyModel.findOne({ key: deleteKey });
-      expect(record).toBeDefined();
-      expect(record?.route).toBe("/api/v1/rooms/:slug");
+      expect(record).not.toBeNull();
       expect(record?.route).not.toContain(slug);
+      expect(record?.route).toMatch(/^\/api\/v1\/rooms\/:slug~[0-9a-f]{16}$/);
     });
   });
 

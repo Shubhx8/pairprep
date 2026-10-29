@@ -1567,13 +1567,14 @@ describe("Room & Roles API (Task T05)", () => {
       expect(res.body.members).toBeUndefined();
     });
 
-    it("anonymous join returns 200 and sets the guest cookie", async () => {
+    it("anonymous join returns 200 and sets the guest cookie, returning memberCount 2", async () => {
       const { agent: ownerAgent } = await getAuthenticatedAgent();
       const createRes = await ownerAgent
         .post("/api/v1/rooms")
         .set("X-Requested-With", "pairprep")
         .send({ title: "Joinable Room" });
       expect(createRes.status).toBe(201);
+      expect(createRes.body.room.memberCount).toBe(1);
       const slug = createRes.body.room.slug;
 
       // Anonymous join without any existing credentials
@@ -1584,6 +1585,7 @@ describe("Room & Roles API (Task T05)", () => {
 
       expect(joinRes.status).toBe(200);
       expect(joinRes.body.room).toBeDefined();
+      expect(joinRes.body.room.memberCount).toBe(2);
       expect(joinRes.body.currentMember).toBeDefined();
       expect(joinRes.body.currentMember.displayName).toBe("Anon Guest");
       expect(joinRes.body.currentMember.role).toBe("editor");
@@ -1597,6 +1599,34 @@ describe("Room & Roles API (Task T05)", () => {
       ).find((c: string) => c.startsWith(`${GUEST_COOKIE_NAME}=`));
       expect(guestCookie).toBeDefined();
       expect(guestCookie).toContain("HttpOnly");
+    });
+
+    it("signed-in user joining a newly created room returns room.memberCount === 2", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({
+        displayName: "HostUser",
+      });
+      const createRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "User Join Room" });
+      expect(createRes.status).toBe(201);
+      expect(createRes.body.room.memberCount).toBe(1);
+      const slug = createRes.body.room.slug;
+
+      const { agent: userAgent } = await getAuthenticatedAgent({
+        displayName: "CollaboratorUser",
+      });
+      const joinRes = await userAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({});
+
+      expect(joinRes.status).toBe(200);
+      expect(joinRes.body.room).toBeDefined();
+      expect(joinRes.body.room.memberCount).toBe(2);
+      expect(joinRes.body.currentMember).toBeDefined();
+      expect(joinRes.body.currentMember.displayName).toBe("CollaboratorUser");
+      expect(joinRes.body.currentMember.role).toBe("editor");
     });
   });
 

@@ -253,8 +253,11 @@ roomsRouter.post(
           isGuest: false,
         });
 
+        await roomRepo.touchActivity(room.id);
+        const updatedRoom = await roomRepo.findById(room.id);
+
         res.json({
-          room: toRoomDto(room),
+          room: toRoomDto(updatedRoom || room),
           currentMember: toRoomMemberDto(member),
         });
         return;
@@ -283,8 +286,11 @@ roomsRouter.post(
           guestExpiresAt: req.principal.guest.expiresAt,
         });
 
+        await roomRepo.touchActivity(room.id);
+        const updatedRoom = await roomRepo.findById(room.id);
+
         res.json({
-          room: toRoomDto(room),
+          room: toRoomDto(updatedRoom || room),
           currentMember: toRoomMemberDto(member),
         });
         return;
@@ -328,8 +334,11 @@ roomsRouter.post(
         }
       }
 
+      await roomRepo.touchActivity(room.id);
+      const updatedRoom = await roomRepo.findById(room.id);
+
       res.json({
-        room: toRoomDto(room),
+        room: toRoomDto(updatedRoom || room),
         currentMember: toRoomMemberDto(member),
       });
     } catch (err) {

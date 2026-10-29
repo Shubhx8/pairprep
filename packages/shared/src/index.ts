@@ -195,7 +195,7 @@ export const PARTICIPANT_PALETTE = [
  */
 export const RoomMemberSchema = z.object({
   id: z.string(),
-  displayName: z.string().min(1).max(32),
+  displayName: z.string().min(1).max(40),
   role: UserRoleSchema,
   color: z.string().optional(), // Ephemeral presentation only; not in DB model
   isGuest: z.boolean(),
@@ -245,7 +245,7 @@ export type Room = z.infer<typeof RoomSchema>;
  */
 export const GuestDtoSchema = z.object({
   id: z.string(),
-  displayName: z.string().min(1).max(32),
+  displayName: z.string().min(1).max(40),
   roomId: z.string(),
   createdAt: z.string(),
   expiresAt: z.string(),
@@ -362,8 +362,8 @@ export const JoinRoomRequestSchema = z.object({
   displayName: z
     .string()
     .transform(sanitizeDisplayName)
-    .refine((val) => [...val].length >= 1 && [...val].length <= 32, {
-      message: "Display name must be between 1 and 32 characters after trimming",
+    .refine((val) => [...val].length >= 1 && [...val].length <= 40, {
+      message: "Display name must be between 1 and 40 characters after trimming",
     }),
   role: z.enum(["editor", "viewer"]).optional(),
 });

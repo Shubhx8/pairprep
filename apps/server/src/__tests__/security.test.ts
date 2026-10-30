@@ -46,6 +46,30 @@ describe("Security Headers, Limits & Rate Limiting (T01)", () => {
     expect(res.body.error.message).toContain("application/json");
   });
 
+  it("limits: rejects gzip compressed body with 415 UNSUPPORTED_MEDIA_TYPE (inflate: false)", async () => {
+    const zlib = await import("node:zlib");
+    const compressed = zlib.gzipSync(JSON.stringify({ title: "Gzipped Room" }));
+
+    const res = await request(app)
+      .post("/api/v1/rooms")
+      .set("Content-Type", "application/json")
+      .set("Content-Encoding", "gzip")
+      .send(compressed);
+
+    expect(res.status).toBe(415);
+    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe("UNSUPPORTED_MEDIA_TYPE");
+  });
+
+  it("cors: disallowed origins do not return 500 and omit Access-Control-Allow-Origin header", async () => {
+    const res = await request(app)
+      .get("/healthz")
+      .set("Origin", "https://unauthorized-evil-domain.com");
+
+    expect(res.status).not.toBe(500);
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
   it("rateLimit: returns 429 with Retry-After header and standard error shape after exceeding limit", async () => {
     // Create an isolated sub-app with low max threshold to test rate limiting deterministically
     const testApp = express();

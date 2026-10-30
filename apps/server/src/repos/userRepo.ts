@@ -26,6 +26,13 @@ export class UserRepo {
         ? data.avatarUrl
         : undefined;
 
+    const setFields: Record<string, unknown> = {
+      lastLoginAt: new Date(),
+    };
+    if (data.email != null) {
+      setFields["email"] = data.email;
+    }
+
     const update = {
       $setOnInsert: {
         displayName: data.displayName,
@@ -34,10 +41,7 @@ export class UserRepo {
         createdAt: new Date(),
         disabled: false,
       },
-      $set: {
-        email: data.email ?? null,
-        lastLoginAt: new Date(),
-      },
+      $set: setFields,
     };
 
     try {

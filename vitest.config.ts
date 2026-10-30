@@ -10,6 +10,7 @@ export default defineConfig({
       NODE_ENV: "test",
       SESSION_SECRET: "test_session_secret_at_least_32_characters_long",
       MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep_test",
+      AUTH_RATE_LIMIT_MAX: "1000",
     },
     fileParallelism: false,
   },

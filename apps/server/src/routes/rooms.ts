@@ -1,16 +1,39 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import {
   CreateRoomRequestSchema,
   JoinRoomRequestSchema,
   UpdateMemberRoleRequestSchema,
-  RoomResponseSchema,
-  ApiErrorSchema,
+  RoomListQuerySchema,
+  toRoomDto,
+  toPublicRoomDto,
+  toRoomMemberDto,
 } from "@pairprep/shared";
-import { roomService, RoomError } from "../services/roomService.js";
-import { requireAuth } from "../middleware/requireAuth.js";
+import { roomRepo } from "../repos/roomRepo.js";
+import { roomMemberRepo } from "../repos/roomMemberRepo.js";
+import { guestRepo } from "../repos/guestRepo.js";
+import {
+  requireUser,
+  requirePrincipal,
+  setGuestCookie,
+  UserPrincipal,
+} from "../middleware/identity.js";
+import {
+  requireMember,
+  requireRole,
+  requireOpenRoom,
+  assertCanModifyMember,
+} from "../middleware/authorization.js";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
+import {
+  roomCreationLimiter,
+  roomJoinLookupLimiter,
+} from "../middleware/roomRateLimiter.js";
+import { AppError } from "../errors/AppError.js";
+import { IRoom } from "../models/rooms.js";
+import { IRoomMember } from "../models/room_members.js";
+import { rootLogger } from "../middleware/logger.js";
 
 export const roomsRouter = Router();
-roomsRouter.use(requireAuth);
 
 function getParam(param: string | string[] | undefined): string {
   if (Array.isArray(param)) return param[0] || "";
@@ -18,177 +41,460 @@ function getParam(param: string | string[] | undefined): string {
 }
 
 /**
- * PRD 13.1 / ROOM-1: Create a new room with unguessable slug
+ * PRD 13.1 / ROOM-1 & CONC-3: Create a new room with unguessable slug
+ * Pipeline: requireUser -> idempotencyMiddleware -> roomCreationLimiter
  */
-roomsRouter.post("/", (req: Request, res: Response) => {
-  const parseResult = CreateRoomRequestSchema.safeParse(req.body);
-  if (!parseResult.success) {
-    const errorPayload = ApiErrorSchema.parse({
-      error: "INVALID_REQUEST",
-      message: parseResult.error.errors.map((e) => e.message).join(", "),
-      requestId: (req.headers["x-request-id"] as string) || undefined,
-    });
-    res.status(400).json(errorPayload);
-    return;
+roomsRouter.post(
+  "/",
+  requireUser,
+  idempotencyMiddleware,
+  roomCreationLimiter,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const parseResult = CreateRoomRequestSchema.safeParse(req.body);
+
+      if (!parseResult.success) {
+        throw new AppError(
+          parseResult.error.errors.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
+      }
+
+      const user = req.principal as UserPrincipal;
+      const rawIdempotencyKey =
+        req.idempotencyKey || (req.headers["idempotency-key"] as string | undefined);
+      const trimmedIdempotencyKey = rawIdempotencyKey?.trim() || undefined;
+
+      let room: IRoom;
+      try {
+        room = await roomRepo.createRoom({
+          title: parseResult.data.title,
+          type: "practice",
+          language: parseResult.data.language,
+          timeLimitSec: parseResult.data.timeLimitSec,
+          ownerId: user.id,
+          idempotencyKey: trimmedIdempotencyKey,
+        });
+      } catch (err: unknown) {
+        // Crash recovery: check if room was already created under (ownerId, idempotencyKey)
+        if (
+          trimmedIdempotencyKey &&
+          typeof err === "object" &&
+          err !== null &&
+          (err as { code?: number }).code === 11000
+        ) {
+          const existing = await roomRepo.findByOwnerAndIdempotencyKey(
+            user.id,
+            trimmedIdempotencyKey
+          );
+          if (existing) {
+            let owner = await roomMemberRepo.findMember(existing.id, user.id);
+            if (!owner) {
+              owner = await roomMemberRepo.addMember({
+                roomId: existing.id,
+                memberId: user.id,
+                displayName: user.displayName,
+                role: "owner",
+                isGuest: false,
+              });
+            }
+            res.status(201).json({
+              room: toRoomDto(existing),
+              currentMember: toRoomMemberDto(owner),
+            });
+            return;
+          }
+        }
+        throw err;
+      }
+
+      let ownerMember: IRoomMember;
+      try {
+        ownerMember = await roomMemberRepo.addMember({
+          roomId: room.id,
+          memberId: user.id,
+          displayName: user.displayName,
+          role: "owner",
+          isGuest: false,
+        });
+      } catch (memberErr) {
+        // Compensation: if owner member insert fails, delete the created room document
+        await roomRepo.deleteRoom(room.id);
+        throw memberErr;
+      }
+
+      res.status(201).json({
+        room: toRoomDto(room),
+        currentMember: toRoomMemberDto(ownerMember),
+      });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
+);
 
-  const idempotencyKey = req.headers["x-idempotency-key"] as string | undefined;
+/**
+ * PRD 13.1 / PER-2: Retrieve my rooms (owned and joined), cursor-paginated
+ */
+roomsRouter.get(
+  "/",
+  requireUser,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const parseQuery = RoomListQuerySchema.safeParse(req.query);
 
-  try {
-    const { room, ownerMember } = roomService.createRoom(
-      parseResult.data,
-      req.userId!,
-      idempotencyKey
-    );
+      if (!parseQuery.success) {
+        const hasLimitError = parseQuery.error.issues.some((i) =>
+          i.path.includes("limit")
+        );
+        if (hasLimitError) {
+          throw new AppError("Invalid limit parameter", 400, "VALIDATION_ERROR");
+        }
+        throw new AppError("Invalid pagination cursor", 400, "INVALID_CURSOR");
+      }
+      const user = req.principal as UserPrincipal;
+      const { rooms, nextCursor } = await roomMemberRepo.listMyRooms(
+        user.id,
+        parseQuery.data.limit,
+        parseQuery.data.cursor
+      );
 
-    const responsePayload = RoomResponseSchema.parse({
-      room,
-      currentMember: ownerMember,
-    });
-    res.status(201).json(responsePayload);
-  } catch (err: unknown) {
-    handleError(err, req, res);
+      res.json({
+        rooms: rooms.map(toRoomDto),
+        nextCursor,
+      });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
-});
+);
 
 /**
  * PRD 13.1 / ROOM-2: Retrieve room details by unguessable slug
+ * Public: returns PublicRoomDto (never other participants' details)
+ * Member: returns full RoomResponse with member list
  */
-roomsRouter.get("/:slug", (req: Request, res: Response) => {
-  const slug = getParam(req.params.slug);
-  const room = roomService.getRoomBySlug(slug);
+roomsRouter.get(
+  "/:slug",
+  roomJoinLookupLimiter,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const slug = getParam(req.params.slug);
 
-  if (!room) {
-    const errorPayload = ApiErrorSchema.parse({
-      error: "ROOM_NOT_FOUND",
-      message: `Room with slug '${slug}' not found`,
-      requestId: (req.headers["x-request-id"] as string) || undefined,
-    });
-    res.status(404).json(errorPayload);
-    return;
+    try {
+      const room = await roomRepo.findBySlug(slug);
+      if (!room) {
+        throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
+      }
+
+      const currentPrincipalId = req.principal?.id;
+      const member = currentPrincipalId
+        ? await roomMemberRepo.findMember(room.id, currentPrincipalId)
+        : null;
+
+      if (!member) {
+        res.json({ room: toPublicRoomDto(room) });
+        return;
+      }
+
+      const allMembers = await roomMemberRepo.listMembers(room.id);
+
+      res.json({
+        room: toRoomDto(room),
+        currentMember: toRoomMemberDto(member),
+        members: allMembers.map(toRoomMemberDto),
+      });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
-
-  const currentMember = room.members.find((m) => m.id === req.userId);
-
-  const responsePayload = RoomResponseSchema.parse({
-    room,
-    currentMember,
-  });
-  res.json(responsePayload);
-});
+);
 
 /**
  * PRD 13.1 / ROOM-2, ROOM-3, ROOM-4 & AUTH-3: Join room as guest or authenticated user
  */
-roomsRouter.post("/:slug/join", (req: Request, res: Response) => {
-  const slug = getParam(req.params.slug);
-  const parseResult = JoinRoomRequestSchema.safeParse(req.body);
+roomsRouter.post(
+  "/:slug/join",
+  roomJoinLookupLimiter,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const slug = getParam(req.params.slug);
 
-  if (!parseResult.success) {
-    const errorPayload = ApiErrorSchema.parse({
-      error: "INVALID_REQUEST",
-      message: parseResult.error.errors.map((e) => e.message).join(", "),
-      requestId: (req.headers["x-request-id"] as string) || undefined,
-    });
-    res.status(400).json(errorPayload);
-    return;
+    try {
+      const room = await roomRepo.findBySlug(slug);
+      if (!room) {
+        throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
+      }
+
+      // Check room status first: closed means ended or archived
+      if (room.status === "ended" || room.status === "archived") {
+        throw new AppError(
+          "This room is ended or archived and cannot be modified",
+          409,
+          "ROOM_CLOSED"
+        );
+      }
+
+      // 1. Signed-in user join (takes precedence over any guest cookie)
+      if (req.principal?.type === "user") {
+        const user = req.principal;
+        const existingMember = await roomMemberRepo.findMember(room.id, user.id);
+        if (existingMember) {
+          res.json({
+            room: toRoomDto(room),
+            currentMember: toRoomMemberDto(existingMember),
+          });
+          return;
+        }
+
+        const member = await roomMemberRepo.addMember({
+          roomId: room.id,
+          memberId: user.id,
+          displayName: user.displayName,
+          role: "editor",
+          isGuest: false,
+        });
+
+        await roomRepo.touchActivity(room.id);
+        const updatedRoom = await roomRepo.findById(room.id);
+
+        res.json({
+          room: toRoomDto(updatedRoom || room),
+          currentMember: toRoomMemberDto(member),
+        });
+        return;
+      }
+
+      // 2. Guest join
+      const parseResult = JoinRoomRequestSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        throw new AppError(
+          parseResult.error.errors.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
+      }
+
+      const displayName = parseResult.data.displayName;
+
+      // Same-room guest rejoin
+      if (req.principal?.type === "guest" && req.principal.roomId === room.id) {
+        const member = await roomMemberRepo.addMember({
+          roomId: room.id,
+          memberId: req.principal.id,
+          displayName,
+          role: "editor",
+          isGuest: true,
+          guestExpiresAt: req.principal.guest.expiresAt,
+        });
+
+        await roomRepo.touchActivity(room.id);
+        const updatedRoom = await roomRepo.findById(room.id);
+
+        res.json({
+          room: toRoomDto(updatedRoom || room),
+          currentMember: toRoomMemberDto(member),
+        });
+        return;
+      }
+
+      // Cross-room guest join or anonymous new guest
+      const oldRoomId =
+        req.principal?.type === "guest" && req.principal.roomId !== room.id
+          ? req.principal.roomId
+          : undefined;
+      const oldGuestId = oldRoomId ? req.principal?.id : undefined;
+
+      // Create new Room B guest document and membership first
+      const guestDoc = await guestRepo.createGuest(displayName, room.id);
+      let member: IRoomMember;
+      try {
+        member = await roomMemberRepo.addMember({
+          roomId: room.id,
+          memberId: guestDoc.id,
+          displayName: guestDoc.displayName,
+          role: "editor",
+          isGuest: true,
+          guestExpiresAt: guestDoc.expiresAt,
+        });
+      } catch (addErr) {
+        // On join failure (e.g. ROOM_FULL), delete the guest created in that request
+        await guestRepo.deleteGuest(guestDoc.id);
+        throw addErr;
+      }
+
+      // Set new cookie for Room B
+      setGuestCookie(res, guestDoc.id);
+
+      // Await cleanup of old Room A membership before responding (Item 13)
+      if (oldRoomId && oldGuestId) {
+        try {
+          await roomMemberRepo.removeByMemberId(oldRoomId, oldGuestId);
+          await guestRepo.deleteGuest(oldGuestId);
+        } catch (err) {
+          const errorName = err instanceof Error ? err.name : "UnknownError";
+          rootLogger.warn({ errorName }, "Old room guest cleanup failed");
+        }
+      }
+
+      await roomRepo.touchActivity(room.id);
+      const updatedRoom = await roomRepo.findById(room.id);
+
+      res.json({
+        room: toRoomDto(updatedRoom || room),
+        currentMember: toRoomMemberDto(member),
+      });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
-
-  try {
-    const { room, member } = roomService.joinRoom(
-      slug,
-      parseResult.data,
-      req.userId!,
-      req.isGuest
-    );
-
-    const responsePayload = RoomResponseSchema.parse({
-      room,
-      currentMember: member,
-    });
-    res.json(responsePayload);
-  } catch (err: unknown) {
-    handleError(err, req, res);
-  }
-});
+);
 
 /**
  * PRD 13.1 / ROOM-3: Change participant role (owner only)
  */
-roomsRouter.patch("/:slug/members/:id", (req: Request, res: Response) => {
-  const slug = getParam(req.params.slug);
-  const targetMemberId = getParam(req.params.id);
-  const parseResult = UpdateMemberRoleRequestSchema.safeParse(req.body);
+roomsRouter.patch(
+  "/:slug/members/:id",
+  requirePrincipal,
+  idempotencyMiddleware,
+  requireMember,
+  requireRole(["owner"]),
+  requireOpenRoom,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const targetId = getParam(req.params.id);
+      const parseResult = UpdateMemberRoleRequestSchema.safeParse(req.body);
 
-  if (!parseResult.success) {
-    const errorPayload = ApiErrorSchema.parse({
-      error: "INVALID_REQUEST",
-      message: parseResult.error.errors.map((e) => e.message).join(", "),
-      requestId: (req.headers["x-request-id"] as string) || undefined,
-    });
-    res.status(400).json(errorPayload);
-    return;
+      if (!parseResult.success) {
+        throw new AppError(
+          parseResult.error.errors.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
+      }
+
+      const room = req.room!;
+      // Accept only the membership id
+      const targetMember = await roomMemberRepo.findMemberByDocId(room.id, targetId);
+
+      if (!targetMember) {
+        throw new AppError("Participant not found in this room", 404, "MEMBER_NOT_FOUND");
+      }
+
+      assertCanModifyMember(room, targetMember, "demote");
+
+      const updatedMember = await roomMemberRepo.updateRole(
+        room.id,
+        targetMember.id,
+        parseResult.data.role
+      );
+
+      await roomRepo.touchActivity(room.id);
+      const updatedRoom = await roomRepo.findById(room.id);
+
+      res.json({
+        room: toRoomDto(updatedRoom || room),
+        member: updatedMember ? toRoomMemberDto(updatedMember) : undefined,
+      });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
-
-  try {
-    const updatedRoom = roomService.updateMemberRole(
-      slug,
-      targetMemberId,
-      parseResult.data.role,
-      req.userId!
-    );
-
-    res.json({ room: updatedRoom });
-  } catch (err: unknown) {
-    handleError(err, req, res);
-  }
-});
+);
 
 /**
  * PRD 13.1 / SEC-7 / ROOM-3: Remove participant from room (owner only)
  */
-roomsRouter.delete("/:slug/members/:id", (req: Request, res: Response) => {
-  const slug = getParam(req.params.slug);
-  const targetMemberId = getParam(req.params.id);
+roomsRouter.delete(
+  "/:slug/members/:id",
+  requirePrincipal,
+  requireMember,
+  requireRole(["owner"]),
+  requireOpenRoom,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const targetId = getParam(req.params.id);
 
-  try {
-    const updatedRoom = roomService.removeMember(slug, targetMemberId, req.userId!);
+    try {
+      const room = req.room!;
+      // Accept only the membership id
+      const targetMember = await roomMemberRepo.findMemberByDocId(room.id, targetId);
 
-    res.json({ room: updatedRoom });
-  } catch (err: unknown) {
-    handleError(err, req, res);
+      if (!targetMember) {
+        throw new AppError("Participant not found in this room", 404, "MEMBER_NOT_FOUND");
+      }
+
+      assertCanModifyMember(room, targetMember, "remove");
+
+      await roomMemberRepo.removeMember(room.id, targetMember.id);
+      await roomRepo.touchActivity(room.id);
+
+      res.json({ status: "ok" });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
-});
+);
 
 /**
- * PRD 13.1 / ROOM-6: End session (owner only)
+ * PRD 13.1 / ROOM-6: End session (owner only, idempotent)
  */
-roomsRouter.post("/:slug/end", (req: Request, res: Response) => {
-  const slug = getParam(req.params.slug);
+roomsRouter.post(
+  "/:slug/end",
+  requirePrincipal,
+  idempotencyMiddleware,
+  requireMember,
+  requireRole(["owner"]),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const room = req.room!;
 
-  try {
-    const endedRoom = roomService.endRoom(slug, req.userId!);
-    res.json({ room: endedRoom });
-  } catch (err: unknown) {
-    handleError(err, req, res);
+      // Ending an archived room returns 409 ROOM_CLOSED (Item 12)
+      if (room.status === "archived") {
+        throw new AppError(
+          "This room is archived and cannot be modified",
+          409,
+          "ROOM_CLOSED"
+        );
+      }
+
+      // Idempotent: if already ended, return current ended room DTO
+      if (room.status === "ended") {
+        res.json({ room: toRoomDto(room) });
+        return;
+      }
+
+      const endedRoom = await roomRepo.updateStatus(room.slug, "ended");
+      res.json({ room: toRoomDto(endedRoom || room) });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
-});
+);
 
-function handleError(err: unknown, req: Request, res: Response): void {
-  if (err instanceof RoomError) {
-    const errorPayload = ApiErrorSchema.parse({
-      error: err.code,
-      message: err.message,
-      requestId: (req.headers["x-request-id"] as string) || undefined,
-    });
-    res.status(err.statusCode).json(errorPayload);
-    return;
+/**
+ * PRD 13.1 / ROOM-6: Delete room (owner only, cascade children first)
+ */
+roomsRouter.delete(
+  "/:slug",
+  requireUser,
+  idempotencyMiddleware,
+  requireMember,
+  requireRole(["owner"]),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const room = req.room!;
+      await roomRepo.deleteRoom(room.id);
+      res.status(204).end();
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
   }
+);
 
-  const errorPayload = ApiErrorSchema.parse({
-    error: "INTERNAL_SERVER_ERROR",
-    message: "An unexpected error occurred",
-    requestId: (req.headers["x-request-id"] as string) || undefined,
-  });
-  res.status(500).json(errorPayload);
+function handleRouteError(
+  err: unknown,
+  _req: Request,
+  _res: Response,
+  next: NextFunction
+): void {
+  next(err);
 }

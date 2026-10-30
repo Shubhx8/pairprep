@@ -18,6 +18,14 @@ export function isValidUUID(id?: string): boolean {
 }
 
 /**
+ * Returns the X-Request-Id header from the response.
+ */
+export function getRequestId(res: Response): string {
+  if (!res || typeof res.getHeader !== "function") return "";
+  return (res.getHeader("X-Request-Id") as string) || "";
+}
+
+/**
  * Creates a configured Pino logger instance with strict redaction of sensitive credentials.
  */
 export function createLogger(destination?: DestinationStream): Logger {
@@ -59,42 +67,62 @@ export const rootLogger = createLogger();
  * 4. Logs paths WITHOUT query strings to prevent OAuth/token leaks.
  * 5. Strictly never logs request bodies, code, or chat text per PRD OBS-1.
  */
-export function requestLogger(
-  req: RequestWithId,
-  res: Response,
-  next: NextFunction
-): void {
-  const start = performance.now();
-  const incomingId = req.headers["x-request-id"] as string | undefined;
+/**
+ * Factory creating request logging middleware.
+ * Uses rootLogger by default, or accepts a custom Logger instance (e.g. for testing log output streams).
+ */
+export function createRequestLogger(
+  logger: Logger = rootLogger
+): (req: RequestWithId, res: Response, next: NextFunction) => void {
+  return function requestLoggerMiddleware(
+    req: RequestWithId,
+    res: Response,
+    next: NextFunction
+  ): void {
+    const start = performance.now();
+    const incomingId = req.headers["x-request-id"] as string | undefined;
 
-  // Validate strict UUID format. If invalid or missing, generate a new UUID.
-  const requestId = isValidUUID(incomingId) ? incomingId! : crypto.randomUUID();
+    // Validate strict UUID format. If invalid or missing, generate a new UUID.
+    const requestId = isValidUUID(incomingId) ? incomingId! : crypto.randomUUID();
 
-  req.id = requestId;
-  res.setHeader("X-Request-Id", requestId);
+    req.id = requestId;
+    res.setHeader("X-Request-Id", requestId);
 
-  // Child logger tagged with requestId for contextual logging
-  req.log = rootLogger.child({ requestId });
+    // Child logger tagged with requestId for contextual logging
+    req.log = logger.child({ requestId });
 
-  res.on("finish", () => {
-    const durationMs = Math.round((performance.now() - start) * 100) / 100;
-    const statusCode = res.statusCode;
-    const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
+    res.on("finish", () => {
+      const durationMs = Math.round((performance.now() - start) * 100) / 100;
+      const statusCode = res.statusCode;
+      const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
 
-    // Strip query string from path to prevent secret/token leaks in logs
-    const rawUrl = req.originalUrl || req.url || "/";
-    const pathWithoutQuery = rawUrl.split("?")[0] || "/";
+      // Strip query string from path to prevent secret/token leaks in logs
+      const rawUrl = req.originalUrl || req.url || "/";
+      const pathWithoutQuery = rawUrl.split("?")[0] || "/";
 
-    const logData = {
-      requestId,
-      method: req.method,
-      path: pathWithoutQuery,
-      statusCode,
-      durationMs,
-    };
+      // T05: Redact room slugs and member ids in requestLogger by regex on the path
+      let sanitizedPath = pathWithoutQuery.replace(
+        /\/api\/v1\/rooms\/([^/]+)\/members\/([^/]+)(\/.*)?$/i,
+        "/api/v1/rooms/:slug/members/:id$3"
+      );
+      sanitizedPath = sanitizedPath.replace(
+        /\/api\/v1\/rooms\/([^/]+)(\/.*)?$/i,
+        "/api/v1/rooms/:slug$2"
+      );
 
-    req.log?.[level](logData, "HTTP request completed");
-  });
+      const logData = {
+        requestId,
+        method: req.method,
+        path: sanitizedPath,
+        statusCode,
+        durationMs,
+      };
 
-  next();
+      req.log?.[level](logData, "HTTP request completed");
+    });
+
+    next();
+  };
 }
+
+export const requestLogger = createRequestLogger();

@@ -199,7 +199,10 @@ describe("Shared Zod Schemas", () => {
     it("rejects invalid JoinRoomRequestSchema", () => {
       expect(JoinRoomRequestSchema.safeParse({ displayName: "" }).success).toBe(false);
       expect(
-        JoinRoomRequestSchema.safeParse({ displayName: "A".repeat(33) }).success
+        JoinRoomRequestSchema.safeParse({ displayName: "A".repeat(40) }).success
+      ).toBe(true);
+      expect(
+        JoinRoomRequestSchema.safeParse({ displayName: "A".repeat(41) }).success
       ).toBe(false);
     });
   });

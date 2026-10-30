@@ -127,9 +127,8 @@ authRouter.get(
   "/callback/:provider",
   (req: Request, res: Response, next: NextFunction) => {
     const rawProvider = req.params["provider"];
-    const provider = (
-      Array.isArray(rawProvider) ? rawProvider[0] : rawProvider
-    )?.toLowerCase();
+    const provider =
+      typeof rawProvider === "string" ? rawProvider.trim().toLowerCase() : "";
 
     if (provider === "google" || provider === "github") {
       return handleOAuthCallback(provider, req, res, next);

@@ -10,6 +10,10 @@ export interface IRoom extends Document {
   settings: Record<string, unknown>;
   problemId?: string;
   timeLimitSec?: number;
+  memberCount: number;
+  memberCountUpdatedAt: Date;
+  lastActivityAt: Date;
+  idempotencyKey?: string;
   startedAt?: Date;
   endedAt?: Date;
   createdAt: Date;
@@ -34,6 +38,10 @@ const RoomSchema = new Schema<IRoom>(
     settings: { type: Schema.Types.Mixed, default: {} },
     problemId: { type: String },
     timeLimitSec: { type: Number },
+    memberCount: { type: Number, default: 1, min: 1, max: 6 },
+    memberCountUpdatedAt: { type: Date, default: Date.now },
+    lastActivityAt: { type: Date, default: Date.now },
+    idempotencyKey: { type: String },
     startedAt: { type: Date },
     endedAt: { type: Date },
     createdAt: { type: Date, default: Date.now },
@@ -41,9 +49,17 @@ const RoomSchema = new Schema<IRoom>(
   { collection: "rooms" }
 );
 
-// PRD Section 12: Unique index on slug; index on ownerId plus createdAt
+// PRD Section 12 & T05: Indexes
 RoomSchema.index({ slug: 1 }, { unique: true });
 RoomSchema.index({ ownerId: 1, createdAt: -1 });
+RoomSchema.index({ lastActivityAt: 1 });
+RoomSchema.index(
+  { ownerId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string" } },
+  }
+);
 
 export const RoomModel: Model<IRoom> =
   (mongoose.models.Room as Model<IRoom>) || mongoose.model<IRoom>("Room", RoomSchema);

@@ -9,7 +9,15 @@ export interface IGuest extends Document {
 
 const GuestSchema = new Schema<IGuest>(
   {
-    displayName: { type: String, required: true, trim: true },
+    displayName: {
+      type: String,
+      required: true,
+      trim: true,
+      validate: {
+        validator: (v: string) => [...v].length <= 40,
+        message: "displayName must not exceed 40 characters",
+      },
+    },
     roomId: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
     expiresAt: {

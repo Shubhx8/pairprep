@@ -14,7 +14,8 @@ import { apiRateLimiter } from "./middleware/rateLimiter.js";
 import { validateContentType } from "./middleware/contentType.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { notFoundHandler } from "./middleware/notFoundHandler.js";
-import { requireAuth } from "./middleware/requireAuth.js";
+import { identify } from "./middleware/identity.js";
+import { startArchiveJob, stopArchiveJob } from "./services/archiveJob.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
 import { roomsRouter } from "./routes/rooms.js";
@@ -35,6 +36,10 @@ const PORT = config.PORT;
 
 // Trust proxy set to 1 for reverse proxy (Caddy on Azure VM per AD-1)
 app.set("trust proxy", 1);
+
+// Structured JSON request logging & X-Request-Id tagging mounted FIRST
+// Ensures all requests (including rate-limited, rejected CORS, and oversized bodies) are tagged and logged
+app.use(requestLogger);
 
 // Security headers with Helmet: CSP set to report-only mode for Monaco editor compatibility
 app.use(
@@ -75,19 +80,16 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(new Error("CORS policy violation: origin not allowed"), false);
+      return callback(null, false);
     },
     credentials: true,
   })
 );
 
-// Content-Type validation and strict 100 KB JSON payload size limit
+// Content-Type validation and strict 100 KB JSON payload size limit with inflate: false
 app.use(validateContentType);
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "100kb", inflate: false }));
 app.use(cookieParser());
-
-// Structured JSON request logging & X-Request-Id tagging
-app.use(requestLogger);
 
 // PRD 8.4 / 13.1 / OBS-4 & T03: Stateless healthcheck endpoint returning { status, uptimeSec, version, db }
 // Placed BEFORE sessionMiddleware and rate limiters so health probes never set cookies or create sessions
@@ -104,6 +106,20 @@ app.get("/healthz", (_req: Request, res: Response) => {
   res.json(validated);
 });
 
+// Stateless smoke ping endpoint
+app.get("/api/ping", (_req: Request, res: Response) => {
+  const responseData: PingResponse = {
+    status: "ok",
+    message: "PairPrep backend & shared Zod schemas wired successfully",
+    timestamp: new Date().toISOString(),
+    environment:
+      (process.env["NODE_ENV"] as PingResponse["environment"]) || "development",
+  };
+
+  const validated = PingResponseSchema.parse(responseData);
+  res.json(validated);
+});
+
 // PRD 6.1 / T04 Exact Middleware Chain:
 // 1. authRateLimiter mounted on /api/v1/auth BEFORE sessionMiddleware to prevent database session spam
 app.use("/api/v1/auth", authRateLimiter);
@@ -117,17 +133,8 @@ app.use("/api", passport.initialize());
 // 4. passport.session()
 app.use("/api", passport.session());
 
-// Attach req.userId and req.isGuest for backward compatibility with rooms API from T01
-app.use("/api", (req: Request, _res: Response, next: express.NextFunction) => {
-  if (req.user) {
-    req.userId = req.user.id;
-    req.isGuest = false;
-  } else {
-    req.userId = undefined;
-    req.isGuest = true;
-  }
-  next();
-});
+// Identity middleware: populates req.principal, req.userId, and req.isGuest
+app.use("/api", identify);
 
 // 5. csrfProtection (rejects untrusted state-changing requests with 403 CSRF_REJECTED)
 app.use("/api", csrfProtection);
@@ -138,26 +145,12 @@ app.use("/api/v1/auth", authRouter);
 // 7. meRouter
 app.use("/api/v1/me", meRouter);
 
-// 8. roomsRouter (protected by requireAuth)
-app.use("/api/v1/rooms", requireAuth, roomsRouter);
+// 8. roomsRouter (fine-grained authorization handled per route within router)
+app.use("/api/v1/rooms", roomsRouter);
 
 // Root smoke test endpoint
 app.get("/", (_req: Request, res: Response) => {
   res.send("Hello from PairPrep Backend!");
-});
-
-// Smoke ping endpoint
-app.get("/api/ping", (_req: Request, res: Response) => {
-  const responseData: PingResponse = {
-    status: "ok",
-    message: "PairPrep backend & shared Zod schemas wired successfully",
-    timestamp: new Date().toISOString(),
-    environment:
-      (process.env["NODE_ENV"] as PingResponse["environment"]) || "development",
-  };
-
-  const validated = PingResponseSchema.parse(responseData);
-  res.json(validated);
 });
 
 // Central 404 handler for unknown routes
@@ -208,6 +201,8 @@ export function setupGracefulShutdown(
     const idleInterval = setInterval(closeIdle, 25);
     idleInterval.unref();
 
+    stopArchiveJob();
+
     // Stop accepting new connections while letting active requests finish
     server.close(async () => {
       clearInterval(idleInterval);
@@ -249,6 +244,7 @@ if (process.env["NODE_ENV"] !== "test") {
     if (config.MONGODB_URI) {
       try {
         await connectDatabase(config.MONGODB_URI);
+        startArchiveJob();
       } catch (err) {
         rootLogger.error(
           { err },

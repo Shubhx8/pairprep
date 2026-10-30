@@ -1,3 +1,4 @@
+import { sanitizeDisplayName } from "@pairprep/shared";
 import { GuestModel, IGuest } from "../models/guests.js";
 
 export class GuestRepo {
@@ -6,8 +7,9 @@ export class GuestRepo {
     roomId: string,
     expiresAt?: Date
   ): Promise<IGuest> {
+    const cleanName = sanitizeDisplayName(displayName);
     const guest = new GuestModel({
-      displayName,
+      displayName: cleanName,
       roomId,
       createdAt: new Date(),
       expiresAt: expiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days (PRD 12)

@@ -40,7 +40,7 @@ meRouter.patch("/", async (req: Request, res: Response, next: NextFunction) => {
     const message = parseResult.error.issues.map((i) => i.message).join("; ");
     res.status(400).json({
       error: {
-        code: "VALIDATION_FAILED",
+        code: "VALIDATION_ERROR",
         message,
         requestId,
       },

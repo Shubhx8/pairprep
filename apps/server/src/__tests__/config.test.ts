@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import { loadConfig } from "../config.js";
 
 describe("Server Config Module (T01)", () => {
+  it("environment: proves server project runs in node environment and does not load web setup file", () => {
+    const g = globalThis as unknown as { window?: unknown; document?: unknown };
+    expect(typeof g.window).toBe("undefined");
+    expect(typeof g.document).toBe("undefined");
+  });
   it("config: defaults PORT to 3000 when PORT is not provided in environment", () => {
     const mockEnv = {
       NODE_ENV: "development",

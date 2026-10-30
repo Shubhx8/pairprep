@@ -55,7 +55,7 @@ roomsRouter.post(
 
       if (!parseResult.success) {
         throw new AppError(
-          parseResult.error.errors.map((e) => e.message).join(", "),
+          parseResult.error.issues.map((e) => e.message).join(", "),
           400,
           "VALIDATION_ERROR"
         );
@@ -268,7 +268,7 @@ roomsRouter.post(
       const parseResult = JoinRoomRequestSchema.safeParse(req.body);
       if (!parseResult.success) {
         throw new AppError(
-          parseResult.error.errors.map((e) => e.message).join(", "),
+          parseResult.error.issues.map((e) => e.message).join(", "),
           400,
           "VALIDATION_ERROR"
         );
@@ -366,7 +366,7 @@ roomsRouter.patch(
 
       if (!parseResult.success) {
         throw new AppError(
-          parseResult.error.errors.map((e) => e.message).join(", "),
+          parseResult.error.issues.map((e) => e.message).join(", "),
           400,
           "VALIDATION_ERROR"
         );

@@ -312,7 +312,7 @@ export const EventDtoSchema = z.object({
   roomId: z.string(),
   userId: z.string(),
   type: z.string(),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   ts: z.string(),
 });
 
@@ -476,7 +476,7 @@ export const ApiErrorSchema = z.object({
     code: z.string(),
     message: z.string(),
     requestId: z.string().optional(),
-    fields: z.record(z.string()).optional(),
+    fields: z.record(z.string(), z.string()).optional(),
   }),
 });
 

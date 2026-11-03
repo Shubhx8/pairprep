@@ -3,6 +3,16 @@ import { createHmac } from "node:crypto";
 export const SESSION_COOKIE_NAME = "pairprep.sid";
 
 /**
+ * Isolated configuration for end-to-end testing harness.
+ * Uses a dedicated database (pairprep_e2e) and dedicated secret
+ * to prevent contaminating test or development databases.
+ */
+export const E2E_TEST_DATABASE = "pairprep_e2e";
+export const E2E_TEST_SECRET = "test_e2e_secret_at_least_32_chars_long_for_security";
+export const E2E_MONGODB_URI =
+  process.env["MONGODB_URI"] || `mongodb://127.0.0.1:27017/${E2E_TEST_DATABASE}`;
+
+/**
  * Creates an HMAC-SHA256 signed express-session cookie string
  * matching the cookie-signature format used by express-session.
  */

@@ -4,6 +4,9 @@ import {
   unsignSessionCookie,
   createSessionCookie,
   SESSION_COOKIE_NAME,
+  E2E_TEST_DATABASE,
+  E2E_TEST_SECRET,
+  E2E_MONGODB_URI,
 } from "../sessionHarness.js";
 
 describe("sessionHarness", () => {
@@ -38,5 +41,11 @@ describe("sessionHarness", () => {
     expect(cookie.name).toBe(SESSION_COOKIE_NAME);
     expect(cookie.value.startsWith("s:")).toBe(true);
     expect(cookie.header.startsWith(`${SESSION_COOKIE_NAME}=`)).toBe(true);
+  });
+
+  it("exports isolated E2E database name and secret", () => {
+    expect(E2E_TEST_DATABASE).toBe("pairprep_e2e");
+    expect(E2E_TEST_SECRET.length).toBeGreaterThanOrEqual(32);
+    expect(E2E_MONGODB_URI).toContain("pairprep_e2e");
   });
 });

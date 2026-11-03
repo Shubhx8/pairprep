@@ -255,7 +255,7 @@ export default function RoomPage() {
               role="note"
               className="flex items-start gap-2.5 rounded-xl border border-warning-border bg-warning-bg p-3.5 text-xs text-warning-text"
             >
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-500" />
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-warning-text" />
               <div className="leading-relaxed">
                 <strong className="font-semibold block mb-0.5">
                   Guest Eviction Notice:

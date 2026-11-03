@@ -1,6 +1,6 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./lib/authContext.js";
+import { AuthProvider, useAuth } from "./lib/authContext.js";
 
 const LandingPage = lazy(() => import("./marketing/landing.js"));
 const LoginPage = lazy(() => import("./marketing/login.js"));
@@ -15,6 +15,36 @@ const ContactPage = lazy(() => import("./marketing/contact.js"));
 const LazyToaster = lazy(() =>
   import("./components/ui/Toast.js").then((m) => ({ default: m.Toaster }))
 );
+
+export function RootRoute() {
+  const { status } = useAuth();
+  if (status === "loading") {
+    return (
+      <div className="bg-canvas text-text-secondary flex min-h-screen items-center justify-center font-mono text-sm">
+        Loading PairPrep...
+      </div>
+    );
+  }
+  if (status === "authenticated") {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <LandingPage />;
+}
+
+export function ProtectedRoute({ children }: { children: ReactNode }) {
+  const { status } = useAuth();
+  if (status === "loading") {
+    return (
+      <div className="bg-canvas text-text-secondary flex min-h-screen items-center justify-center font-mono text-sm">
+        Loading PairPrep...
+      </div>
+    );
+  }
+  if (status !== "authenticated") {
+    return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
 
 export default function App() {
   return (
@@ -32,11 +62,18 @@ export default function App() {
           }
         >
           <Routes>
-            <Route path="/" element={<LandingPage />} />
+            <Route path="/" element={<RootRoute />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/interview" element={<InterviewPage />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <DashboardPage />
+                </ProtectedRoute>
+              }
+            />
             <Route path="/r/:slug" element={<RoomPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/terms" element={<TermsPage />} />

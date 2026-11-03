@@ -9,13 +9,147 @@ import { test, expect } from "@playwright/test";
  */
 test.describe("Multi-Context Room Creation & Guest Join Flow", () => {
   test("Host creates room and Guest joins with eviction notice", async ({ browser }) => {
-    // Context A: Host
+    // Context A: Host (authenticated)
     const hostContext = await browser.newContext();
     const hostPage = await hostContext.newPage();
 
     // Context B: Anonymous Guest (isolated cookies/storage)
     const guestContext = await browser.newContext();
     const guestPage = await guestContext.newPage();
+
+    const mockHostUser = {
+      id: "host-user-1",
+      email: "host@example.com",
+      displayName: "Host Alice",
+      role: "user" as const,
+      createdAt: new Date().toISOString(),
+    };
+
+    const mockRoomSlug = "e2e-practice-room";
+    const mockCreatedRoom = {
+      id: "room-123",
+      title: "E2E Test Room",
+      slug: mockRoomSlug,
+      language: "python" as const,
+      type: "practice" as const,
+      status: "active" as const,
+      memberCount: 1,
+      maxParticipants: 6,
+      hostUserId: "host-user-1",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const mockHostMember = {
+      id: "member-host",
+      roomId: "room-123",
+      userId: "host-user-1",
+      displayName: "Host Alice",
+      role: "host" as const,
+      isOnline: true,
+      joinedAt: new Date().toISOString(),
+    };
+
+    const mockGuestMember = {
+      id: "member-guest",
+      roomId: "room-123",
+      displayName: "Guest Alice",
+      role: "editor" as const,
+      isOnline: true,
+      joinedAt: new Date().toISOString(),
+    };
+
+    // Route mocks for Host
+    await hostPage.route("**/api/v1/me", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(mockHostUser),
+      });
+    });
+
+    await hostPage.route("**/api/v1/rooms?*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rooms: [], nextCursor: null }),
+      });
+    });
+
+    await hostPage.route("**/api/v1/rooms", async (route) => {
+      if (route.request().method() === "POST") {
+        await route.fulfill({
+          status: 201,
+          contentType: "application/json",
+          body: JSON.stringify({
+            room: mockCreatedRoom,
+            currentMember: mockHostMember,
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await hostPage.route(`**/api/v1/rooms/${mockRoomSlug}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          room: mockCreatedRoom,
+          currentMember: mockHostMember,
+          members: [mockHostMember],
+        }),
+      });
+    });
+
+    // Route mocks for Guest
+    await guestPage.route("**/api/v1/me", async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "UNAUTHORIZED", message: "Not authenticated" },
+        }),
+      });
+    });
+
+    let guestJoined = false;
+    await guestPage.route(`**/api/v1/rooms/${mockRoomSlug}`, async (route) => {
+      if (guestJoined) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            room: { ...mockCreatedRoom, memberCount: 2 },
+            currentMember: mockGuestMember,
+            members: [mockHostMember, mockGuestMember],
+          }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            room: mockCreatedRoom,
+            members: [mockHostMember],
+          }),
+        });
+      }
+    });
+
+    await guestPage.route(`**/api/v1/rooms/${mockRoomSlug}/join`, async (route) => {
+      guestJoined = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          room: { ...mockCreatedRoom, memberCount: 2 },
+          currentMember: mockGuestMember,
+          members: [mockHostMember, mockGuestMember],
+        }),
+      });
+    });
 
     try {
       // 1. Host opens dashboard and clicks "Start a Room"

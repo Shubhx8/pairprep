@@ -8,11 +8,12 @@ import DashboardPage from "../dashboard.js";
 import PrivacyPage from "../privacy.js";
 import TermsPage from "../terms.js";
 import ContactPage from "../contact.js";
+import { features } from "../../config/features.js";
 
 describe("Marketing Route Rendering", () => {
-  it("renders /login with sign in heading and oauth buttons", () => {
+  it("renders /login with OAuth links only and no password or email fields", () => {
     render(
-      <MemoryRouter initialEntries={["/login"]}>
+      <MemoryRouter initialEntries={["/login?returnTo=/dashboard"]}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
         </Routes>
@@ -20,13 +21,25 @@ describe("Marketing Route Rendering", () => {
     );
 
     expect(screen.getByText(/Welcome back to/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Log in$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Google/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /GitHub/i })).toBeInTheDocument();
+    const googleLink = screen.getByRole("link", { name: /Continue with Google/i });
+    const githubLink = screen.getByRole("link", { name: /Continue with GitHub/i });
+    expect(googleLink).toBeInTheDocument();
+    expect(googleLink).toHaveAttribute(
+      "href",
+      "/api/v1/auth/google?returnTo=%2Fdashboard"
+    );
+    expect(githubLink).toBeInTheDocument();
+    expect(githubLink).toHaveAttribute(
+      "href",
+      "/api/v1/auth/github?returnTo=%2Fdashboard"
+    );
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
+    expect(screen.queryByLabelText(/email/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Log in$/i })).toBeNull();
     expect(screen.getByText(/Practicing/i)).toBeInTheDocument();
   });
 
-  it("renders /signup with username field and create account button", () => {
+  it("renders /signup with OAuth links only and no password, email, or username fields", () => {
     render(
       <MemoryRouter initialEntries={["/signup"]}>
         <Routes>
@@ -36,11 +49,20 @@ describe("Marketing Route Rendering", () => {
     );
 
     expect(screen.getByText(/Create your/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Username/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Create account$/i })).toBeInTheDocument();
+    const googleLink = screen.getByRole("link", { name: /Continue with Google/i });
+    const githubLink = screen.getByRole("link", { name: /Continue with GitHub/i });
+    expect(googleLink).toBeInTheDocument();
+    expect(googleLink).toHaveAttribute("href", "/api/v1/auth/google");
+    expect(githubLink).toBeInTheDocument();
+    expect(githubLink).toHaveAttribute("href", "/api/v1/auth/github");
+    expect(screen.queryByLabelText(/username/i)).toBeNull();
+    expect(screen.queryByLabelText(/email/i)).toBeNull();
+    expect(screen.queryByLabelText(/password/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Create account$/i })).toBeNull();
   });
 
-  it("renders /interview with 5 workflow steps and feedback previews", () => {
+  it("renders /interview when interviewMode flag is enabled", () => {
+    features.interviewMode = true;
     render(
       <MemoryRouter initialEntries={["/interview"]}>
         <Routes>

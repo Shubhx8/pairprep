@@ -1,11 +1,9 @@
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from "framer-motion";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   Check,
-  Eye,
-  EyeOff,
   FileCode2,
   Folder,
   FolderOpen,
@@ -15,7 +13,6 @@ import {
   Terminal,
   Timer,
   Users,
-  Info,
 } from "lucide-react";
 import { Logo } from "./landing.js";
 import { routes } from "../config/routes.js";
@@ -308,36 +305,18 @@ function GitHubIcon() {
   );
 }
 
-function Field({
-  id,
-  label,
-  children,
-}: {
-  id: string;
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={id} className="text-foreground text-xs font-medium">
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-const inputClass =
-  "h-10 w-full rounded-xl border border-input bg-card/70 px-3.5 text-sm text-foreground shadow-soft outline-none transition placeholder:text-muted-foreground/70 focus:border-ring focus:bg-card focus:ring-4 focus:ring-ring/15";
-
 function AuthForm({ mode }: { mode: AuthMode }) {
-  const [showPassword, setShowPassword] = useState(false);
-  const [notice, setNotice] = useState(false);
+  const [searchParams] = useSearchParams();
+  const returnTo = searchParams.get("returnTo");
   const signup = mode === "signup";
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    setNotice(true);
-  };
+
+  const googleHref = returnTo
+    ? `/api/v1/auth/google?returnTo=${encodeURIComponent(returnTo)}`
+    : "/api/v1/auth/google";
+  const githubHref = returnTo
+    ? `/api/v1/auth/github?returnTo=${encodeURIComponent(returnTo)}`
+    : "/api/v1/auth/github";
+
   const item = (i: number) => ({
     initial: { opacity: 0, y: 14 },
     animate: { opacity: 1, y: 0 },
@@ -381,114 +360,28 @@ function AuthForm({ mode }: { mode: AuthMode }) {
           : "Log in to jump back into your practice rooms and mock interviews."}
       </motion.p>
 
-      <form onSubmit={onSubmit} className="mt-5 space-y-3" noValidate>
-        {signup && (
-          <motion.div {...item(3)}>
-            <Field id="username" label="Username">
-              <input
-                id="username"
-                name="username"
-                autoComplete="username"
-                placeholder="ada_codes"
-                className={inputClass}
-              />
-            </Field>
-          </motion.div>
-        )}
-        <motion.div {...item(4)}>
-          <Field id="email" label="Your email">
-            <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              placeholder="ada@example.com"
-              className={inputClass}
-            />
-          </Field>
-        </motion.div>
-        <motion.div {...item(5)}>
-          <Field id="password" label={signup ? "Create password" : "Password"}>
-            <div className="relative">
-              <input
-                id="password"
-                name="password"
-                type={showPassword ? "text" : "password"}
-                autoComplete={signup ? "new-password" : "current-password"}
-                placeholder="••••••••••"
-                className={`${inputClass} pr-11`}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                className="text-muted-foreground hover:bg-muted hover:text-foreground absolute right-1.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg transition"
-              >
-                {showPassword ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </button>
-            </div>
-          </Field>
-        </motion.div>
-        <motion.button
-          {...item(6)}
-          type="submit"
+      <motion.div {...item(3)} className="mt-8 flex flex-col gap-3">
+        <motion.a
+          href={googleHref}
           whileHover={{ y: -2 }}
           whileTap={{ scale: 0.98 }}
-          className="bg-primary text-primary-foreground shadow-button group relative mt-1 flex h-10 w-full items-center justify-center gap-2 overflow-hidden rounded-xl text-sm font-medium"
+          className="border-input bg-card/80 text-foreground shadow-soft hover:bg-card flex h-11 items-center justify-center gap-3 rounded-xl border text-sm font-medium transition"
         >
-          <span className="auth-button-sheen absolute inset-0" />
-          <span className="relative">{signup ? "Create account" : "Log in"}</span>
-        </motion.button>
-      </form>
-
-      <motion.div
-        {...item(7)}
-        className="text-muted-foreground my-4 flex items-center gap-3 text-[11px]"
-      >
-        <span className="bg-border h-px flex-1" />
-        or continue with
-        <span className="bg-border h-px flex-1" />
-      </motion.div>
-      <motion.div {...item(8)} className="grid grid-cols-2 gap-3">
-        {[
-          { label: "Google", Icon: GoogleIcon },
-          { label: "GitHub", Icon: GitHubIcon },
-        ].map(({ label, Icon }) => (
-          <motion.button
-            key={label}
-            type="button"
-            onClick={() => setNotice(true)}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.97 }}
-            className="border-input bg-card/70 text-foreground shadow-soft hover:bg-card flex h-10 items-center justify-center gap-2 rounded-xl border text-sm font-medium transition"
-          >
-            <Icon />
-            {label}
-          </motion.button>
-        ))}
+          <GoogleIcon />
+          Continue with Google
+        </motion.a>
+        <motion.a
+          href={githubHref}
+          whileHover={{ y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          className="border-input bg-card/80 text-foreground shadow-soft hover:bg-card flex h-11 items-center justify-center gap-3 rounded-xl border text-sm font-medium transition"
+        >
+          <GitHubIcon />
+          Continue with GitHub
+        </motion.a>
       </motion.div>
 
-      <AnimatePresence>
-        {notice && (
-          <motion.p
-            role="status"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="border-roadmap/30 bg-roadmap/10 text-foreground mt-4 flex items-start gap-2 overflow-hidden rounded-xl border px-3 py-2.5 text-xs leading-relaxed"
-          >
-            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            PairPrep accounts open with the first practice rooms. Sign-up and log in
-            aren't connected yet.
-          </motion.p>
-        )}
-      </AnimatePresence>
-
-      <motion.p {...item(9)} className="text-muted-foreground mt-5 text-center text-sm">
+      <motion.p {...item(4)} className="text-muted-foreground mt-8 text-center text-sm">
         {signup ? "Already have an account? " : "New to PairPrep? "}
         <Link
           to={signup ? routes.signIn : routes.signUp}

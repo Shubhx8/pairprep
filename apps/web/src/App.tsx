@@ -7,6 +7,7 @@ const LoginPage = lazy(() => import("./marketing/login.js"));
 const SignupPage = lazy(() => import("./marketing/signup.js"));
 const InterviewPage = lazy(() => import("./marketing/interview.js"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage.js"));
+const RoomPage = lazy(() => import("./pages/RoomPage.js"));
 const PrivacyPage = lazy(() => import("./marketing/privacy.js"));
 const TermsPage = lazy(() => import("./marketing/terms.js"));
 const ContactPage = lazy(() => import("./marketing/contact.js"));
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/interview" element={<InterviewPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/r/:slug" element={<RoomPage />} />
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/contact" element={<ContactPage />} />

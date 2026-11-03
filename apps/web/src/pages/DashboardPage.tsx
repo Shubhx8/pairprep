@@ -4,6 +4,7 @@ import { useAuth } from "../lib/authContext.js";
 import { apiClient, ApiClientError } from "../lib/apiClient.js";
 import type { RoomDto, RoomListResponse } from "@pairprep/shared";
 import { CreateRoomDialog } from "../components/CreateRoomDialog.js";
+import { ProfileModal } from "../components/ProfileModal.js";
 import { Button } from "../components/ui/Button.js";
 import { Skeleton } from "../components/ui/Skeleton.js";
 import { EmptyState } from "../components/ui/EmptyState.js";
@@ -30,6 +31,7 @@ export default function DashboardPage() {
     null
   );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   useEffect(() => {
     document.title = "Dashboard · PairPrep";
@@ -142,12 +144,19 @@ export default function DashboardPage() {
 
             {user && (
               <div className="flex items-center gap-2 pl-2 border-l border-border-subtle">
-                <div className="h-8 w-8 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center font-semibold text-xs text-primary">
-                  {user.displayName.charAt(0).toUpperCase()}
-                </div>
-                <span className="text-sm font-medium text-text-secondary hidden md:inline max-w-[120px] truncate">
-                  {user.displayName}
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsProfileOpen(true)}
+                  className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer text-left"
+                  title="Edit Profile"
+                >
+                  <div className="h-8 w-8 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center font-semibold text-xs text-primary">
+                    {user.displayName.charAt(0).toUpperCase()}
+                  </div>
+                  <span className="text-sm font-medium text-text-secondary hidden md:inline max-w-[120px] truncate">
+                    {user.displayName}
+                  </span>
+                </button>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -336,6 +345,9 @@ export default function DashboardPage() {
           setRooms((prev) => [newRoom, ...prev]);
         }}
       />
+
+      {/* Profile Settings Modal */}
+      <ProfileModal open={isProfileOpen} onOpenChange={setIsProfileOpen} />
     </div>
   );
 }

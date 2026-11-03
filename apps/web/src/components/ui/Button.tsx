@@ -1,4 +1,5 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
+import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils.js";
 
@@ -9,6 +10,8 @@ export const buttonVariants = cva(
       variant: {
         primary:
           "bg-primary text-primary-fg hover:bg-primary-hover font-semibold shadow-sm",
+        default:
+          "bg-primary text-primary-fg hover:bg-primary-hover font-semibold shadow-sm",
         secondary:
           "bg-surface text-text-primary hover:bg-surface-hover border border-border-input",
         destructive:
@@ -17,11 +20,13 @@ export const buttonVariants = cva(
           "bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-hover",
         outline:
           "bg-transparent text-text-primary border border-border-input hover:bg-surface-hover",
+        link: "text-primary underline-offset-4 hover:underline bg-transparent p-0 h-auto",
       },
       size: {
         sm: "h-8 px-3 text-xs rounded-md",
         md: "h-10 px-4 py-2 text-sm rounded-md",
         lg: "h-11 px-6 text-base rounded-lg",
+        icon: "h-9 w-9 p-0 rounded-md",
       },
     },
     defaultVariants: {
@@ -34,6 +39,7 @@ export const buttonVariants = cva(
 export interface ButtonProps
   extends ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> {
   isLoading?: boolean;
+  asChild?: boolean;
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
@@ -45,11 +51,24 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       isLoading = false,
       disabled,
       children,
+      asChild = false,
       type = "button",
       ...props
     },
     ref
   ) => {
+    if (asChild) {
+      return (
+        <Slot
+          ref={ref}
+          className={cn(buttonVariants({ variant, size }), className)}
+          {...props}
+        >
+          {children}
+        </Slot>
+      );
+    }
+
     return (
       <button
         ref={ref}

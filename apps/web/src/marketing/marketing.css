@@ -1,0 +1,725 @@
+/* Self-hosted fonts through @fontsource (OFL-1.1) */
+@import "@fontsource/instrument-serif/400.css";
+@import "@fontsource/instrument-serif/400-italic.css";
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@theme inline {
+  --color-sand: var(--sand);
+  --color-panel: var(--panel);
+  --color-panel-inner: var(--panel-inner);
+  --color-panel-foreground: var(--panel-foreground);
+  --color-panel-muted: var(--panel-muted);
+  --color-success: var(--success);
+  --color-dot-red: var(--dot-red);
+  --color-dot-yellow: var(--dot-yellow);
+  --color-dot-green: var(--dot-green);
+  --color-roadmap: var(--roadmap);
+  --color-progress-ink: var(--progress-ink);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+/* All landing styles strictly scoped under .marketing */
+:root:has(.marketing),
+.marketing {
+  --font-sans: "Geist Sans", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius: 0.875rem;
+  --background: oklch(0.986 0.004 95);
+  --foreground: oklch(0.22 0.01 60);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.01 60);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.01 60);
+  --primary: oklch(0.27 0.012 55);
+  --primary-foreground: oklch(0.98 0.004 90);
+  --secondary: oklch(0.95 0.006 85);
+  --secondary-foreground: oklch(0.25 0.01 60);
+  --muted: oklch(0.955 0.005 85);
+  --muted-foreground: oklch(0.52 0.01 60);
+  --accent: oklch(0.93 0.008 80);
+  --accent-foreground: oklch(0.22 0.01 60);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0 0 0 / 6%);
+  --input: oklch(0 0 0 / 8%);
+  --ring: oklch(0.6 0.02 60);
+  --sand: oklch(0.955 0.012 80);
+  --panel: oklch(0.33 0.014 60 / 68%);
+  --panel-inner: oklch(0.45 0.014 60 / 35%);
+  --panel-foreground: oklch(0.95 0.006 80);
+  --panel-muted: oklch(0.72 0.01 70);
+  --success: oklch(0.72 0.14 150);
+  --dot-red: oklch(0.65 0.21 25);
+  --dot-yellow: oklch(0.82 0.16 85);
+  --dot-green: oklch(0.72 0.18 145);
+  --shadow-soft: 0 1px 2px oklch(0 0 0 / 4%), 0 12px 32px -12px oklch(0.3 0.02 60 / 18%);
+  --shadow-float: 0 30px 80px -20px oklch(0.2 0.02 60 / 45%);
+  --shadow-button:
+    inset 0 1px 0 oklch(1 0 0 / 15%), 0 6px 18px -6px oklch(0.2 0.02 60 / 55%);
+  --footer-background: linear-gradient(
+    180deg,
+    var(--background),
+    var(--sand) 40%,
+    var(--secondary)
+  );
+  --footer-editor-mask: linear-gradient(180deg, black 20%, transparent 98%);
+  --roadmap: oklch(0.78 0.1 85);
+  --preview-surface: oklch(0.28 0.018 155);
+  --progress-sage: oklch(0.95 0.025 145);
+  --progress-blue: oklch(0.95 0.025 235);
+  --progress-rose: oklch(0.96 0.023 15);
+  --ink-sage: oklch(0.4 0.07 145);
+  --ink-blue: oklch(0.42 0.08 235);
+  --ink-rose: oklch(0.46 0.08 15);
+
+  font-family: var(--font-sans);
+  background-color: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+.marketing * {
+  border-color: var(--border);
+}
+
+.marketing .font-serif {
+  font-family: var(--font-serif);
+}
+
+.marketing .font-mono {
+  font-family: var(--font-mono);
+}
+
+.marketing .font-sans {
+  font-family: var(--font-sans);
+}
+
+/* Surface utilities */
+.marketing .shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+
+.marketing .shadow-float {
+  box-shadow: var(--shadow-float);
+}
+
+.marketing .shadow-button {
+  box-shadow: var(--shadow-button);
+}
+
+.marketing .glass-panel {
+  background: var(--panel);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  border: 1px solid oklch(1 0 0 / 14%);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 12%),
+    var(--shadow-float);
+}
+
+.marketing .glass-inner {
+  background: var(--panel-inner);
+  border: 1px solid oklch(1 0 0 / 10%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 6%);
+}
+
+.marketing .fade-x {
+  mask-image: linear-gradient(90deg, transparent, black 12%, black 88%, transparent);
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent,
+    black 12%,
+    black 88%,
+    transparent
+  );
+}
+
+.marketing .fade-bottom {
+  mask-image: linear-gradient(180deg, transparent, black 30%);
+  -webkit-mask-image: linear-gradient(180deg, transparent, black 30%);
+}
+
+@keyframes marketing-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.marketing .animate-marquee {
+  animation: marketing-marquee 30s linear infinite;
+}
+
+.marketing .mask-band {
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 50%, black 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(
+    ellipse 70% 60% at 50% 50%,
+    black 30%,
+    transparent 75%
+  );
+}
+
+.marketing .page-bg {
+  background:
+    radial-gradient(
+      ellipse 60% 40% at 15% 35%,
+      oklch(0.95 0.02 75 / 60%),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 50% 35% at 85% 60%,
+      oklch(0.94 0.015 60 / 55%),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 60% 30% at 30% 85%,
+      oklch(0.95 0.015 90 / 50%),
+      transparent 70%
+    ),
+    linear-gradient(180deg, var(--background), var(--sand) 50%, var(--background));
+}
+
+.marketing .pairprep-footer {
+  background: var(--footer-background);
+}
+
+.marketing .preview-surface {
+  background: var(--preview-surface);
+}
+
+.marketing .roadmap-badge {
+  color: var(--ink-sage);
+}
+
+.marketing .glass-panel .roadmap-badge,
+.marketing .preview-surface .roadmap-badge {
+  color: var(--roadmap);
+}
+
+.marketing .replay-range {
+  accent-color: var(--success);
+}
+
+.marketing .progress-sage {
+  background: var(--progress-sage);
+  --progress-ink: var(--ink-sage);
+}
+
+.marketing .progress-blue {
+  background: var(--progress-blue);
+  --progress-ink: var(--ink-blue);
+}
+
+.marketing .progress-rose {
+  background: var(--progress-rose);
+  --progress-ink: var(--ink-rose);
+}
+
+.marketing .progress-track {
+  padding-inline: 20px;
+  max-width: 80rem;
+  margin-inline: auto;
+}
+
+.marketing .progress-card {
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  min-height: 520px;
+}
+
+.marketing .progress-card:not(.is-active) {
+  opacity: 1;
+}
+
+.marketing .progress-card.is-active {
+  box-shadow: var(--shadow-soft);
+}
+
+@media (hover: hover) {
+  .marketing .progress-card:hover {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+.marketing .navigation-shell {
+  background: color-mix(in oklab, var(--background) 85%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-soft);
+}
+
+@media (max-width: 440px) {
+  .marketing .progress-track {
+    padding-inline: 20px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .marketing .progress-track {
+    justify-content: center;
+    overflow: visible;
+  }
+  .marketing .progress-card {
+    width: calc((100% - 40px) / 3);
+    max-width: 380px;
+  }
+  .marketing .progress-controls {
+    display: none;
+  }
+}
+
+.marketing .footer-editor {
+  transform: perspective(1200px) rotateY(-18deg) rotateX(14deg);
+  mask-image: var(--footer-editor-mask);
+  -webkit-mask-image: var(--footer-editor-mask);
+}
+
+.marketing .footer-wordmark {
+  font-family: var(--font-sans);
+  font-size: 190px;
+  color: oklch(0.22 0.01 60 / 10%);
+}
+
+@media (min-width: 768px) {
+  .marketing .footer-wordmark {
+    font-size: 300px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .marketing .footer-wordmark {
+    font-size: 360px;
+  }
+}
+
+@media (max-width: 767px) {
+  .marketing .footer-editor {
+    margin-top: 0;
+    max-height: 270px;
+  }
+}
+
+/* Hero practice room */
+.marketing .hero-room {
+  will-change: transform;
+  mask-image: linear-gradient(
+    180deg,
+    black calc(100% - 260px),
+    transparent calc(100% - 40px)
+  );
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    black calc(100% - 260px),
+    transparent calc(100% - 40px)
+  );
+}
+
+.marketing .hero-room-glow {
+  box-shadow:
+    0 0 0 1px oklch(1 0 0 / 18%),
+    0 40px 120px -30px oklch(0.75 0.08 70 / 70%);
+}
+
+.marketing .hero-rocks {
+  filter: drop-shadow(0 -18px 30px oklch(0.25 0.03 60 / 28%)) contrast(1.05)
+    saturate(1.05);
+  mask-image: linear-gradient(
+    180deg,
+    black 60%,
+    oklch(0 0 0 / 70%) 75%,
+    oklch(0 0 0 / 25%) 90%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    black 60%,
+    oklch(0 0 0 / 70%) 75%,
+    oklch(0 0 0 / 25%) 90%,
+    transparent 100%
+  );
+}
+
+.marketing .hero-terrain {
+  mask-image: linear-gradient(180deg, transparent, black 30%, black 62%, transparent 98%);
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    transparent,
+    black 30%,
+    black 62%,
+    transparent 98%
+  );
+}
+
+@keyframes hero-mist-drift {
+  0%,
+  100% {
+    transform: translateX(-2%);
+  }
+  50% {
+    transform: translateX(2%);
+  }
+}
+
+.marketing .hero-mist-drift {
+  animation: hero-mist-drift 18s ease-in-out infinite;
+}
+
+/* Why practice together cards */
+.marketing .progress-sand {
+  background: oklch(0.95 0.03 80);
+  --progress-ink: oklch(0.45 0.08 70);
+}
+
+.marketing .progress-lilac {
+  background: oklch(0.95 0.025 300);
+  --progress-ink: oklch(0.45 0.08 300);
+}
+
+.marketing .progress-card {
+  background-image: radial-gradient(
+    120% 60% at 100% 0%,
+    oklch(1 0 0 / 60%),
+    transparent 60%
+  );
+}
+
+.marketing .progress-illustration {
+  background: color-mix(in oklab, var(--card) 60%, transparent);
+  color: var(--progress-ink);
+  background-image: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--progress-ink) 18%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 16px 16px;
+}
+
+.marketing .progress-node {
+  background: var(--progress-ink);
+  color: var(--card);
+  box-shadow: 0 10px 24px -8px var(--progress-ink);
+}
+
+.marketing .progress-line {
+  stroke: var(--progress-ink);
+  stroke-width: 1.5;
+  stroke-opacity: 0.6;
+}
+
+.marketing .progress-bubble {
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid oklch(0 0 0 / 8%);
+  border-radius: 10px;
+  box-shadow: var(--shadow-soft);
+}
+
+.marketing .progress-bubble.is-strong {
+  background: var(--progress-ink);
+  color: var(--card);
+}
+
+.marketing .progress-highlight {
+  background: color-mix(in oklab, var(--destructive) 20%, transparent);
+  color: var(--destructive);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.marketing .progress-ring-bg {
+  fill: none;
+  stroke: color-mix(in oklab, var(--progress-ink) 18%, transparent);
+  stroke-width: 8;
+}
+
+.marketing .progress-ring {
+  fill: none;
+  stroke: var(--progress-ink);
+  stroke-width: 8;
+  stroke-linecap: round;
+}
+
+.marketing .progress-track-line {
+  background: color-mix(in oklab, var(--progress-ink) 18%, transparent);
+}
+
+.marketing .progress-fill {
+  background: var(--progress-ink);
+}
+
+/* Interview showcase */
+.marketing .interview-shell {
+  background: linear-gradient(160deg, var(--card), var(--sand));
+}
+
+.marketing .interview-stage {
+  box-shadow: var(--shadow-float);
+}
+
+.marketing .interview-grid-lines {
+  background-image:
+    linear-gradient(oklch(1 0 0 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(1 0 0 / 5%) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.marketing .interview-window {
+  background: oklch(0.2 0.015 155);
+  border: 1px solid oklch(1 0 0 / 10%);
+  border-radius: 14px;
+  box-shadow: var(--shadow-float);
+}
+
+.marketing .interview-paper {
+  background: var(--card);
+  color: var(--foreground);
+  border-radius: 14px;
+  box-shadow: var(--shadow-float);
+}
+
+.marketing .interview-flag {
+  position: absolute;
+  margin-left: 6px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-sans);
+  font-size: 9px;
+}
+
+.marketing .interview-flag.is-you {
+  background: var(--dot-red);
+  color: var(--primary-foreground);
+}
+
+.marketing .interview-flag.is-partner {
+  background: var(--dot-yellow);
+  color: var(--primary);
+}
+
+.marketing .skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  padding: 8px;
+  z-index: 100;
+  transition: top 0.2s;
+}
+
+.marketing .skip-link:focus {
+  top: 0;
+}
+
+/* Explicit class fallbacks ensuring 100% styling */
+.marketing .bg-background {
+  background-color: var(--background);
+}
+.marketing .text-foreground {
+  color: var(--foreground);
+}
+.marketing .bg-card {
+  background-color: var(--card);
+}
+.marketing .text-card-foreground {
+  color: var(--card-foreground);
+}
+.marketing .bg-secondary {
+  background-color: var(--secondary);
+}
+.marketing .text-secondary {
+  color: var(--secondary);
+}
+.marketing .text-secondary-foreground {
+  color: var(--secondary-foreground);
+}
+.marketing .bg-muted {
+  background-color: var(--muted);
+}
+.marketing .text-muted-foreground {
+  color: var(--muted-foreground);
+}
+.marketing .bg-primary {
+  background-color: var(--primary);
+}
+.marketing .text-primary {
+  color: var(--primary);
+}
+.marketing .text-primary-foreground {
+  color: var(--primary-foreground);
+}
+.marketing .bg-accent {
+  background-color: var(--accent);
+}
+.marketing .text-accent-foreground {
+  color: var(--accent-foreground);
+}
+.marketing .border-border {
+  border-color: var(--border);
+}
+.marketing .border-input {
+  border-color: var(--input);
+}
+.marketing .bg-panel {
+  background-color: var(--panel);
+}
+.marketing .text-panel-foreground {
+  color: var(--panel-foreground);
+}
+.marketing .text-panel-muted {
+  color: var(--panel-muted);
+}
+.marketing .bg-panel-inner {
+  background-color: var(--panel-inner);
+}
+.marketing .bg-dot-red {
+  background-color: var(--dot-red);
+}
+.marketing .bg-dot-yellow {
+  background-color: var(--dot-yellow);
+}
+.marketing .bg-dot-green {
+  background-color: var(--dot-green);
+}
+.marketing .text-dot-yellow {
+  color: var(--dot-yellow);
+}
+.marketing .text-dot-red {
+  color: var(--dot-red);
+}
+.marketing .text-success {
+  color: var(--success);
+}
+.marketing .bg-success {
+  background-color: var(--success);
+}
+.marketing .text-roadmap {
+  color: var(--roadmap);
+}
+.marketing .border-roadmap\/25 {
+  border-color: color-mix(in oklab, var(--roadmap) 25%, transparent);
+}
+.marketing .border-roadmap\/30 {
+  border-color: color-mix(in oklab, var(--roadmap) 30%, transparent);
+}
+.marketing .bg-roadmap\/10 {
+  background-color: color-mix(in oklab, var(--roadmap) 10%, transparent);
+}
+.marketing .border-success {
+  border-color: var(--success);
+}
+.marketing .bg-success\/20 {
+  background-color: color-mix(in oklab, var(--success) 20%, transparent);
+}
+.marketing .border-panel-muted\/40 {
+  border-color: color-mix(in oklab, var(--panel-muted) 40%, transparent);
+}
+.marketing .border-panel-muted\/30 {
+  border-color: color-mix(in oklab, var(--panel-muted) 30%, transparent);
+}
+.marketing .border-panel-muted\/20 {
+  border-color: color-mix(in oklab, var(--panel-muted) 20%, transparent);
+}
+.marketing .bg-card\/70 {
+  background-color: color-mix(in oklab, var(--card) 70%, transparent);
+}
+.marketing .bg-card\/80 {
+  background-color: color-mix(in oklab, var(--card) 80%, transparent);
+}
+
+/* Sign up / log in */
+.marketing .auth-scrim {
+  background: linear-gradient(
+    180deg,
+    oklch(0.2 0.02 60 / 35%),
+    oklch(0.2 0.02 60 / 10%) 40%,
+    oklch(0.2 0.02 60 / 45%)
+  );
+}
+.marketing .auth-shell {
+  background: color-mix(in oklab, var(--background) 25%, transparent);
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  border: 1px solid oklch(1 0 0 / 35%);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 35%),
+    var(--shadow-float);
+  will-change: transform;
+  transform: translateZ(0);
+}
+.marketing .auth-form-panel {
+  background: color-mix(in oklab, var(--background) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid oklch(1 0 0 / 60%);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 70%),
+    var(--shadow-soft);
+  will-change: transform;
+  transform: translateZ(0);
+}
+.marketing .auth-particle {
+  background: oklch(0.97 0.05 85 / 80%);
+  box-shadow: 0 0 8px oklch(0.9 0.12 80 / 70%);
+  will-change: transform, opacity;
+  transform: translateZ(0);
+  pointer-events: none;
+}
+@keyframes auth-sheen {
+  0% {
+    transform: translateX(-60%) skewX(-18deg);
+  }
+  100% {
+    transform: translateX(160%) skewX(-18deg);
+  }
+}
+.marketing .auth-sheen {
+  overflow: hidden;
+}
+.marketing .auth-sheen::before {
+  content: "";
+  position: absolute;
+  inset: -20% auto -20% 0;
+  width: 35%;
+  background: linear-gradient(90deg, transparent, oklch(1 0 0 / 10%), transparent);
+  animation: auth-sheen 14s ease-in-out infinite;
+}
+.marketing .auth-button-sheen {
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    oklch(1 0 0 / 18%) 50%,
+    transparent 70%
+  );
+  transform: translateX(-100%);
+  transition: transform 700ms ease;
+}
+.marketing .group:hover .auth-button-sheen {
+  transform: translateX(100%);
+}

@@ -29,4 +29,20 @@ if (typeof window !== "undefined") {
     disconnect() {}
   }
   window.ResizeObserver = window.ResizeObserver || ResizeObserverPolyfill;
+
+  // Polyfill IntersectionObserver
+  class IntersectionObserverPolyfill {
+    readonly root: Element | null = null;
+    readonly rootMargin: string = "";
+    readonly thresholds: ReadonlyArray<number> = [];
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+  window.IntersectionObserver =
+    window.IntersectionObserver ||
+    (IntersectionObserverPolyfill as unknown as typeof IntersectionObserver);
 }

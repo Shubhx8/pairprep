@@ -26,7 +26,11 @@ function getAllTsxFiles(dir: string): string[] {
     const fullPath = path.join(dir, file);
     const stat = fs.statSync(fullPath);
     if (stat && stat.isDirectory()) {
-      if (file !== "__tests__" && file !== "test") {
+      // Exclude test directories and src/marketing/** from the design token guard.
+      // src/marketing/** implements the self-contained landing page visual theme
+      // scoped under .marketing in marketing.css, whereas all application shell
+      // and core product components stay strictly guarded by Direction A tokens.
+      if (file !== "__tests__" && file !== "test" && file !== "marketing") {
         results = results.concat(getAllTsxFiles(fullPath));
       }
     } else if (file.endsWith(".tsx") && !file.includes(".test.")) {

@@ -56,6 +56,15 @@ export default defineConfig({
         },
         extends: true,
       },
+      {
+        test: {
+          name: "e2e-support",
+          environment: "node",
+          include: ["test/e2e/support/**/*.test.ts"],
+          exclude: ["**/node_modules/**", "**/*.spec.ts"],
+        },
+        extends: true,
+      },
     ],
   },
 });

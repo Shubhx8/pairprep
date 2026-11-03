@@ -60,10 +60,19 @@ Task T06 establishes the user-facing web frontend for PairPrep. It provides both
 
 ---
 
-## 4. Verification Evidence
+## 4. Verification Evidence & Metrics
 
 - **Lint**: `eslint .` passed with 0 errors and 0 warnings.
 - **Prettier**: `prettier --check .` passed with 100% formatted files.
 - **TypeScript**: `tsc --noEmit` passed with 0 errors across `@pairprep/shared`, `@pairprep/server`, and `@pairprep/web`.
-- **Unit & Component Tests**: 10 test files and 50 unit/component tests passing in `apps/web` and `test/e2e/support`.
-- **Production Build**: Production Vite bundle built successfully in 7.94s.
+- **Unit & Component Tests**: 14 test files and 68 unit/component tests passing in `apps/web` and `test/e2e/support`.
+- **Bundle Gzip Metrics**:
+  - Main chunk (`index-*.js`): 289.56 kB (gzip: 91.08 kB)
+  - Landing chunk (`landing-*.js`): 176.63 kB (gzip: 54.29 kB) — reduced from 214.10 kB raw / 64.04 kB gzip (-9.75 kB gzip, ~15% reduction)
+  - Index CSS (`index-*.css`): 50.68 kB (gzip: 9.53 kB)
+- **Lighthouse Accessibility Audit**:
+  - `/` (Landing Page): **96 / 100**
+  - `/login` (Sign-in Page): **100 / 100**
+  - `/dashboard` (Authenticated Dashboard): **90 / 100** (anonymous redirect: 100 / 100)
+- **Production Build**: Production Vite bundle built successfully with zero errors.
+

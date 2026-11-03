@@ -6,7 +6,7 @@ const LandingPage = lazy(() => import("./marketing/landing.js"));
 const LoginPage = lazy(() => import("./marketing/login.js"));
 const SignupPage = lazy(() => import("./marketing/signup.js"));
 const InterviewPage = lazy(() => import("./marketing/interview.js"));
-const DashboardPage = lazy(() => import("./marketing/dashboard.js"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage.js"));
 const PrivacyPage = lazy(() => import("./marketing/privacy.js"));
 const TermsPage = lazy(() => import("./marketing/terms.js"));
 const ContactPage = lazy(() => import("./marketing/contact.js"));

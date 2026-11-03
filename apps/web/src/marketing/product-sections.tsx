@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "./button.js";
 import { interviewSteps, productFeatures, replayEvents } from "../lib/product-roadmap.js";
+import { features } from "../config/features.js";
 
 const mountains = "/images/mountains.webp";
 
@@ -45,6 +46,7 @@ function Entrance({
 }
 
 export function RoadmapBadge() {
+  if (!features.showRoadmap) return null;
   return (
     <span className="roadmap-badge inline-flex items-center gap-1.5 rounded-full border border-roadmap/25 bg-roadmap/10 px-2.5 py-1 font-mono text-[10px] text-roadmap">
       <CircleDot className="h-3 w-3" />
@@ -191,7 +193,7 @@ export function ProductWorkspace({
           </span>
           <span className="flex items-center gap-1 rounded border border-panel-muted/30 px-3 py-1.5 text-[10px]">
             <Send className="h-3 w-3" />
-            Submit · upcoming
+            {features.showRoadmap ? "Submit · upcoming" : "Submit"}
           </span>
         </div>
       )}
@@ -362,7 +364,9 @@ export function InterviewWorkflow() {
       <Entrance className="flex flex-wrap items-end justify-between gap-5">
         <div className="max-w-2xl">
           <RoadmapBadge />
-          <p className="mt-5 text-xs text-muted-foreground">INTERVIEW MODE — PHASE 2</p>
+          {features.showRoadmap && (
+            <p className="mt-5 text-xs text-muted-foreground">INTERVIEW MODE — PHASE 2</p>
+          )}
           <h2 className="mt-4 text-3xl font-medium leading-tight md:text-4xl">
             Experience a technical interview,
             <br />
@@ -608,10 +612,12 @@ export function FeedbackShowcase() {
           </article>
         </Entrance>
       </div>
-      <p className="mt-6 text-center text-xs text-muted-foreground">
-        Interview Mode, Session Replay and Scorecard are planned for Phase 2. All
-        interfaces shown are product previews.
-      </p>
+      {features.showRoadmap && (
+        <p className="mt-6 text-center text-xs text-muted-foreground">
+          Interview Mode, Session Replay and Scorecard are planned for Phase 2. All
+          interfaces shown are product previews.
+        </p>
+      )}
     </section>
   );
 }

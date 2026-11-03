@@ -10,6 +10,43 @@ describe("Landing Page Feature Gating (Requirement 8)", () => {
     features.interviewMode = false;
     features.sessionReplay = false;
     features.scorecard = false;
+    features.showRoadmap = false;
+  });
+
+  it("removes invented numbers or statistics such as '66 Partners'", () => {
+    render(
+      <BrowserRouter>
+        <LandingPage />
+      </BrowserRouter>
+    );
+
+    expect(screen.queryByText(/66 Partners/i)).toBeNull();
+  });
+
+  it("default: zero occurrences of 'Phase', 'Roadmap', 'upcoming', and 'coming soon' on landing page", () => {
+    const { container } = render(
+      <BrowserRouter>
+        <LandingPage />
+      </BrowserRouter>
+    );
+
+    const text = container.textContent || "";
+    expect(text).not.toMatch(/Phase/i);
+    expect(text).not.toMatch(/Roadmap/i);
+    expect(text).not.toMatch(/upcoming/i);
+    expect(text).not.toMatch(/coming soon/i);
+  });
+
+  it("flags on: renders roadmap text when showRoadmap flag is explicitly turned on", () => {
+    features.showRoadmap = true;
+
+    render(
+      <BrowserRouter>
+        <LandingPage />
+      </BrowserRouter>
+    );
+
+    expect(screen.getAllByText(/Phase 2 Roadmap/i).length).toBeGreaterThan(0);
   });
 
   it("default: flagged Phase 2 sections are completely absent when all flags are off", () => {

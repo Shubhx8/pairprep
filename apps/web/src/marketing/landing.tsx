@@ -359,7 +359,6 @@ function Hero() {
                       );
                     })}
                   </div>
-                  <p className="mt-3 text-xs text-panel-muted">66 Partners</p>
                   <div className="glass-inner mt-4 rounded-xl p-4 text-sm">
                     <p className="text-[10px] text-panel-muted">PROBLEM · TWO SUM</p>
                     <p className="border-panel-foreground mt-2 border-l pl-2 font-medium">

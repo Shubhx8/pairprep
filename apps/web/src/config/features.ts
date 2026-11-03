@@ -1,4 +1,9 @@
-export const features = { interviewMode: true, sessionReplay: true, scorecard: true };
+export const features = {
+  interviewMode: false,
+  sessionReplay: false,
+  scorecard: false,
+  showRoadmap: false,
+};
 export type FeatureFlags = typeof features;
 export function enabledInterviewItems(flags: FeatureFlags) {
   return flags.interviewMode

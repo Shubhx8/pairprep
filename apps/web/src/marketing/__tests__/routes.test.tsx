@@ -3,12 +3,14 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import LoginPage from "../login.js";
 import SignupPage from "../signup.js";
+import LandingPage from "../landing.js";
 import InterviewPage from "../interview.js";
 import DashboardPage from "../dashboard.js";
 import PrivacyPage from "../privacy.js";
 import TermsPage from "../terms.js";
 import ContactPage from "../contact.js";
 import { features } from "../../config/features.js";
+import { routes } from "../../config/routes.js";
 
 describe("Marketing Route Rendering", () => {
   it("renders /login with OAuth links only and no password or email fields", () => {
@@ -117,5 +119,41 @@ describe("Marketing Route Rendering", () => {
     );
     expect(screen.getByRole("heading", { name: /^Contact$/i })).toBeInTheDocument();
     u4();
+  });
+
+  it("routes.ts configuration: Start a room -> /dashboard, Sign in -> /login, no /rooms/new", () => {
+    expect(routes.start).toBe("/dashboard");
+    expect(routes.signIn).toBe("/login");
+    expect((routes as Record<string, string>)["roomsNew"]).toBeUndefined();
+    expect(Object.values(routes)).not.toContain("/rooms/new");
+  });
+
+  it("landing page and login page contain no email or password input fields", () => {
+    const { container: loginContainer, unmount: uLogin } = render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(loginContainer.querySelector('input[type="password"]')).toBeNull();
+    expect(loginContainer.querySelector('input[type="email"]')).toBeNull();
+    expect(loginContainer.querySelectorAll("input").length).toBe(0);
+    uLogin();
+
+    const { container: landingContainer, unmount: uLanding } = render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(landingContainer.querySelector('input[type="password"]')).toBeNull();
+    expect(landingContainer.querySelector('input[type="email"]')).toBeNull();
+    expect(landingContainer.querySelectorAll('input[type="password"]').length).toBe(0);
+    expect(landingContainer.querySelectorAll('input[type="email"]').length).toBe(0);
+    uLanding();
   });
 });

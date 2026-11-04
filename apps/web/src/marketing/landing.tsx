@@ -64,12 +64,13 @@ function Reveal({
   className?: string;
   delay?: number;
 }) {
+  const reduced = useReducedMotion();
   return (
     <motion.div
       className={className}
       variants={fadeUp}
-      initial="hidden"
-      whileInView="show"
+      initial={reduced ? false : "hidden"}
+      whileInView={reduced ? undefined : "show"}
       viewport={{ once: true, margin: "-60px" }}
       transition={{ delay }}
     >
@@ -245,6 +246,7 @@ function Hero() {
         alt=""
         width={1920}
         height={1088}
+        decoding="async"
         style={{ y: reduced ? 0 : bgY }}
         className="hero-terrain absolute inset-x-0 bottom-0 h-[72%] w-full object-cover object-[50%_35%] opacity-90"
       />
@@ -422,6 +424,7 @@ function Hero() {
         alt=""
         width={1920}
         height={640}
+        decoding="async"
         style={{ y: reduced ? 0 : rocksY }}
         className="hero-rocks pointer-events-none absolute inset-x-0 -bottom-28 z-20 w-full min-w-[900px] object-cover object-bottom md:-bottom-36"
       />
@@ -467,6 +470,7 @@ function HeroTransition() {
           src={mistBand}
           alt=""
           loading="lazy"
+          decoding="async"
           width={1920}
           height={640}
           style={{
@@ -538,6 +542,7 @@ function About() {
                 src={mountains}
                 alt="Misty mountain range"
                 loading="lazy"
+                decoding="async"
                 width={1600}
                 height={912}
                 className="h-72 w-full object-cover"
@@ -693,6 +698,7 @@ function Workspace() {
           src={painting}
           alt="Misty mountain lake painting"
           loading="lazy"
+          decoding="async"
           width={1920}
           height={912}
           style={{ y: reduced ? 0 : imgY, scale: 1.2 }}
@@ -861,6 +867,7 @@ function Process() {
                         src={i === 2 ? heroTerrain : i === 1 ? painting : mountains}
                         alt=""
                         loading="lazy"
+                        decoding="async"
                         className="absolute inset-0 h-full w-full object-cover"
                       />
                       <p className="sr-only">
@@ -1118,6 +1125,7 @@ export function Footer() {
           src={footerHands}
           alt=""
           loading="lazy"
+          decoding="async"
           width={1536}
           height={512}
           style={{ y: reduced ? 0 : handsY }}
@@ -1154,6 +1162,7 @@ function MistBand({ flip = false }: { flip?: boolean }) {
         src={mistBand}
         alt=""
         loading="lazy"
+        decoding="async"
         width={1920}
         height={640}
         style={{

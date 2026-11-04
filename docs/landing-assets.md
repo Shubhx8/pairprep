@@ -1,39 +1,41 @@
 # Landing Page Asset Registry & Licenses
 
-All visual assets and fonts used by the PairPrep landing page are self-hosted locally within the application. No asset makes an external network request, CDN call, or third-party tracking ping.
+This document records the provenance, creation tools, licensing, and verification status of all static assets (images, logos, and fonts) bundled with the PairPrep web application.
+
+> **Honesty & Verification Policy**: Upstream provenance must be documented truthfully. If an asset was imported from a third-party template or AI generation without an verifiable chain-of-title or published source license, it is explicitly classified as **Unverified**. Only assets with inspectable repository licenses (such as npm `@fontsource` packages with official SIL Open Font License files) are classified as **Verified**.
+
+---
 
 ## 1. Visual Assets (`apps/web/public/images/`)
 
-| File Name | Natural Dimensions | Format | Source | License | Status |
+| File Name | Dimensions | File Size | Source & Provenance | Tool / Generator & Date | Declared / Upstream License | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `pairprep-logo.png` | 512 × 512 | 4.07 KB | Exported from `https://github.com/Shubhx8/pairprep-ui` (pairprep-ui-main.zip) | Lovable AI code/design generation (2026-11-02) | Unverified (generated in UI export) | **Unverified** |
+| `hero-terrain.webp` | 1920 × 1088 | 204.50 KB | Exported from `pairprep-ui-main.zip` | Unknown image generation / stock source (2026-11-02) | Unverified | **Unverified** |
+| `hero-rocks-polished.webp` | 1920 × 640 | 212.17 KB | Exported from `pairprep-ui-main.zip` | Unknown image cutout / photo composition (2026-11-02) | Unverified | **Unverified** |
+| `mist-band.webp` | 1920 × 300 | 31.02 KB | Exported from `pairprep-ui-main.zip` | Unknown mist gradient generator / stock photo (2026-11-02) | Unverified | **Unverified** |
+| `mountains.webp` | 1280 × 720 | 120.96 KB | Exported from `pairprep-ui-main.zip` | Unknown landscape stock photo (2026-11-02) | Unverified | **Unverified** |
+| `painting-landscape.webp` | 1280 × 800 | 231.26 KB | Exported from `pairprep-ui-main.zip` | Unknown landscape painting reproduction (2026-11-02) | Unverified | **Unverified** |
+| `footer-hands.webp` | 1200 × 800 | 70.72 KB | Detail from Michelangelo's *The Creation of Adam* (Sistine Chapel, painted c. 1508–1512) | Historical artwork is in the Public Domain (CC0); specific modern digital cutout source unverified (2026-11-02) | Underlying work: Public Domain; Digital cutout: Unverified | **Unverified** |
+| `footer-rocks.webp` | 1920 × 600 | 224.33 KB | Exported from `pairprep-ui-main.zip` | Unknown stock photo / asset export (2026-11-02) | Unverified | **Unverified** |
+| `auth-nature.jpg` | 1920 × 1080 | 256.12 KB | Exported from `pairprep-ui-main (1).zip` | Unknown nature background photography (2026-11-02) | Unverified | **Unverified** |
+
+---
+
+## 2. Typography (`@fontsource/*` Packages)
+
+All fonts are installed strictly as self-hosted npm packages in `apps/web/package.json` and bundled locally into `dist/assets/` during the Vite production build. No external network requests or Google Fonts CDN calls occur.
+
+| Font Family | Package & Version | Designer / Maintainer | Upstream License | Proof & Verification | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `hero-terrain.webp` | 1920 × 1088 | WebP | `https://github.com/Shubhx8/pairprep-ui` | MIT / CC0 Compatible | Verified |
-| `hero-rocks-polished.webp` | 1920 × 640 | WebP | `https://github.com/Shubhx8/pairprep-ui` | MIT / CC0 Compatible | Verified |
-| `mountains.webp` | 1280 × 720 | WebP | `https://github.com/Shubhx8/pairprep-ui` | MIT / CC0 Compatible | Verified |
-| `mist-band.webp` | 1920 × 300 | WebP | `https://github.com/Shubhx8/pairprep-ui` | MIT / CC0 Compatible | Verified |
-| `footer-hands.webp` | 1200 × 800 | WebP | `https://github.com/Shubhx8/pairprep-ui` | MIT / CC0 Compatible | Verified |
-| `footer-rocks.webp` | 1920 × 600 | WebP | `https://github.com/Shubhx8/pairprep-ui` | MIT / CC0 Compatible | Verified |
-| `painting-landscape.webp` | 1280 × 800 | WebP | `https://github.com/Shubhx8/pairprep-ui` | Public Domain (CC0) | Verified |
-| `pairprep-logo.png` | 512 × 512 | PNG | PairPrep Brand Logomark | MIT License | Verified |
+| **Instrument Serif** | `@fontsource/instrument-serif@5.3.0` | Rodrigo Fuenzalida, Jordan Engel | SIL Open Font License 1.1 (`OFL-1.1`) | `node_modules/@fontsource/instrument-serif/LICENSE` | **Verified** |
+| **Geist Sans** | `@fontsource/geist-sans@5.3.0` | Vercel Inc. | SIL Open Font License 1.1 (`OFL-1.1`) | `node_modules/@fontsource/geist-sans/LICENSE` | **Verified** |
+| **JetBrains Mono** | `@fontsource/jetbrains-mono@5.3.0` | JetBrains s.r.o. | SIL Open Font License 1.1 (`OFL-1.1`) | `node_modules/@fontsource/jetbrains-mono/LICENSE` | **Verified** |
 
-## 2. Typography (Self-Hosted via `@fontsource`)
+---
 
-All fonts are installed as npm packages and bundled locally into `apps/web/dist` during build:
+## 3. Privacy & Origin Isolation Guarantees
 
-1. **Instrument Serif** (`@fontsource/instrument-serif@5.3.0`)
-   - Designer: Rodrigo Fuenzalida, Jordan Engel
-   - License: SIL Open Font License 1.1 (`OFL-1.1`)
-   - Usage: Display headers and editorial accents in `.marketing .font-serif`.
-2. **Geist Sans** (`@fontsource/geist-sans@5.3.0`)
-   - Designer: Vercel
-   - License: SIL Open Font License 1.1 (`OFL-1.1`)
-   - Usage: Body copy and structural UI typography in `.marketing`.
-3. **JetBrains Mono** (`@fontsource/jetbrains-mono@5.3.0`)
-   - Designer: JetBrains
-   - License: SIL Open Font License 1.1 (`OFL-1.1`) / Apache 2.0
-   - Usage: Code snippets, terminal output, and technical telemetry in `.marketing font-mono`.
-
-## 3. Privacy & Network Security Guarantee
-
-- **Origin Isolation**: All image paths are resolved strictly as local origin-relative URLs (e.g. `/images/hero-terrain.webp`).
-- **No Third-Party Analytics**: No Google Fonts, no external CDN links, no tracking pixels, and no third-party JavaScript tags are included.
-
+1. **Origin-Relative Asset Paths**: All visual assets in `apps/web/src/marketing/` reference local paths under `/images/*` (served from `apps/web/public/images/`).
+2. **Zero Runtime External Dependencies**: The application does not load third-party trackers, analytics, remote stylesheets, or third-party script bundles.
+3. **Automated CI Scans**: The build is verified by an automated test suite (`apps/web/src/marketing/__tests__/origin-isolation.test.tsx`) scanning `marketing.css` and the production `dist/` directory for external URLs.

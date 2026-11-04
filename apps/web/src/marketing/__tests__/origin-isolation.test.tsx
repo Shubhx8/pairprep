@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render } from "@testing-library/react";
 import { BrowserRouter } from "react-router-dom";
+import fs from "node:fs";
+import path from "node:path";
 import LandingPage from "../landing.js";
 
 describe("Landing Page Origin Isolation & Privacy (Requirement 9)", () => {
@@ -59,5 +61,67 @@ describe("Landing Page Origin Isolation & Privacy (Requirement 9)", () => {
     // 4. Verify no tracking pixels or remote iframe embeds
     const iframes = container.querySelectorAll("iframe");
     expect(iframes.length).toBe(0);
+  });
+
+  it("static scan: marketing.css contains zero external URLs or remote CDN imports", () => {
+    const cssPath = path.resolve(__dirname, "../marketing.css");
+    const content = fs.readFileSync(cssPath, "utf-8");
+
+    // Must not contain any external url(...) references
+    const urlMatches = content.match(/url\(([^)]+)\)/gi) || [];
+    const externalUrls = urlMatches.filter((entry) => /https?:\/\//i.test(entry));
+    expect(externalUrls).toEqual([]);
+
+    // Must not contain any http:// or https:// addresses
+    const httpMatches = content.match(/https?:\/\/[^\s"')]+/gi) || [];
+    expect(httpMatches).toEqual([]);
+  });
+
+  it("post-build scan: dist output files contain zero unauthorized external CDN or tracking URLs", () => {
+    const distDir = path.resolve(__dirname, "../../../../dist");
+    if (!fs.existsSync(distDir)) {
+      return; // Skip if run before build
+    }
+
+    const getFiles = (dir: string): string[] => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const files: string[] = [];
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          files.push(...getFiles(full));
+        } else if (/\.(html|css|js)$/i.test(entry.name)) {
+          files.push(full);
+        }
+      }
+      return files;
+    };
+
+    const files = getFiles(distDir);
+    expect(files.length).toBeGreaterThan(0);
+
+    const forbiddenDomains = [
+      /fonts\.googleapis\.com/i,
+      /fonts\.gstatic\.com/i,
+      /cdnjs\.cloudflare\.com/i,
+      /cdn\.jsdelivr\.net/i,
+      /unpkg\.com/i,
+      /google-analytics\.com/i,
+      /googletagmanager\.com/i,
+      /doubleclick\.net/i,
+    ];
+
+    const violations: { file: string; match: string }[] = [];
+
+    for (const file of files) {
+      const content = fs.readFileSync(file, "utf-8");
+      for (const pattern of forbiddenDomains) {
+        if (pattern.test(content)) {
+          violations.push({ file: path.basename(file), match: pattern.toString() });
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
   });
 });

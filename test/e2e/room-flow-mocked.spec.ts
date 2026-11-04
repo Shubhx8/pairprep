@@ -1,14 +1,16 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * PRD ROOM-1, ROOM-2, AUTH-3 E2E Multi-Context Flow:
+ * Mocked Multi-Context Room Creation & Guest Join Flow (Network-Mocked):
  * 1. Context A (Host): Creates a practice room from Dashboard, obtains room URL.
  * 2. Context B (Anonymous Guest): Navigates to the room URL, observes Guest Eviction Notice,
  *    enters display name, joins room.
  * 3. Both contexts observe live participant count increment to 2/6.
  */
-test.describe("Multi-Context Room Creation & Guest Join Flow", () => {
-  test("Host creates room and Guest joins with eviction notice", async ({ browser }) => {
+test.describe("Mocked Multi-Context Room Creation & Guest Join Flow", () => {
+  test("Host creates room and Guest joins with eviction notice (mocked network)", async ({
+    browser,
+  }) => {
     // Context A: Host (authenticated)
     const hostContext = await browser.newContext();
     const hostPage = await hostContext.newPage();

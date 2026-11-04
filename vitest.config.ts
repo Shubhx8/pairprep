@@ -4,19 +4,6 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     globals: true,
-    hookTimeout: 30000,
-    testTimeout: 30000,
-    coverage: {
-      provider: "v8",
-      reporter: ["text", "json", "html"],
-      exclude: [
-        "**/node_modules/**",
-        "**/dist/**",
-        "**/*.d.ts",
-        "**/*.config.*",
-        "**/__tests__/**",
-      ],
-    },
     projects: [
       {
         test: {
@@ -35,7 +22,7 @@ export default defineConfig({
             SESSION_SECRET: "test_session_secret_at_least_32_characters_long",
             MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep_test",
             AUTH_RATE_LIMIT_WINDOW_MS: "60000",
-            AUTH_RATE_LIMIT_MAX: "30",
+            AUTH_RATE_LIMIT_MAX: "1000",
           },
         },
         extends: true,

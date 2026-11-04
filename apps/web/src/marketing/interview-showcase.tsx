@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, m } from "framer-motion";
 import {
   Plus,
   Minus,
@@ -187,7 +187,7 @@ function Visual({ index }: { index: number }) {
           <span className="font-mono opacity-70">09:38 / 12:06</span>
         </p>
         <div className="relative mt-3 h-1 rounded-full bg-current/15">
-          <motion.div
+          <m.div
             className="absolute inset-y-0 left-0 rounded-full bg-success"
             initial={{ width: "10%" }}
             animate={{ width: "78%" }}
@@ -225,14 +225,14 @@ export function InterviewShowcase() {
                 </div>
                 <AnimatePresence>
                   {on && (
-                    <motion.p
+                    <m.p
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
                       exit={{ opacity: 0, height: 0 }}
                       className="mt-2 text-sm leading-relaxed text-muted-foreground"
                     >
                       {item.body}
-                    </motion.p>
+                    </m.p>
                   )}
                 </AnimatePresence>
               </div>

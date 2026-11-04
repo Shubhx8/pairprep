@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, Navigate } from "react-router-dom";
 import LoginPage from "../login.js";
-import SignupPage from "../signup.js";
 import LandingPage from "../landing.js";
 import InterviewPage from "../interview.js";
-import DashboardPage from "../dashboard.js";
 import PrivacyPage from "../privacy.js";
 import TermsPage from "../terms.js";
 import ContactPage from "../contact.js";
@@ -38,29 +36,85 @@ describe("Marketing Route Rendering", () => {
     expect(screen.queryByLabelText(/password/i)).toBeNull();
     expect(screen.queryByLabelText(/email/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /^Log in$/i })).toBeNull();
-    expect(screen.getByText(/Practicing/i)).toBeInTheDocument();
   });
 
-  it("renders /signup with OAuth links only and no password, email, or username fields", () => {
+  it("sanitizes returnTo parameter to prevent open redirects", () => {
+    // Malicious absolute URL
+    const { unmount: u1 } = render(
+      <MemoryRouter initialEntries={["/login?returnTo=https://evil.com/phish"]}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const googleLinkEvil = screen.getByRole("link", { name: /Continue with Google/i });
+    expect(googleLinkEvil).toHaveAttribute("href", "/api/v1/auth/google");
+    u1();
+
+    // Protocol-relative URL
+    const { unmount: u2 } = render(
+      <MemoryRouter initialEntries={["/login?returnTo=//evil.com"]}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const googleLinkProto = screen.getByRole("link", { name: /Continue with Google/i });
+    expect(googleLinkProto).toHaveAttribute("href", "/api/v1/auth/google");
+    u2();
+
+    // Valid internal path
+    const { unmount: u3 } = render(
+      <MemoryRouter initialEntries={["/login?returnTo=/r/my-room"]}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const googleLinkValid = screen.getByRole("link", { name: /Continue with Google/i });
+    expect(googleLinkValid).toHaveAttribute(
+      "href",
+      "/api/v1/auth/google?returnTo=%2Fr%2Fmy-room"
+    );
+    u3();
+  });
+
+  it("handles OAuth ?error= query parameter with allowlisted user messages", () => {
+    const errorCases = [
+      { code: "access_denied", text: /access denied/i },
+      { code: "missing_state", text: /invalid session state/i },
+      { code: "missing_code", text: /authorization code missing/i },
+      { code: "auth_failed", text: /authentication failed/i },
+      { code: "unknown_injected_error", text: /unable to sign in/i },
+    ];
+
+    for (const ec of errorCases) {
+      const { unmount } = render(
+        <MemoryRouter initialEntries={[`/login?error=${ec.code}`]}>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+          </Routes>
+        </MemoryRouter>
+      );
+      const alert = screen.getByRole("alert");
+      expect(alert).toBeInTheDocument();
+      expect(alert).toHaveTextContent(ec.text);
+      unmount();
+    }
+  });
+
+  it("/signup redirects to /login (use /login only)", () => {
     render(
       <MemoryRouter initialEntries={["/signup"]}>
         <Routes>
-          <Route path="/signup" element={<SignupPage />} />
+          <Route path="/signup" element={<Navigate to="/login" replace />} />
+          <Route path="/login" element={<LoginPage />} />
         </Routes>
       </MemoryRouter>
     );
 
-    expect(screen.getByText(/Create your/i)).toBeInTheDocument();
-    const googleLink = screen.getByRole("link", { name: /Continue with Google/i });
-    const githubLink = screen.getByRole("link", { name: /Continue with GitHub/i });
-    expect(googleLink).toBeInTheDocument();
-    expect(googleLink).toHaveAttribute("href", "/api/v1/auth/google");
-    expect(githubLink).toBeInTheDocument();
-    expect(githubLink).toHaveAttribute("href", "/api/v1/auth/github");
-    expect(screen.queryByLabelText(/username/i)).toBeNull();
-    expect(screen.queryByLabelText(/email/i)).toBeNull();
-    expect(screen.queryByLabelText(/password/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Create account$/i })).toBeNull();
+    expect(screen.getByText(/Welcome back to/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Create your account/i)).toBeNull();
   });
 
   it("renders /interview when interviewMode flag is enabled", () => {
@@ -79,38 +133,53 @@ describe("Marketing Route Rendering", () => {
     expect(screen.getAllByText(/INTERVIEW SCORECARD/i).length).toBeGreaterThan(0);
   });
 
-  it("renders /dashboard, /privacy, /terms, and /contact", () => {
+  it("privacy and terms match what we store, and contact has no dead form", () => {
     const { unmount: u1 } = render(
-      <MemoryRouter initialEntries={["/dashboard"]}>
-        <Routes>
-          <Route path="/dashboard" element={<DashboardPage />} />
-        </Routes>
-      </MemoryRouter>
-    );
-    expect(screen.getByText(/Your practice dashboard/i)).toBeInTheDocument();
-    u1();
-
-    const { unmount: u2 } = render(
       <MemoryRouter initialEntries={["/privacy"]}>
         <Routes>
           <Route path="/privacy" element={<PrivacyPage />} />
         </Routes>
       </MemoryRouter>
     );
-    expect(screen.getByRole("heading", { name: /^Privacy$/i })).toBeInTheDocument();
-    u2();
+    expect(
+      screen.getByRole("heading", { name: /^Privacy Policy$/i })
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/pairprep\.sid/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/pairprep\.guest/i).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/display name, email address, avatar image URL/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/30 days of inactivity/i)).toBeInTheDocument();
+    expect(screen.getByText(/never recorded in server logs/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /Contact & Support page/i })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/request complete deletion/i)).toBeInTheDocument();
+    u1();
 
-    const { unmount: u3 } = render(
+    const { unmount: u2 } = render(
       <MemoryRouter initialEntries={["/terms"]}>
         <Routes>
           <Route path="/terms" element={<TermsPage />} />
         </Routes>
       </MemoryRouter>
     );
-    expect(screen.getByRole("heading", { name: /^Terms$/i })).toBeInTheDocument();
-    u3();
+    expect(
+      screen.getByRole("heading", { name: /^Terms of Service$/i })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/isolated, disposable containers/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/pairprep\.sid/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/pairprep\.guest/i).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/provider display name, email address, and avatar image/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/30 days of inactivity/i)).toBeInTheDocument();
+    expect(screen.getByText(/never recorded in server logs/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Contact page/i })).toBeInTheDocument();
+    expect(screen.getByText(/submit a deletion request/i)).toBeInTheDocument();
+    u2();
 
-    const { unmount: u4 } = render(
+    const { unmount: u3, container: contactContainer } = render(
       <MemoryRouter initialEntries={["/contact"]}>
         <Routes>
           <Route path="/contact" element={<ContactPage />} />
@@ -118,12 +187,21 @@ describe("Marketing Route Rendering", () => {
       </MemoryRouter>
     );
     expect(screen.getByRole("heading", { name: /^Contact$/i })).toBeInTheDocument();
-    u4();
+    expect(
+      screen.getByRole("link", {
+        name: /github\.com\/Shubhx8\/pairprep-starter\/issues/i,
+      })
+    ).toBeInTheDocument();
+    // Zero dead form submissions
+    expect(contactContainer.querySelectorAll("form").length).toBe(0);
+    expect(contactContainer.querySelectorAll("input").length).toBe(0);
+    u3();
   });
 
   it("routes.ts configuration: Start a room -> /dashboard, Sign in -> /login, no /rooms/new", () => {
     expect(routes.start).toBe("/dashboard");
     expect(routes.signIn).toBe("/login");
+    expect(routes.signUp).toBe("/login");
     expect((routes as Record<string, string>)["roomsNew"]).toBeUndefined();
     expect(Object.values(routes)).not.toContain("/rooms/new");
   });

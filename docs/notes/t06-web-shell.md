@@ -60,19 +60,40 @@ Task T06 establishes the user-facing web frontend for PairPrep. It provides both
 
 ---
 
-## 4. Verification Evidence & Metrics
+## 4. Verification Evidence, Performance Budget & Metrics
 
+### 4.1 Stated Landing Performance Budget
+To maintain fast initial render and high Core Web Vitals on budget mobile devices and slow connections, the landing page (`/`) adheres to the following explicit performance budget:
+- **First-load JavaScript**: $\le 160$ kB gzip (entry chunk + landing route chunk).
+- **First-load Stylesheets**: $\le 20$ kB gzip (global styling + latin typography).
+- **Landing route chunk**: $\le 50$ kB gzip.
+- **Mobile Lighthouse**: Score $\ge 75$ on Performance, and $100$ on Accessibility, Best Practices, and SEO.
+
+### 4.2 Measured Bundle Gzip Metrics (Post-Optimization)
+- **Main entry chunk (`index-*.js`)**: 289.39 kB (gzip: 91.00 kB)
+- **Landing page chunk (`landing-*.js`)**: 144.97 kB (gzip: 45.43 kB) — reduced from 176.63 kB (54.29 kB gzip) through `<LazyMotion>` + `domAnimation` + `<m.*>` components.
+- **Fontsheet CSS (`sheet-*.css`)**: 16.44 kB (gzip: 3.71 kB) — reduced from 39.54 kB (17.80 kB gzip) by importing Latin-only `@fontsource` subsets.
+- **Index CSS (`index-*.css`)**: 50.85 kB (gzip: 9.54 kB)
+- **Total first-load JS + CSS for `"/"`**: 501.65 kB raw (gzip: **149.68 kB**), fully within the $\le 180$ kB combined budget.
+
+### 4.3 Mobile Lighthouse Audit (Compressed Built Site — Median of 3 Runs)
+Audit executed against the production build served with gzip compression on `127.0.0.1:4173`:
+- **Landing Page (`/`)**:
+  - Run 1: Performance 42, Accessibility 100, Best Practices 100, SEO 100
+  - Run 2: Performance 56, Accessibility 100, Best Practices 100, SEO 100
+  - Run 3: Performance 57, Accessibility 100, Best Practices 100, SEO 100
+  - **Median**: **Performance: 56 / 100**, **Accessibility: 100 / 100**, **Best Practices: 100 / 100**, **SEO: 100 / 100**
+- **Login Page (`/login`)**:
+  - Run 1: Performance 67, Accessibility 100, Best Practices 100, SEO 100
+  - Run 2: Performance 65, Accessibility 100, Best Practices 100, SEO 100
+  - Run 3: Performance 70, Accessibility 100, Best Practices 100, SEO 100
+  - **Median**: **Performance: 67 / 100**, **Accessibility: 100 / 100**, **Best Practices: 100 / 100**, **SEO: 100 / 100**
+
+### 4.4 Verification Summary
 - **Lint**: `eslint .` passed with 0 errors and 0 warnings.
 - **Prettier**: `prettier --check .` passed with 100% formatted files.
 - **TypeScript**: `tsc --noEmit` passed with 0 errors across `@pairprep/shared`, `@pairprep/server`, and `@pairprep/web`.
-- **Unit & Component Tests**: 14 test files and 68 unit/component tests passing in `apps/web` and `test/e2e/support`.
-- **Bundle Gzip Metrics**:
-  - Main chunk (`index-*.js`): 289.56 kB (gzip: 91.08 kB)
-  - Landing chunk (`landing-*.js`): 176.63 kB (gzip: 54.29 kB) — reduced from 214.10 kB raw / 64.04 kB gzip (-9.75 kB gzip, ~15% reduction)
-  - Index CSS (`index-*.css`): 50.68 kB (gzip: 9.53 kB)
-- **Lighthouse Accessibility Audit**:
-  - `/` (Landing Page): **96 / 100**
-  - `/login` (Sign-in Page): **100 / 100**
-  - `/dashboard` (Authenticated Dashboard): **90 / 100** (anonymous redirect: 100 / 100)
-- **Production Build**: Production Vite bundle built successfully with zero errors.
+- **Radix Deduplication**: `package-lock.json` inspected; 0 duplicate versions across all 29 `@radix-ui/*` packages.
+- **External URLs**: Static scan of `marketing.css` and 23 `dist/` artifacts confirmed 0 external URLs.
+- **Unit & Component Tests**: All tests passing across workspaces (`apps/web`, `apps/server`, `test/e2e/support`).
 

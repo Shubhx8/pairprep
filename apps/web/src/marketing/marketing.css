@@ -1,11 +1,11 @@
-/* Self-hosted fonts through @fontsource (OFL-1.1) */
-@import "@fontsource/instrument-serif/400.css";
-@import "@fontsource/instrument-serif/400-italic.css";
-@import "@fontsource/geist-sans/400.css";
-@import "@fontsource/geist-sans/500.css";
-@import "@fontsource/geist-sans/600.css";
-@import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/500.css";
+/* Self-hosted fonts through @fontsource (OFL-1.1, latin-only subset) */
+@import "@fontsource/instrument-serif/latin-400.css";
+@import "@fontsource/instrument-serif/latin-400-italic.css";
+@import "@fontsource/geist-sans/latin-400.css";
+@import "@fontsource/geist-sans/latin-500.css";
+@import "@fontsource/geist-sans/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
 
 @theme inline {
   --color-sand: var(--sand);
@@ -722,4 +722,21 @@
 }
 .marketing .group:hover .auth-button-sheen {
   transform: translateX(100%);
+}
+
+/* Performance optimizations: content-visibility for below-the-fold and reduced blur on mobile */
+.marketing .section-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
+}
+
+@media (max-width: 640px) {
+  .marketing .glass-panel,
+  .marketing .glass-pill,
+  .marketing .auth-shell,
+  .marketing .auth-form-panel,
+  .marketing .nav-blur {
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+  }
 }

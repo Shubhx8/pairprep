@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { motion, type Variants } from "framer-motion";
+import { m, type Variants } from "framer-motion";
 import type { ReactNode } from "react";
 import { Users, Timer, FileCode2, Send, ClipboardCheck, ArrowRight } from "lucide-react";
 import { Button } from "./button.js";
@@ -27,7 +27,7 @@ function Reveal({
   delay?: number;
 }) {
   return (
-    <motion.div
+    <m.div
       className={className}
       variants={reveal}
       initial="hidden"
@@ -36,7 +36,7 @@ function Reveal({
       transition={{ delay }}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }
 
@@ -76,7 +76,7 @@ export function FAQ() {
         <div className="rounded-3xl border bg-card p-3 shadow-soft md:p-6">
           <Accordion type="single" collapsible>
             {questions.map(([question, answer], i) => (
-              <motion.div
+              <m.div
                 key={question}
                 initial={{ opacity: 0, y: 16 }}
                 whileInView={{ opacity: 1, y: 0 }}
@@ -94,7 +94,7 @@ export function FAQ() {
                     {answer}
                   </AccordionContent>
                 </AccordionItem>
-              </motion.div>
+              </m.div>
             ))}
           </Accordion>
         </div>

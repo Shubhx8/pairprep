@@ -4,7 +4,6 @@ import { AuthProvider, useAuth } from "./lib/authContext.js";
 
 const LandingPage = lazy(() => import("./marketing/landing.js"));
 const LoginPage = lazy(() => import("./marketing/login.js"));
-const SignupPage = lazy(() => import("./marketing/signup.js"));
 const InterviewPage = lazy(() => import("./marketing/interview.js"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage.js"));
 const RoomPage = lazy(() => import("./pages/RoomPage.js"));
@@ -64,7 +63,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<RootRoute />} />
             <Route path="/login" element={<LoginPage />} />
-            <Route path="/signup" element={<SignupPage />} />
+            <Route path="/signup" element={<Navigate to="/login" replace />} />
             <Route path="/interview" element={<InterviewPage />} />
             <Route
               path="/dashboard"

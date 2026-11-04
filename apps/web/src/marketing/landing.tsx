@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
 import "./marketing.css";
 import {
-  motion,
+  LazyMotion,
+  domAnimation,
+  m,
   MotionConfig,
   useScroll,
   useTransform,
@@ -66,7 +68,7 @@ function Reveal({
 }) {
   const reduced = useReducedMotion();
   return (
-    <motion.div
+    <m.div
       className={className}
       variants={fadeUp}
       initial={reduced ? false : "hidden"}
@@ -75,7 +77,7 @@ function Reveal({
       transition={{ delay }}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }
 
@@ -241,11 +243,14 @@ function Hero() {
 
   return (
     <section id="top" ref={ref} className="relative overflow-x-clip pb-10">
-      <motion.img
+      <m.img
         src={heroTerrain}
+        srcSet="/images/hero-terrain-960w.webp 960w, /images/hero-terrain.webp 1920w"
+        sizes="100vw"
         alt=""
         width={1920}
         height={1088}
+        fetchPriority="high"
         decoding="async"
         style={{ y: reduced ? 0 : bgY }}
         className="hero-terrain absolute inset-x-0 bottom-0 h-[72%] w-full object-cover object-[50%_35%] opacity-90"
@@ -290,12 +295,12 @@ function Hero() {
           Illustrative shared Python editor with two named cursors and output [0, 1].
         </p>
         <div aria-hidden="true" className="mt-20 [perspective:1600px] md:mt-28">
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: -120, filter: "blur(8px)" }}
             animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
             transition={{ duration: 1.3, delay: 0.35, ease: [0.22, 1, 0.36, 1] }}
           >
-            <motion.div
+            <m.div
               style={{
                 y: reduced ? 0 : cardY,
                 scale: reduced ? 1 : cardScale,
@@ -304,7 +309,7 @@ function Hero() {
               }}
               className="hero-room glass-panel shadow-float relative mx-auto max-w-6xl rounded-3xl p-5 pb-40 text-left text-panel-foreground md:p-7 md:pb-64"
             >
-              <motion.div
+              <m.div
                 aria-hidden
                 style={{ opacity: glow }}
                 className="hero-room-glow pointer-events-none absolute -inset-px rounded-3xl"
@@ -415,12 +420,14 @@ function Hero() {
                   </p>
                 </div>
               </div>
-            </motion.div>
-          </motion.div>
+            </m.div>
+          </m.div>
         </div>
       </div>
-      <motion.img
+      <m.img
         src={heroRocks}
+        srcSet="/images/hero-rocks-polished-960w.webp 960w, /images/hero-rocks-polished.webp 1920w"
+        sizes="100vw"
         alt=""
         width={1920}
         height={640}
@@ -466,7 +473,7 @@ function HeroTransition() {
       className="pointer-events-none relative z-10 h-40 overflow-hidden md:h-56"
     >
       <div className="hero-mist-drift absolute inset-0">
-        <motion.img
+        <m.img
           src={mistBand}
           alt=""
           loading="lazy"
@@ -501,9 +508,9 @@ function About() {
     <section
       id="about"
       ref={ref}
-      className="relative z-40 mx-auto max-w-[88rem] px-5 pt-16 pb-24 md:px-10 md:pt-24"
+      className="section-auto relative z-40 mx-auto max-w-[88rem] px-5 pt-16 pb-24 md:px-10 md:pt-24"
     >
-      <motion.div style={reduced ? {} : { y, scale, opacity, filter: blur }}>
+      <m.div style={reduced ? {} : { y, scale, opacity, filter: blur }}>
         <div className="grid items-center gap-10 md:grid-cols-[1.4fr_1fr]">
           <Reveal>
             <p className="text-xs text-muted-foreground">About PairPrep —</p>
@@ -547,7 +554,7 @@ function About() {
                 height={912}
                 className="h-72 w-full object-cover"
               />
-              <motion.div
+              <m.div
                 initial={{ y: 30, opacity: 0 }}
                 whileInView={{ y: 0, opacity: 1 }}
                 viewport={{ once: true }}
@@ -561,11 +568,11 @@ function About() {
                   Bring a partner, share ideas and work through a coding problem in the
                   same workspace.
                 </p>
-              </motion.div>
+              </m.div>
             </div>
           </Reveal>
         </div>
-      </motion.div>
+      </m.div>
       <div
         tabIndex={0}
         aria-label="Supported languages and capabilities"
@@ -624,7 +631,7 @@ const capabilities = [
 
 function Capabilities() {
   return (
-    <section id="features" className="relative py-24">
+    <section id="features" className="section-auto relative py-24">
       <div className="mx-auto max-w-[88rem] px-5 md:px-10">
         <div className="grid gap-6 md:grid-cols-2 md:items-end">
           <Reveal>
@@ -678,7 +685,10 @@ function Workspace() {
   const cardScale = useTransform(scrollYProgress, [0, 0.45], [0.92, 1]);
   const cardRot = useTransform(scrollYProgress, [0, 0.45], [12, 0]);
   return (
-    <section id="product" className="relative mx-auto max-w-[88rem] px-5 py-24 md:px-10">
+    <section
+      id="product"
+      className="section-auto relative mx-auto max-w-[88rem] px-5 py-24 md:px-10"
+    >
       <Reveal className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs text-muted-foreground">Inside PairPrep —</p>
@@ -694,7 +704,7 @@ function Workspace() {
         ref={ref}
         className="shadow-float relative mt-10 overflow-hidden rounded-[2rem] [perspective:1600px]"
       >
-        <motion.img
+        <m.img
           src={painting}
           alt="Misty mountain lake painting"
           loading="lazy"
@@ -706,12 +716,12 @@ function Workspace() {
         />
         <div className="absolute inset-0 bg-gradient-to-t from-foreground/40 via-transparent to-foreground/10" />
         <div className="absolute inset-0 grid place-items-center p-4 sm:p-10">
-          <motion.div
+          <m.div
             style={{ scale: reduced ? 1 : cardScale, rotateX: reduced ? 0 : cardRot }}
             className="w-full max-w-4xl"
           >
             <ProductWorkspace />
-          </motion.div>
+          </m.div>
         </div>
       </div>
     </section>
@@ -821,7 +831,7 @@ function Process() {
   }, []);
 
   return (
-    <section id="how-it-works" className="relative py-24">
+    <section id="how-it-works" className="section-auto relative py-24">
       <div className="mx-auto max-w-6xl px-5 md:px-10">
         <Reveal className="text-center">
           <Eyebrow>Practice</Eyebrow>
@@ -924,7 +934,7 @@ const audience = [
 
 function Audience() {
   return (
-    <section className="mx-auto max-w-[88rem] px-5 py-24 md:px-10">
+    <section className="section-auto mx-auto max-w-[88rem] px-5 py-24 md:px-10">
       <Reveal className="text-center">
         <Eyebrow>Who it's for</Eyebrow>
         <h2 className="mt-4 text-3xl font-medium leading-tight tracking-tight md:text-4xl">
@@ -1035,7 +1045,7 @@ export function Footer() {
               )}
             </div>
           </Reveal>
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 40, rotate: -5 }}
             whileInView={{ opacity: 1, y: 0, rotate: -5 }}
             viewport={{ once: true }}
@@ -1070,7 +1080,7 @@ export function Footer() {
                 <p className="text-success mt-4"># Think it through. Together.</p>
               </div>
             </div>
-          </motion.div>
+          </m.div>
         </div>
         <div className="relative z-10 mt-12 grid gap-10 border-t border-foreground/10 pt-10 md:grid-cols-[1.5fr_2fr_1fr]">
           <Reveal>
@@ -1115,13 +1125,13 @@ export function Footer() {
         </div>
       </div>
       <div className="relative mt-12 h-[235px] md:mt-16 md:h-[380px]">
-        <motion.p
+        <m.p
           style={{ y: reduced ? 0 : markY }}
           className="footer-wordmark pointer-events-none absolute z-0 inset-x-0 -bottom-3 select-none text-center font-medium leading-none text-foreground/10"
         >
           PairPrep
-        </motion.p>
-        <motion.img
+        </m.p>
+        <m.img
           src={footerHands}
           alt=""
           loading="lazy"
@@ -1158,7 +1168,7 @@ function MistBand({ flip = false }: { flip?: boolean }) {
       aria-hidden
       className="pointer-events-none relative -my-24 h-64 overflow-hidden md:-my-32 md:h-96"
     >
-      <motion.img
+      <m.img
         src={mistBand}
         alt=""
         loading="lazy"
@@ -1179,35 +1189,37 @@ function MistBand({ flip = false }: { flip?: boolean }) {
 
 export function Landing() {
   return (
-    <MotionConfig reducedMotion="user">
-      <div className="marketing">
-        <a href="#main-content" className="skip-link">
-          Skip to content
-        </a>
-        <Nav />
-        <main id="main-content" className="page-bg overflow-x-hidden">
-          <Hero />
-          <HeroTransition />
-          <About />
-          <MistBand />
-          <Workspace />
-          <Capabilities />
-          <TwoModes />
-          <MistBand flip />
-          <Process />
-          {flags.interviewMode && <InterviewTeaser />}
-          <MistBand />
-          <Audience />
-          <SharedProgress />
-          <MistBand flip />
-          <FAQ />
-          <p className="px-5 text-center text-sm text-muted-foreground">
-            Interface previews are illustrative.
-          </p>
-        </main>
-        <Footer />
-      </div>
-    </MotionConfig>
+    <LazyMotion features={domAnimation}>
+      <MotionConfig reducedMotion="user">
+        <div className="marketing">
+          <a href="#main-content" className="skip-link">
+            Skip to content
+          </a>
+          <Nav />
+          <main id="main-content" className="page-bg overflow-x-hidden">
+            <Hero />
+            <HeroTransition />
+            <About />
+            <MistBand />
+            <Workspace />
+            <Capabilities />
+            <TwoModes />
+            <MistBand flip />
+            <Process />
+            {flags.interviewMode && <InterviewTeaser />}
+            <MistBand />
+            <Audience />
+            <SharedProgress />
+            <MistBand flip />
+            <FAQ />
+            <p className="px-5 text-center text-sm text-muted-foreground">
+              Interface previews are illustrative.
+            </p>
+          </main>
+          <Footer />
+        </div>
+      </MotionConfig>
+    </LazyMotion>
   );
 }
 

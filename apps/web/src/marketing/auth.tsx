@@ -1,5 +1,12 @@
 import { Link, useSearchParams } from "react-router-dom";
-import { AnimatePresence, motion, MotionConfig, useReducedMotion } from "framer-motion";
+import {
+  AnimatePresence,
+  LazyMotion,
+  domAnimation,
+  m,
+  MotionConfig,
+  useReducedMotion,
+} from "framer-motion";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
@@ -15,9 +22,8 @@ import {
   Users,
 } from "lucide-react";
 import { Logo } from "./landing.js";
-import { routes } from "../config/routes.js";
 
-const natureBg = "/images/auth-nature.jpg";
+const natureBg = "/images/auth-nature.webp";
 
 export type AuthMode = "signup" | "login";
 
@@ -131,7 +137,7 @@ function TypedCode() {
         <span className="text-panel-muted">OUTPUT</span>
         <AnimatePresence mode="wait">
           {isFinished ? (
-            <motion.span
+            <m.span
               key="ok"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -139,9 +145,9 @@ function TypedCode() {
               className="text-success ml-3"
             >
               ✓ 3 / 3 tests passed · [0, 1]
-            </motion.span>
+            </m.span>
           ) : (
-            <motion.span
+            <m.span
               key="wait"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -149,7 +155,7 @@ function TypedCode() {
               className="text-panel-muted ml-3"
             >
               waiting for run…
-            </motion.span>
+            </m.span>
           )}
         </AnimatePresence>
       </div>
@@ -166,7 +172,7 @@ function CodingScreen() {
   return (
     <div aria-hidden="true" className="relative h-full min-h-[470px]">
       {/* Session brief card, behind the editor */}
-      <motion.div
+      <m.div
         initial={{ opacity: 0, x: -30 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.9, delay: 0.5, ease }}
@@ -207,10 +213,10 @@ function CodingScreen() {
             </span>
           </div>
         </div>
-      </motion.div>
+      </m.div>
 
       {/* Editor */}
-      <motion.div
+      <m.div
         initial={{ opacity: 0, y: 30 }}
         animate={{ opacity: 1, y: [0, -8, 0] }}
         transition={{
@@ -235,7 +241,7 @@ function CodingScreen() {
         <div className="border-panel-muted/20 hidden w-40 shrink-0 border-r py-3 2xl:block">
           <p className="px-3 pb-2 text-[11px] font-medium">Problems</p>
           {tree.map((t, i) => (
-            <motion.p
+            <m.p
               key={t.name}
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
@@ -255,7 +261,7 @@ function CodingScreen() {
                 <FileCode2 className="h-3 w-3" />
               )}
               <span className="truncate">{t.name}</span>
-            </motion.p>
+            </m.p>
           ))}
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
@@ -278,7 +284,7 @@ function CodingScreen() {
           </div>
           <TypedCode />
         </div>
-      </motion.div>
+      </m.div>
     </div>
   );
 }
@@ -305,10 +311,31 @@ function GitHubIcon() {
   );
 }
 
-function AuthForm({ mode }: { mode: AuthMode }) {
+const ERROR_MESSAGES: Record<string, string> = {
+  access_denied: "Sign in was cancelled or access denied.",
+  missing_state: "Invalid session state. Please try again.",
+  missing_code: "Authorization code missing. Please try again.",
+  auth_failed: "Authentication failed. Please try again.",
+};
+
+function sanitizeReturnTo(url: string | null): string | null {
+  if (!url) return null;
+  if (url.startsWith("/") && !url.startsWith("//") && !url.includes("://")) {
+    return url;
+  }
+  return null;
+}
+
+function AuthForm() {
   const [searchParams] = useSearchParams();
-  const returnTo = searchParams.get("returnTo");
-  const signup = mode === "signup";
+  const returnTo = sanitizeReturnTo(searchParams.get("returnTo"));
+  const rawError = searchParams.get("error");
+  const errorMessage =
+    rawError && Object.prototype.hasOwnProperty.call(ERROR_MESSAGES, rawError)
+      ? ERROR_MESSAGES[rawError]
+      : rawError
+        ? "Unable to sign in. Please try again."
+        : null;
 
   const googleHref = returnTo
     ? `/api/v1/auth/google?returnTo=${encodeURIComponent(returnTo)}`
@@ -325,43 +352,38 @@ function AuthForm({ mode }: { mode: AuthMode }) {
 
   return (
     <div className="mx-auto w-full max-w-sm">
-      <motion.div
+      <m.div
         {...item(0)}
         className="shadow-soft mb-4 inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-card/80"
       >
-        <motion.img
+        <m.img
           src="/images/pairprep-logo.png"
           alt=""
           className="h-7 w-7 object-contain"
           animate={{ rotate: [0, 8, -8, 0] }}
           transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
         />
-      </motion.div>
-      <motion.h1
-        {...item(1)}
-        className="text-foreground text-3xl font-medium tracking-tight"
-      >
-        {signup ? (
-          <>
-            Create your <span className="font-serif italic">PairPrep</span> account
-          </>
-        ) : (
-          <>
-            Welcome back to <span className="font-serif italic">PairPrep</span>
-          </>
-        )}
-      </motion.h1>
-      <motion.p
-        {...item(2)}
-        className="text-muted-foreground mt-2 text-sm leading-relaxed"
-      >
-        {signup
-          ? "Practice coding problems with a partner and run mock interviews in one shared editor."
-          : "Log in to jump back into your practice rooms and mock interviews."}
-      </motion.p>
+      </m.div>
+      <m.h1 {...item(1)} className="text-foreground text-3xl font-medium tracking-tight">
+        Welcome back to <span className="font-serif italic">PairPrep</span>
+      </m.h1>
+      <m.p {...item(2)} className="text-muted-foreground mt-2 text-sm leading-relaxed">
+        Log in to jump back into your practice rooms and collaborative interviews.
+      </m.p>
 
-      <motion.div {...item(3)} className="mt-8 flex flex-col gap-3">
-        <motion.a
+      {errorMessage && (
+        <m.div
+          role="alert"
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mt-4 rounded-xl border border-destructive/20 bg-destructive/10 px-3.5 py-2.5 text-xs font-medium text-destructive"
+        >
+          {errorMessage}
+        </m.div>
+      )}
+
+      <m.div {...item(3)} className="mt-8 flex flex-col gap-3">
+        <m.a
           href={googleHref}
           whileHover={{ y: -2 }}
           whileTap={{ scale: 0.98 }}
@@ -369,8 +391,8 @@ function AuthForm({ mode }: { mode: AuthMode }) {
         >
           <GoogleIcon />
           Continue with Google
-        </motion.a>
-        <motion.a
+        </m.a>
+        <m.a
           href={githubHref}
           whileHover={{ y: -2 }}
           whileTap={{ scale: 0.98 }}
@@ -378,145 +400,119 @@ function AuthForm({ mode }: { mode: AuthMode }) {
         >
           <GitHubIcon />
           Continue with GitHub
-        </motion.a>
-      </motion.div>
-
-      <motion.p {...item(4)} className="text-muted-foreground mt-8 text-center text-sm">
-        {signup ? "Already have an account? " : "New to PairPrep? "}
-        <Link
-          to={signup ? routes.signIn : routes.signUp}
-          className="text-foreground decoration-roadmap hover:decoration-foreground font-medium underline decoration-2 underline-offset-4 transition"
-        >
-          {signup ? "Log in" : "Create an account"}
-        </Link>
-      </motion.p>
+        </m.a>
+      </m.div>
     </div>
   );
 }
 
-export function AuthPage({ mode }: { mode: AuthMode }) {
+export function AuthPage() {
   const reduced = useReducedMotion();
 
   useEffect(() => {
-    document.title =
-      mode === "signup" ? "Create your account · PairPrep" : "Log in · PairPrep";
-  }, [mode]);
+    document.title = "Log in · PairPrep";
+  }, []);
 
   return (
-    <MotionConfig reducedMotion="user">
-      <div className="marketing relative min-h-screen overflow-hidden">
-        {/* Nature background with slow drift */}
-        <motion.img
-          src={natureBg}
-          alt=""
-          width={1920}
-          height={1088}
-          className="absolute inset-0 h-full w-full object-cover"
-          style={{ willChange: "transform", transform: "translateZ(0)" }}
-          initial={{ scale: 1.15, opacity: 0 }}
-          animate={
-            reduced
-              ? { scale: 1.05, opacity: 1 }
-              : {
-                  scale: [1.15, 1.06, 1.12],
-                  x: [0, -20, 10],
-                  opacity: 1,
-                }
-          }
-          transition={{
-            opacity: { duration: 1.2 },
-            scale: {
-              duration: 40,
-              repeat: Infinity,
-              repeatType: "mirror",
-              ease: "easeInOut",
-            },
-            x: {
-              duration: 40,
-              repeat: Infinity,
-              repeatType: "mirror",
-              ease: "easeInOut",
-            },
-          }}
-        />
-        <div className="auth-scrim absolute inset-0" />
-        <motion.img
-          src="/images/mist-band.webp"
-          alt=""
-          className="fade-bottom pointer-events-none absolute bottom-0 left-0 h-1/2 w-[140%] max-w-none object-cover opacity-50"
-          style={{ willChange: "transform", transform: "translateZ(0)" }}
-          animate={reduced ? { x: "0%" } : { x: ["0%", "-25%", "0%"] }}
-          transition={{ duration: 60, repeat: Infinity, ease: "linear" }}
-        />
-        <div className="auth-sheen pointer-events-none absolute inset-0" />
-        {Array.from({ length: 8 }).map((_, i) => (
-          <motion.span
-            key={i}
-            className="auth-particle pointer-events-none absolute rounded-full"
-            style={{
-              left: `${(i * 47) % 100}%`,
-              bottom: -10,
-              width: 3 + (i % 3) * 2,
-              height: 3 + (i % 3) * 2,
-            }}
-            animate={reduced ? { opacity: 0 } : { y: [0, -900], opacity: [0, 0.9, 0] }}
+    <LazyMotion features={domAnimation}>
+      <MotionConfig reducedMotion="user">
+        <div className="marketing relative min-h-screen overflow-hidden">
+          {/* Nature background with slow drift */}
+          <m.img
+            src={natureBg}
+            srcSet="/images/auth-nature-960w.webp 960w, /images/auth-nature.webp 1920w"
+            sizes="100vw"
+            alt=""
+            width={1920}
+            height={1088}
+            className="absolute inset-0 h-full w-full object-cover"
+            style={{ willChange: "transform", transform: "translateZ(0)" }}
+            initial={{ scale: 1.15, opacity: 0 }}
+            animate={
+              reduced
+                ? { scale: 1.05, opacity: 1 }
+                : {
+                    scale: [1.15, 1.06, 1.12],
+                    x: [0, -20, 10],
+                    opacity: 1,
+                  }
+            }
             transition={{
-              duration: 14 + (i % 4) * 3,
-              repeat: Infinity,
-              delay: i * 1.8,
-              ease: "linear",
+              opacity: { duration: 1.2 },
+              scale: {
+                duration: 40,
+                repeat: Infinity,
+                repeatType: "mirror",
+                ease: "easeInOut",
+              },
+              x: {
+                duration: 40,
+                repeat: Infinity,
+                repeatType: "mirror",
+                ease: "easeInOut",
+              },
             }}
           />
-        ))}
+          <div className="auth-scrim absolute inset-0" />
+          <m.img
+            src="/images/mist-band.webp"
+            alt=""
+            className="fade-bottom pointer-events-none absolute bottom-0 left-0 h-1/2 w-[140%] max-w-none object-cover opacity-50"
+            style={{ willChange: "transform", transform: "translateZ(0)" }}
+            animate={reduced ? { x: "0%" } : { x: ["0%", "-25%", "0%"] }}
+            transition={{ duration: 60, repeat: Infinity, ease: "linear" }}
+          />
+          <div className="auth-sheen pointer-events-none absolute inset-0" />
+          {Array.from({ length: 8 }).map((_, i) => (
+            <m.span
+              key={i}
+              className="auth-particle pointer-events-none absolute rounded-full"
+              style={{
+                left: `${(i * 47) % 100}%`,
+                bottom: -10,
+                width: 3 + (i % 3) * 2,
+                height: 3 + (i % 3) * 2,
+              }}
+              animate={reduced ? { opacity: 0 } : { y: [0, -900], opacity: [0, 0.9, 0] }}
+              transition={{
+                duration: 14 + (i % 4) * 3,
+                repeat: Infinity,
+                delay: i * 1.8,
+                ease: "linear",
+              }}
+            />
+          ))}
 
-        <header className="text-panel-foreground relative z-10 mx-auto flex max-w-7xl items-center justify-between px-5 pt-4 md:px-10">
-          <Link to="/" aria-label="PairPrep home">
-            <Logo />
-          </Link>
-          <Link
-            to="/"
-            className="glass-inner flex items-center gap-1.5 rounded-full px-3 py-2 text-sm transition hover:-translate-y-0.5"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to site
-          </Link>
-        </header>
+          <header className="text-panel-foreground relative z-10 mx-auto flex max-w-7xl items-center justify-between px-5 pt-4 md:px-10">
+            <Link to="/" aria-label="PairPrep home">
+              <Logo />
+            </Link>
+            <Link
+              to="/"
+              className="glass-inner flex items-center gap-1.5 rounded-full px-3 py-2 text-sm transition hover:-translate-y-0.5"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to site
+            </Link>
+          </header>
 
-        <main className="relative z-10 mx-auto flex max-w-7xl items-center px-4 pb-6 pt-4 md:px-10 lg:min-h-[calc(100vh-72px)]">
-          <motion.div
-            initial={{ opacity: 0, y: 40, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.8, ease }}
-            className="auth-shell grid w-full gap-6 rounded-[2rem] p-3 lg:grid-cols-[1.6fr_1fr] lg:p-3"
-          >
-            <div className="relative hidden overflow-hidden rounded-[1.6rem] p-6 lg:block">
-              <img
-                src={natureBg}
-                alt=""
-                className="absolute inset-0 h-full w-full scale-125 object-cover opacity-70"
-              />
-              <div className="auth-scrim absolute inset-0" />
-              <div className="relative h-full">
+          <main className="relative z-10 mx-auto flex max-w-7xl items-center px-4 pb-6 pt-4 md:px-10 lg:min-h-[calc(100vh-72px)]">
+            <m.div
+              initial={{ opacity: 0, y: 40, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.8, ease }}
+              className="auth-shell grid w-full gap-6 rounded-[2rem] p-3 lg:grid-cols-[1.6fr_1fr] lg:p-3"
+            >
+              <div className="hidden lg:block">
                 <CodingScreen />
               </div>
-            </div>
-            <div className="auth-form-panel flex items-center rounded-[1.6rem] px-6 py-8 sm:px-8 lg:py-6">
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={mode}
-                  className="w-full"
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  transition={{ duration: 0.35, ease }}
-                >
-                  <AuthForm mode={mode} />
-                </motion.div>
-              </AnimatePresence>
-            </div>
-          </motion.div>
-        </main>
-      </div>
-    </MotionConfig>
+              <div className="auth-form-panel relative flex flex-col justify-center rounded-[1.5rem] p-8 md:p-12">
+                <AuthForm />
+              </div>
+            </m.div>
+          </main>
+        </div>
+      </MotionConfig>
+    </LazyMotion>
   );
 }

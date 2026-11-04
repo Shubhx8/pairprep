@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { motion, useScroll, useTransform, useReducedMotion } from "framer-motion";
+import { m, useScroll, useTransform, useReducedMotion } from "framer-motion";
 import {
   ArrowLeft,
   ArrowRight,
@@ -80,13 +80,13 @@ function Illustration({ index }: { index: number }) {
             viewBox="0 0 320 200"
             fill="none"
           >
-            <motion.path {...draw} d="M70 100 H160 V60 H250" className="progress-line" />
-            <motion.path {...draw} d="M160 100 V140 H250" className="progress-line" />
+            <m.path {...draw} d="M70 100 H160 V60 H250" className="progress-line" />
+            <m.path {...draw} d="M160 100 V140 H250" className="progress-line" />
           </svg>
           <Node className="absolute left-6 top-[68px] h-16 w-16">
             <Users className="h-6 w-6" />
           </Node>
-          <motion.div
+          <m.div
             initial={{ opacity: 0, x: 12 }}
             whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true }}
@@ -94,8 +94,8 @@ function Illustration({ index }: { index: number }) {
             className="progress-bubble absolute right-5 top-8 px-3 py-2 text-[11px]"
           >
             “Could a map help?”
-          </motion.div>
-          <motion.div
+          </m.div>
+          <m.div
             initial={{ opacity: 0, x: 12 }}
             whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true }}
@@ -104,7 +104,7 @@ function Illustration({ index }: { index: number }) {
           >
             <Check className="h-3 w-3" />
             Let’s try it.
-          </motion.div>
+          </m.div>
         </div>
       )}
       {index === 1 && (
@@ -114,12 +114,12 @@ function Illustration({ index }: { index: number }) {
             viewBox="0 0 320 200"
             fill="none"
           >
-            <motion.path
+            <m.path
               {...draw}
               d="M160 40 C160 90 80 90 80 130"
               className="progress-line"
             />
-            <motion.path
+            <m.path
               {...draw}
               d="M160 40 C160 90 240 90 240 130"
               className="progress-line"
@@ -147,7 +147,7 @@ function Illustration({ index }: { index: number }) {
             </p>
             <p className="opacity-60"> check(nums[i])</p>
           </div>
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 10 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
@@ -156,14 +156,14 @@ function Illustration({ index }: { index: number }) {
           >
             <Bug className="h-3.5 w-3.5" />
             Partner: “that's off by one”
-          </motion.div>
+          </m.div>
         </div>
       )}
       {index === 3 && (
         <div className="relative grid h-full place-items-center">
           <svg viewBox="0 0 120 120" className="h-32 w-32 -rotate-90">
             <circle cx="60" cy="60" r="50" className="progress-ring-bg" />
-            <motion.circle
+            <m.circle
               cx="60"
               cy="60"
               r="50"
@@ -194,7 +194,7 @@ function Illustration({ index }: { index: number }) {
             <p className="pl-3">return [seen[complement], i]</p>
           </div>
           <div className="relative mt-6 h-1 rounded-full progress-track-line">
-            <motion.div
+            <m.div
               initial={{ width: "0%" }}
               whileInView={{ width: "65%" }}
               viewport={{ once: true }}
@@ -277,7 +277,7 @@ export function SharedProgress() {
 
   return (
     <section id="progress" ref={section} className="py-24">
-      <motion.div
+      <m.div
         initial={{ opacity: 0, y: 24 }}
         whileInView={{ opacity: 1, y: 0 }}
         viewport={{ once: true }}
@@ -290,8 +290,8 @@ export function SharedProgress() {
         <p className="mx-auto mt-4 max-w-md text-sm text-muted-foreground">
           A fresh perspective. A clearer approach. A little more confidence.
         </p>
-      </motion.div>
-      <motion.div style={{ scale: reduced ? 1 : drift }}>
+      </m.div>
+      <m.div style={{ scale: reduced ? 1 : drift }}>
         <div
           ref={track}
           role="region"
@@ -300,7 +300,7 @@ export function SharedProgress() {
           className="progress-track relative mt-12 flex snap-x snap-mandatory gap-5 overflow-x-auto pb-8 pt-3 [scrollbar-width:none]"
         >
           {visibleOutcomes.map((item, i) => (
-            <motion.article
+            <m.article
               key={item.title}
               initial={reduced ? false : { opacity: 0, y: 60, rotate: i % 2 ? 2 : -2 }}
               whileInView={{ opacity: 1, y: 0, rotate: 0 }}
@@ -327,10 +327,10 @@ export function SharedProgress() {
                   {item.label}
                 </span>
               </div>
-            </motion.article>
+            </m.article>
           ))}
         </div>
-      </motion.div>
+      </m.div>
       <div className="progress-controls mt-4 flex items-center justify-center gap-5">
         <Button
           size="icon"

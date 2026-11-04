@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { motion, type Variants } from "framer-motion";
+import { m, type Variants } from "framer-motion";
 import {
   Check,
   Code2,
@@ -33,7 +33,7 @@ function Entrance({
   className?: string;
 }) {
   return (
-    <motion.div
+    <m.div
       className={className}
       variants={reveal}
       initial="hidden"
@@ -41,7 +41,7 @@ function Entrance({
       viewport={{ once: true, margin: "-40px" }}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }
 

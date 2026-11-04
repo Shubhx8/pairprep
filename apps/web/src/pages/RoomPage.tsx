@@ -43,6 +43,24 @@ export default function RoomPage() {
 
   // Rate limit countdown effect
   useEffect(() => {
+    let meta = document.querySelector('meta[name="robots"]');
+    const created = !meta;
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", "robots");
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute("content", "noindex, nofollow");
+    return () => {
+      if (created && meta?.parentNode) {
+        meta.parentNode.removeChild(meta);
+      } else if (meta) {
+        meta.setAttribute("content", "index, follow");
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (countdown === null || countdown <= 0) return;
     const timer = setInterval(() => {
       setCountdown((prev) => (prev && prev > 1 ? prev - 1 : null));

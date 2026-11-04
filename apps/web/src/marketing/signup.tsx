@@ -1,5 +1,5 @@
-import { AuthPage } from "./auth.js";
+import { Navigate } from "react-router-dom";
 
 export default function SignupPage() {
-  return <AuthPage mode="signup" />;
+  return <Navigate to="/login" replace />;
 }

@@ -140,7 +140,13 @@ export default function RoomPage() {
       fetchRoom();
     } catch (err) {
       if (err instanceof ApiClientError) {
-        if (err.status === 429 && err.retryAfterSec) {
+        if (err.code === "ROOM_FULL" || err.status === 409) {
+          setRoom((prev) => (prev ? { ...prev, memberCount: 6 } : prev));
+          setError({
+            code: "ROOM_FULL",
+            message: "This room has reached its maximum capacity of 6 participants.",
+          });
+        } else if (err.status === 429 && err.retryAfterSec) {
           setCountdown(err.retryAfterSec);
           setJoinError(`Too many join attempts. Please wait ${err.retryAfterSec}s.`);
         } else {
@@ -190,6 +196,23 @@ export default function RoomPage() {
       );
     }
 
+    if (error.code === "ROOM_FULL") {
+      return (
+        <div className="min-h-screen bg-canvas text-text-primary flex flex-col justify-center items-center px-4">
+          <EmptyState
+            title="Room is Full"
+            description="This practice room has reached its maximum capacity of 6 participants."
+            icon={<Users className="h-10 w-10 text-text-subtle" />}
+            action={
+              <Button asChild variant="primary">
+                <Link to="/dashboard">Back to Dashboard</Link>
+              </Button>
+            }
+          />
+        </div>
+      );
+    }
+
     if (error.code === "RATE_LIMIT_EXCEEDED" && countdown) {
       return (
         <div className="min-h-screen bg-canvas text-text-primary flex flex-col justify-center items-center px-4">
@@ -229,6 +252,24 @@ export default function RoomPage() {
           action={
             <Button asChild variant="primary">
               <Link to="/dashboard">Go to Dashboard</Link>
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  // 3b. Non-member visiting a Full Room -> "Room is Full" screen (PRD ROOM-4)
+  if (!isMember && room.memberCount >= 6) {
+    return (
+      <div className="min-h-screen bg-canvas text-text-primary flex flex-col justify-center items-center px-4">
+        <EmptyState
+          title="Room is Full"
+          description="This practice room has reached its maximum capacity of 6 participants."
+          icon={<Users className="h-10 w-10 text-text-subtle" />}
+          action={
+            <Button asChild variant="primary">
+              <Link to="/dashboard">Back to Dashboard</Link>
             </Button>
           }
         />

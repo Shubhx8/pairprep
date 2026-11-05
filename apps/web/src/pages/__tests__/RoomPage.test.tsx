@@ -237,4 +237,65 @@ describe("RoomPage", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("renders 'Room is Full' screen when non-member views full room (6 participants)", async () => {
+    mockUseAuth("anonymous", null);
+    const fullRoom: PublicRoomDto = {
+      ...mockPublicRoom,
+      memberCount: 6,
+    };
+    vi.spyOn(apiClient, "get").mockResolvedValue({
+      room: fullRoom,
+      currentMember: undefined,
+    });
+
+    renderWithRoute();
+
+    await waitFor(() => {
+      expect(screen.getByText("Room is Full")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /This practice room has reached its maximum capacity of 6 participants/i
+        )
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("link", { name: "Back to Dashboard" })).toBeInTheDocument();
+  });
+
+  it("renders 'Room is Full' screen when join fails with 409 ROOM_FULL", async () => {
+    mockUseAuth("anonymous", null);
+    vi.spyOn(apiClient, "get").mockResolvedValueOnce({
+      room: mockPublicRoom,
+      currentMember: undefined,
+    });
+
+    vi.spyOn(apiClient, "post").mockRejectedValueOnce(
+      new ApiClientError({
+        message: "This room is full",
+        code: "ROOM_FULL",
+        status: 409,
+      })
+    );
+
+    renderWithRoute();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Your Display Name/i)).toBeInTheDocument();
+    });
+
+    const nameInput = screen.getByLabelText(/Your Display Name/i);
+    fireEvent.change(nameInput, { target: { value: "Guest Bob" } });
+
+    const submitBtn = screen.getByRole("button", { name: "Join as Guest" });
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText("Room is Full")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /This practice room has reached its maximum capacity of 6 participants/i
+        )
+      ).toBeInTheDocument();
+    });
+  });
 });

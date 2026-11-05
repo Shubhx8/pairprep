@@ -298,4 +298,51 @@ describe("RoomPage", () => {
       ).toBeInTheDocument();
     });
   });
+
+  it("NO-AUTO-JOIN: visiting /r/:slug loads metadata but never calls POST /join automatically", async () => {
+    mockUseAuth("anonymous", null);
+    const postSpy = vi.spyOn(apiClient, "post");
+    vi.spyOn(apiClient, "get").mockResolvedValue({
+      room: mockPublicRoom,
+      currentMember: undefined,
+    });
+
+    renderWithRoute();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Your Display Name/i)).toBeInTheDocument();
+    });
+
+    // Ensure POST /join was never invoked on navigation
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it("ENDED-ROOM-MEMBER: active room member can access Room Shell when status is ended", async () => {
+    mockUseAuth("authenticated", {
+      id: "usr_alice",
+      provider: "github",
+      displayName: "Alice Dev",
+      role: "user",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      email: "alice@example.com",
+    });
+
+    const endedMemberRoom: RoomDto = {
+      ...mockRoom,
+      status: "ended",
+    };
+
+    vi.spyOn(apiClient, "get").mockResolvedValue({
+      room: endedMemberRoom,
+      currentMember: mockMember,
+      members: [mockMember],
+    });
+
+    renderWithRoute();
+
+    await waitFor(() => {
+      expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Room Closed")).not.toBeInTheDocument();
+  });
 });

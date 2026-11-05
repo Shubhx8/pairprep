@@ -28,9 +28,17 @@ describe("authContext & useAuth", () => {
   );
 
   it("throws descriptive error when useAuth is rendered without AuthProvider", () => {
-    expect(() => renderHook(() => useAuth())).toThrowError(
-      "useAuth must be used within an AuthProvider"
-    );
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onError = (e: Event) => e.preventDefault();
+    window.addEventListener("error", onError);
+    try {
+      expect(() => renderHook(() => useAuth())).toThrowError(
+        "useAuth must be used within an AuthProvider"
+      );
+    } finally {
+      window.removeEventListener("error", onError);
+      consoleSpy.mockRestore();
+    }
   });
 
   it("fetches /me on mount and sets authenticated status when user is signed in", async () => {
@@ -112,5 +120,17 @@ describe("authContext & useAuth", () => {
     expect(result.current.status).toBe("anonymous");
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.user).toBeNull();
+  });
+
+  it("STORAGE-FREE: authentication relies purely on HttpOnly cookies and never writes tokens to localStorage or sessionStorage", async () => {
+    const localSetItemSpy = vi.spyOn(Storage.prototype, "setItem");
+    vi.spyOn(apiClient, "get").mockResolvedValue(mockUser);
+    const { result } = renderHook(() => useAuth(), { wrapper });
+    await waitFor(() => {
+      expect(result.current.isAuthenticated).toBe(true);
+    });
+    expect(localStorage.getItem("token")).toBeNull();
+    expect(sessionStorage.getItem("token")).toBeNull();
+    expect(localSetItemSpy).not.toHaveBeenCalled();
   });
 });

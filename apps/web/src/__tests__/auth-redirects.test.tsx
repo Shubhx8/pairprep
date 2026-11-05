@@ -152,4 +152,27 @@ describe("Authentication Route Redirects (Requirement 4)", () => {
     expect(screen.getByTestId("dashboard-content")).toBeInTheDocument();
     expect(screen.queryByTestId("login-page")).toBeNull();
   });
+
+  it("LANDING-NO-FLASH: RootRoute renders loading placeholder while auth resolves to prevent landing flash", () => {
+    vi.spyOn(authContextModule, "useAuth").mockReturnValue({
+      user: null,
+      status: "loading",
+      isLoading: true,
+      isAuthenticated: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route path="/" element={<RootRoute />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText("Loading PairPrep...")).toBeInTheDocument();
+    expect(screen.queryByTestId("landing-page")).toBeNull();
+  });
 });

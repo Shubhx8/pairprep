@@ -266,4 +266,24 @@ describe("Marketing Route Rendering", () => {
     expect(landingContainer.querySelectorAll('input[type="email"]').length).toBe(0);
     uLanding();
   });
+
+  it("SECURITY/XSS: strips script tags and javascript: URIs from query parameters without DOM execution", () => {
+    const { unmount } = render(
+      <MemoryRouter
+        initialEntries={[
+          "/login?returnTo=javascript:alert(1)&error=<script>alert(1)</script>",
+        ]}
+      >
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    const googleLink = screen.getByRole("link", { name: /Continue with Google/i });
+    expect(googleLink).toHaveAttribute("href", "/api/v1/auth/google");
+    expect(document.querySelector("script[src*='alert']")).toBeNull();
+    expect(screen.queryByText("<script>")).toBeNull();
+    unmount();
+  });
 });

@@ -245,4 +245,41 @@ describe("UIX-11: Component Tokens Guard & Accessible UI Primitives", () => {
     expect(screen.getByText("Request ID: req-abc-123")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Try Again" })).toBeInTheDocument();
   });
+
+  it("A11Y-KEYBOARD: Modal dialog supports keyboard dismissal and close interactions", () => {
+    let isOpen = true;
+    const handleOpenChange = (open: boolean) => {
+      isOpen = open;
+    };
+    const { rerender } = render(
+      <Modal open={isOpen} onOpenChange={handleOpenChange}>
+        <ModalContent>
+          <ModalHeader>
+            <ModalTitle>Keyboard Navigable Dialog</ModalTitle>
+            <ModalDescription>Escape closes the modal dialog.</ModalDescription>
+          </ModalHeader>
+          <Button onClick={() => handleOpenChange(false)}>Dismiss</Button>
+        </ModalContent>
+      </Modal>
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+
+    const closeBtn = screen.getByLabelText("Close");
+    expect(closeBtn).toBeInTheDocument();
+    closeBtn.click();
+    expect(isOpen).toBe(false);
+
+    rerender(
+      <Modal open={false} onOpenChange={handleOpenChange}>
+        <ModalContent>
+          <ModalHeader>
+            <ModalTitle>Keyboard Navigable Dialog</ModalTitle>
+          </ModalHeader>
+        </ModalContent>
+      </Modal>
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 });

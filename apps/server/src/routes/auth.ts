@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
-import { passport } from "../auth/passport.js";
+import { passport, isStrategyRegistered } from "../auth/passport.js";
 import { config } from "../config.js";
 import { SESSION_COOKIE_NAME } from "../middleware/session.js";
 import { rootLogger } from "../middleware/logger.js";
@@ -24,28 +24,6 @@ export function sanitizeReturnTo(raw?: string): string {
     return raw;
   }
   return "/";
-}
-
-/**
- * Helper to verify whether an OAuth provider strategy is currently registered in Passport.
- */
-function isStrategyRegistered(provider: "google" | "github"): boolean {
-  try {
-    const authFn = passport.authenticate as unknown as {
-      mock?: unknown;
-      _isMockFunction?: boolean;
-    };
-    if (authFn?.mock || authFn?._isMockFunction) {
-      return true;
-    }
-    return Boolean(
-      (passport as unknown as { _strategy?: (name: string) => unknown })._strategy?.(
-        provider
-      )
-    );
-  } catch {
-    return false;
-  }
 }
 
 /**

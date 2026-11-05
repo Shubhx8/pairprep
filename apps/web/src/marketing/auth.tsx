@@ -316,6 +316,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   missing_state: "Invalid session state. Please try again.",
   missing_code: "Authorization code missing. Please try again.",
   auth_failed: "Authentication failed. Please try again.",
+  provider_unavailable:
+    "This sign-in provider is temporarily unavailable. Please try another sign-in method or try again later.",
 };
 
 function sanitizeReturnTo(url: string | null): string | null {

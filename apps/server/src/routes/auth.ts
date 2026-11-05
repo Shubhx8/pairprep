@@ -27,10 +27,30 @@ export function sanitizeReturnTo(raw?: string): string {
 }
 
 /**
+ * Helper to verify whether an OAuth provider strategy is currently registered in Passport.
+ */
+function isStrategyRegistered(provider: "google" | "github"): boolean {
+  try {
+    return Boolean(
+      (passport as unknown as { _strategy?: (name: string) => unknown })._strategy?.(
+        provider
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * GET /api/v1/auth/google
  * Initiates Google OAuth 2.0 flow with PKCE and state managed by passport-oauth2
  */
 authRouter.get("/google", (req: Request, res: Response, next: NextFunction) => {
+  if (!isStrategyRegistered("google")) {
+    rootLogger.warn("Google OAuth requested but provider strategy is not registered");
+    return res.redirect("/login?error=provider_unavailable");
+  }
+
   if (req.query["returnTo"] && typeof req.query["returnTo"] === "string") {
     req.session.returnTo = sanitizeReturnTo(req.query["returnTo"]);
   }
@@ -45,6 +65,11 @@ authRouter.get("/google", (req: Request, res: Response, next: NextFunction) => {
  * Initiates GitHub OAuth 2.0 flow with state managed by passport-oauth2
  */
 authRouter.get("/github", (req: Request, res: Response, next: NextFunction) => {
+  if (!isStrategyRegistered("github")) {
+    rootLogger.warn("GitHub OAuth requested but provider strategy is not registered");
+    return res.redirect("/login?error=provider_unavailable");
+  }
+
   if (req.query["returnTo"] && typeof req.query["returnTo"] === "string") {
     req.session.returnTo = sanitizeReturnTo(req.query["returnTo"]);
   }
@@ -55,7 +80,11 @@ authRouter.get("/github", (req: Request, res: Response, next: NextFunction) => {
 });
 
 export type OAuthErrorCode =
-  "access_denied" | "auth_failed" | "missing_state" | "missing_code";
+  | "access_denied"
+  | "auth_failed"
+  | "missing_state"
+  | "missing_code"
+  | "provider_unavailable";
 
 const handleOAuthCallback = (
   provider: "google" | "github",
@@ -63,10 +92,20 @@ const handleOAuthCallback = (
   res: Response,
   next: NextFunction
 ) => {
-  // Map errors strictly to allowlist: access_denied, auth_failed, missing_state, missing_code
+  if (!isStrategyRegistered(provider)) {
+    rootLogger.warn(
+      `${provider} OAuth callback received but provider strategy is not registered`
+    );
+    return res.redirect("/login?error=provider_unavailable");
+  }
+
+  // Map errors strictly to allowlist: access_denied, auth_failed, missing_state, missing_code, provider_unavailable
   // Never interpolate raw req.query.error or err.code into redirect URL
   if (req.query["error"] === "access_denied") {
     return res.redirect("/login?error=access_denied");
+  }
+  if (req.query["error"] === "provider_unavailable") {
+    return res.redirect("/login?error=provider_unavailable");
   }
   if (req.query["error"]) {
     return res.redirect("/login?error=auth_failed");

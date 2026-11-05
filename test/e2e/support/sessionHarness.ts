@@ -19,6 +19,10 @@ export const E2E_CONFIG = {
     "test_e2e_secret_at_least_32_chars_long_for_security",
 };
 
+export const E2E_TEST_DATABASE = E2E_CONFIG.database;
+export const E2E_TEST_SECRET = E2E_CONFIG.secret;
+export const E2E_MONGODB_URI = E2E_CONFIG.mongoUri;
+
 /**
  * Validates that the MongoDB URI adheres to the E2E host and name guards.
  * Prevents accidental connection to non-local or production/dev databases.

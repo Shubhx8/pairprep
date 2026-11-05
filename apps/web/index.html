@@ -21,7 +21,7 @@
       property="og:description"
       content="A real-time collaborative coding room for you and a partner. Write code together live, run code in disposable sandboxes, and rehearse technical interviews."
     />
-    <meta property="og:image" content="__OG_IMAGE_URL__" />
+    <!-- OG_IMAGE_TAGS -->
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
@@ -33,23 +33,22 @@
       name="twitter:description"
       content="A real-time collaborative coding room for you and a partner. Write code together live, run code in disposable sandboxes, and rehearse technical interviews."
     />
-    <meta name="twitter:image" content="__OG_IMAGE_URL__" />
 
-    <!-- Route guards: avoid preloading hero on non-landing routes; add noindex on app routes -->
+    <!-- Static Hero Preload (Discovered immediately by browser preload scanner) -->
+    <link
+      rel="preload"
+      as="image"
+      imagesrcset="/images/hero-terrain-960w.webp 960w, /images/hero-terrain.webp 1920w"
+      imagesizes="100vw"
+      fetchpriority="high"
+      type="image/webp"
+    />
+
+    <!-- Fallback client-side route guard: noindex, nofollow on sensitive app paths -->
     <script>
       (function () {
         var path = window.location.pathname;
-        if (path === "/" || path === "") {
-          var link = document.createElement("link");
-          link.rel = "preload";
-          link.as = "image";
-          link.imageSrcset =
-            "/images/hero-terrain-960w.webp 960w, /images/hero-terrain.webp 1920w";
-          link.imageSizes = "100vw";
-          link.setAttribute("fetchpriority", "high");
-          link.type = "image/webp";
-          document.head.appendChild(link);
-        } else if (
+        if (
           path.startsWith("/r/") ||
           path === "/dashboard" ||
           path.startsWith("/dashboard/")

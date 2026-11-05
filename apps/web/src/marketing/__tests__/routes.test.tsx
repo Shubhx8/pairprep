@@ -85,6 +85,7 @@ describe("Marketing Route Rendering", () => {
       { code: "missing_state", text: /invalid session state/i },
       { code: "missing_code", text: /authorization code missing/i },
       { code: "auth_failed", text: /authentication failed/i },
+      { code: "provider_unavailable", text: /temporarily unavailable/i },
       { code: "unknown_injected_error", text: /unable to sign in/i },
     ];
 
@@ -146,15 +147,30 @@ describe("Marketing Route Rendering", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText(/pairprep\.sid/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/pairprep\.guest/i).length).toBeGreaterThan(0);
+    // Cookies listed with lifetimes
+    expect(screen.getByText(/7-day rolling inactivity lifetime/i)).toBeInTheDocument();
+    expect(screen.getByText(/7-day lifetime/i)).toBeInTheDocument();
+    // OAuth data stored: name, email if provided, avatar
+    expect(screen.getByText(/name, email if provided, avatar/i)).toBeInTheDocument();
+    // Rooms (not accounts) are archived after 30 days of inactivity
     expect(
-      screen.getByText(/display name, email address, avatar image URL/i)
+      screen.getByText(/Rooms \(not accounts\) are archived after 30 days of inactivity/i)
     ).toBeInTheDocument();
-    expect(screen.getByText(/30 days of inactivity/i)).toBeInTheDocument();
-    expect(screen.getByText(/never recorded in server logs/i)).toBeInTheDocument();
+    // Room content stored in database until room is deleted
     expect(
-      screen.getByRole("link", { name: /Contact & Support page/i })
+      screen.getByText(
+        /Room content \(code and chat\) is stored in the database until the room is deleted/i
+      )
     ).toBeInTheDocument();
-    expect(screen.getByText(/request complete deletion/i)).toBeInTheDocument();
+    // Code and chat are never written to server logs
+    expect(
+      screen.getByText(/code and chat are never written to server logs/i)
+    ).toBeInTheDocument();
+    // No self-service deletion: users request deletion via /contact
+    expect(
+      screen.getByText(/There is no self-service deletion: users request deletion via/i)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /\/contact/i })).toBeInTheDocument();
     u1();
 
     const { unmount: u2 } = render(
@@ -170,13 +186,29 @@ describe("Marketing Route Rendering", () => {
     expect(screen.getByText(/isolated, disposable containers/i)).toBeInTheDocument();
     expect(screen.getAllByText(/pairprep\.sid/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/pairprep\.guest/i).length).toBeGreaterThan(0);
+    // OAuth data stored: name, email if provided, avatar
+    expect(screen.getByText(/name, email if provided, avatar/i)).toBeInTheDocument();
+    // Cookies with lifetimes
+    expect(screen.getByText(/7-day rolling inactivity lifetime/i)).toBeInTheDocument();
+    // Rooms (not accounts) archived after 30 days of inactivity
     expect(
-      screen.getByText(/provider display name, email address, and avatar image/i)
+      screen.getByText(/Rooms \(not accounts\) are archived after 30 days of inactivity/i)
     ).toBeInTheDocument();
-    expect(screen.getByText(/30 days of inactivity/i)).toBeInTheDocument();
-    expect(screen.getByText(/never recorded in server logs/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Contact page/i })).toBeInTheDocument();
-    expect(screen.getByText(/submit a deletion request/i)).toBeInTheDocument();
+    // Room content stored in DB until deleted
+    expect(
+      screen.getByText(
+        /Room content \(code and chat\) is stored in the database until the room is deleted/i
+      )
+    ).toBeInTheDocument();
+    // Code and chat never written to server logs
+    expect(
+      screen.getByText(/Code and chat are never written to server logs/i)
+    ).toBeInTheDocument();
+    // No self-service deletion: users request deletion via /contact
+    expect(
+      screen.getByText(/There is no self-service deletion: users request deletion via/i)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /\/contact/i })).toBeInTheDocument();
     u2();
 
     const { unmount: u3, container: contactContainer } = render(

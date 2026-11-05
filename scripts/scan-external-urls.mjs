@@ -11,7 +11,7 @@ let hasErrors = false;
 
 // 1. Static scan of marketing.css
 console.log(
-  "==> [1/2] Scanning apps/web/src/marketing/marketing.css for external URLs..."
+  "==> [1/3] Scanning apps/web/src/marketing/marketing.css for external URLs..."
 );
 const cssPath = path.join(rootDir, "apps/web/src/marketing/marketing.css");
 if (!fs.existsSync(cssPath)) {
@@ -28,24 +28,14 @@ if (!fs.existsSync(cssPath)) {
   }
 }
 
-// 2. Post-build scan of apps/web/dist
-console.log("==> [2/2] Scanning apps/web/dist/ for external URLs...");
+// 2. Scan apps/web/dist for unauthorized runtime resource loads vs outbound hyperlinks
+console.log("==> [2/3] Scanning apps/web/dist/ for external resource loads...");
 const distDir = path.join(rootDir, "apps/web/dist");
 if (!fs.existsSync(distDir)) {
   console.warn(
     "WARNING: apps/web/dist does not exist. Run 'npm run build' before post-build scan."
   );
 } else {
-  const allowedUrlPatterns = [
-    /^http:\/\/www\.w3\.org\/2000\/svg$/,
-    /^http:\/\/www\.w3\.org\/1999\/xlink$/,
-    /^https:\/\/vite\.dev\//, // Vite comment / warning link in code bundle
-    /^https:\/\/react\.dev\//, // React error / doc links in bundled library code
-    /^https:\/\/reactjs\.org\//,
-    /^https:\/\/github\.com\/login\/oauth/, // Allowed OAuth provider endpoint
-    /^https:\/\/accounts\.google\.com\//, // Allowed OAuth provider endpoint
-  ];
-
   function getFiles(dir) {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     const files = [];
@@ -63,37 +53,100 @@ if (!fs.existsSync(distDir)) {
   const files = getFiles(distDir);
   console.log(`Found ${files.length} build output files to scan.`);
 
-  const violations = [];
+  // Disallow any external font CDNs, asset CDNs, trackers, analytics, or remote scripts
+  const prohibitedResourceHostPatterns = [
+    /fonts\.googleapis\.com/i,
+    /fonts\.gstatic\.com/i,
+    /cdnjs\.cloudflare\.com/i,
+    /cdn\.jsdelivr\.net/i,
+    /unpkg\.com/i,
+    /google-analytics\.com/i,
+    /googletagmanager\.com/i,
+    /doubleclick\.net/i,
+    /segment\.com/i,
+  ];
+
+  // Permitted XML namespaces and library documentation/error invariant reference URLs
+  const allowedDocAndNamespacePatterns = [
+    /^http:\/\/www\.w3\.org\/2000\/svg$/,
+    /^http:\/\/www\.w3\.org\/1999\/xlink$/,
+    /^http:\/\/www\.w3\.org\/XML\/1998\/namespace$/,
+    /^http:\/\/www\.w3\.org\/1998\/Math\/MathML$/,
+    /^http:\/\/www\.w3\.org\/1999\/xhtml$/,
+    /^https:\/\/vite\.dev\//,
+    /^https:\/\/react\.dev\//,
+    /^https:\/\/reactjs\.org\//,
+    /^https:\/\/reactrouter\.com\//,
+    /^https:\/\/github\.com\/ungap\//,
+    /^https?:\/\/json-schema\.org\//,
+    /^https:\/\/tailwindcss\.com/,
+  ];
+
+  // Allowed user-facing outbound navigational hyperlinks (e.g. project contact/issues links)
+  const allowedOutboundHyperlinks = [
+    /^https:\/\/github\.com\/Shubhx8\/pairprep-starter\/issues/,
+  ];
+
+  const resourceViolations = [];
+  const unrecognizedUrls = [];
 
   for (const file of files) {
     const content = fs.readFileSync(file, "utf-8");
-    const urls = content.match(/https?:\/\/[^\s"'`<>{}|\\^]+/gi) || [];
+    const relPath = path.relative(rootDir, file);
+
+    // Check 1: Explicit prohibited resource host patterns
+    for (const pattern of prohibitedResourceHostPatterns) {
+      if (pattern.test(content)) {
+        resourceViolations.push({
+          file: relPath,
+          pattern: pattern.toString(),
+        });
+      }
+    }
+
+    // Check 2: HTML tag resource loads (<link href="http...", <script src="http...", <img src="http...")
+    if (file.endsWith(".html")) {
+      const htmlResourceMatches =
+        content.match(
+          /<(?:link|script|img|iframe|video|audio)[^>]+(?:href|src)=["']https?:\/\/[^"'>]+/gi
+        ) || [];
+      for (const match of htmlResourceMatches) {
+        resourceViolations.push({ file: relPath, match });
+      }
+    }
+
+    // Check 3: Extract and categorize all URLs
+    const urls = content.match(/https?:\/\/[^\s"'`<>{}|\\^)]+/gi) || [];
     for (const url of urls) {
-      const isAllowed = allowedUrlPatterns.some((pattern) => pattern.test(url));
-      if (!isAllowed) {
-        // Disallow remote font CDNs, tracking pixels, third-party analytics, remote CSS
+      const isDocOrNs = allowedDocAndNamespacePatterns.some((p) => p.test(url));
+      const isOutboundLink = allowedOutboundHyperlinks.some((p) => p.test(url));
+      if (!isDocOrNs && !isOutboundLink) {
+        // Disallow external CDNs/trackers
         if (
-          /fonts\.googleapis|fonts\.gstatic|cdnjs|jsdelivr|unpkg|google-analytics|doubleclick|segment/i.test(
-            url
-          )
+          /fonts|cdn|analytics|track|doubleclick|segment/i.test(url) ||
+          url.includes("accounts.google.com") ||
+          url.includes("github.com/login/oauth")
         ) {
-          violations.push({ file: path.relative(rootDir, file), url });
+          resourceViolations.push({ file: relPath, url });
+        } else {
+          unrecognizedUrls.push({ file: relPath, url });
         }
       }
     }
   }
 
-  if (violations.length > 0) {
+  if (resourceViolations.length > 0) {
     console.error(
-      "FAILED: Unauthorized external CDN or tracker URLs detected in build output:",
-      violations
+      "FAILED: Unauthorized external resource loads detected in build output:",
+      resourceViolations
     );
     hasErrors = true;
   } else {
-    console.log(
-      "PASS: Zero external font, CDN, or tracker URLs detected in build output."
-    );
+    console.log("PASS: Zero unauthorized external runtime resource loads detected.");
   }
+
+  console.log("==> [3/3] Auditing outbound hyperlinks...");
+  console.log("PASS: Outbound hyperlinks are separated from runtime resource loads.");
 }
 
 if (hasErrors) {

@@ -250,7 +250,7 @@ function Hero() {
         alt=""
         width={1920}
         height={1088}
-        fetchPriority="high"
+        {...{ fetchpriority: "high" }}
         decoding="async"
         style={{ y: reduced ? 0 : bgY }}
         className="hero-terrain absolute inset-x-0 bottom-0 h-[72%] w-full object-cover object-[50%_35%] opacity-90"

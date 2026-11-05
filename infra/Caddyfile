@@ -11,6 +11,15 @@
     }
     header @https Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
+    # Sensitive application routes: prevent search indexing and referrer leakage
+    @app_routes {
+        path /r/* /dashboard /dashboard/*
+    }
+    header @app_routes {
+        X-Robots-Tag "noindex, nofollow"
+        Referrer-Policy "no-referrer"
+    }
+
     # Reverse proxy API, healthcheck, and real-time WebSocket routes to internal api service
     @api {
         path /api/* /healthz /socket.io/* /sync*

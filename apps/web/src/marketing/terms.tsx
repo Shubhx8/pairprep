@@ -23,26 +23,32 @@ export default function TermsPage() {
             2. Authentication & Account Data
           </h2>
           <p className="mt-2">
-            Authentication is passwordless via Google and GitHub OAuth 2.0. We store only
-            your provider display name, email address, and avatar image. Session state is
-            maintained securely via the httpOnly{" "}
-            <code className="text-foreground font-mono text-xs">pairprep.sid</code> cookie
-            for authenticated users and{" "}
-            <code className="text-foreground font-mono text-xs">pairprep.guest</code>{" "}
-            cookie for temporary room guests.
+            Authentication is passwordless via Google and GitHub OAuth 2.0. Our OAuth data
+            stored is strictly limited to: name, email if provided, avatar. Session state
+            is maintained via two first-party cookies with defined lifetimes:
           </p>
+          <ul className="mt-2 list-disc pl-5 space-y-1">
+            <li>
+              <code className="text-foreground font-mono text-xs">pairprep.sid</code>:
+              Maintains authenticated user sessions with a 7-day rolling inactivity
+              lifetime.
+            </li>
+            <li>
+              <code className="text-foreground font-mono text-xs">pairprep.guest</code>:
+              Maintains temporary guest access with a 7-day lifetime (or until joining
+              another room).
+            </li>
+          </ul>
         </div>
 
         <div>
           <h2 className="text-foreground font-medium text-lg">
-            3. Privacy & Logging Standards
+            3. Privacy, Persistence & Logging Standards
           </h2>
           <p className="mt-2">
-            Your intellectual property and interview content remain private. User code and
-            in-room chat messages are{" "}
-            <strong className="text-foreground">never recorded in server logs</strong>.
-            Rooms and associated session documents are automatically archived after{" "}
-            <strong className="text-foreground">30 days of inactivity</strong>.
+            Room content (code and chat) is stored in the database until the room is
+            deleted. Code and chat are never written to server logs. Rooms (not accounts)
+            are archived after 30 days of inactivity.
           </p>
         </div>
 
@@ -62,15 +68,14 @@ export default function TermsPage() {
             5. Account Deletion & Inquiries
           </h2>
           <p className="mt-2">
-            You may terminate your account or submit a deletion request for all personal
-            and room data at any time via our{" "}
+            There is no self-service deletion: users request deletion via{" "}
             <Link
               to="/contact"
               className="text-primary font-medium underline underline-offset-4 hover:text-primary/80"
             >
-              Contact page
+              /contact
             </Link>
-            . We process all verified deletion requests promptly.
+            . We process all verified deletion requests promptly upon receipt.
           </p>
         </div>
       </div>

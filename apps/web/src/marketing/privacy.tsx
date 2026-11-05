@@ -15,10 +15,9 @@ export default function PrivacyPage() {
             1. Information We Collect & OAuth Data
           </h2>
           <p className="mt-2">
-            When you sign in via Google or GitHub OAuth 2.0, we collect and store only
-            your verified provider profile details: your display name, email address,
-            avatar image URL, and unique provider account identifier. We never collect,
-            store, or prompt for passwords.
+            When you sign in via Google or GitHub OAuth 2.0, our OAuth data stored is
+            strictly limited to: name, email if provided, avatar. We never collect, store,
+            or prompt for passwords.
           </p>
         </div>
 
@@ -28,18 +27,19 @@ export default function PrivacyPage() {
           </h2>
           <p className="mt-2">
             PairPrep uses two essential first-party, httpOnly, secure cookies strictly for
-            session management and authentication:
+            session management and authentication, listed with lifetimes below:
           </p>
           <ul className="mt-2 list-disc pl-5 space-y-1">
             <li>
               <code className="text-foreground font-mono text-xs">pairprep.sid</code>:
-              Maintains authenticated session state for signed-in users (7-day rolling
-              inactivity timeout).
+              Maintains authenticated session state for signed-in users with a 7-day
+              rolling inactivity lifetime.
             </li>
             <li>
               <code className="text-foreground font-mono text-xs">pairprep.guest</code>:
-              Maintains temporary in-room participant state for guest users (scoped to a
-              single active room).
+              Maintains temporary in-room participant state for guest users with a 7-day
+              lifetime (or replaced when joining another room, as active guest sessions
+              are limited to one room at a time).
             </li>
           </ul>
           <p className="mt-2">
@@ -50,15 +50,14 @@ export default function PrivacyPage() {
 
         <div>
           <h2 className="text-foreground font-medium text-lg">
-            3. Code and Chat Privacy: Never Logged
+            3. Code and Chat Privacy & Logging Standards
           </h2>
           <p className="mt-2">
-            Your collaborative work is confidential. User-submitted source code, CRDT
-            binary updates (Yjs), and real-time room chat messages are{" "}
-            <strong className="text-foreground">never recorded in server logs</strong> or
-            operational telemetry. Structured application logs strictly capture HTTP
-            metadata (status codes, response latency, and request IDs) for system health
-            and security defense.
+            Room content (code and chat) is stored in the database until the room is
+            deleted. User code and chat are never written to server logs or operational
+            telemetry. Structured application logs strictly record request metadata (HTTP
+            status, response latency, and request IDs) for system health and security
+            defense.
           </p>
         </div>
 
@@ -67,9 +66,8 @@ export default function PrivacyPage() {
             4. Inactivity Archiving & Retention
           </h2>
           <p className="mt-2">
-            Practice rooms and associated session documents are automatically archived
-            after <strong className="text-foreground">30 days of inactivity</strong> to
-            safeguard storage and system efficiency.
+            Rooms (not accounts) are archived after 30 days of inactivity to safeguard
+            storage and prevent resource exhaustion. User accounts remain intact.
           </p>
         </div>
 
@@ -78,16 +76,15 @@ export default function PrivacyPage() {
             5. Deletion Request Path & Contact
           </h2>
           <p className="mt-2">
-            You retain complete control over your personal data. You may delete rooms
-            directly from your dashboard or request complete deletion of your account,
-            OAuth profile data, and practice sessions at any time through our{" "}
+            There is no self-service deletion: users request deletion via{" "}
             <Link
               to="/contact"
               className="text-primary font-medium underline underline-offset-4 hover:text-primary/80"
             >
-              Contact & Support page
-            </Link>{" "}
-            or by submitting a data deletion request.
+              /contact
+            </Link>
+            . We process all verified deletion requests for personal profiles and room
+            records promptly upon receipt.
           </p>
         </div>
       </div>

@@ -34,7 +34,14 @@ passport.deserializeUser(async (id: string, done) => {
 /**
  * Configure Google OAuth 2.0 Strategy
  */
+export const registeredProviders = new Set<"google" | "github">();
+
+export function isStrategyRegistered(provider: "google" | "github"): boolean {
+  return registeredProviders.has(provider);
+}
+
 export function configurePassport(): void {
+  registeredProviders.clear();
   const googleClientId = config.GOOGLE_CLIENT_ID;
   const googleClientSecret = config.GOOGLE_CLIENT_SECRET;
 
@@ -103,6 +110,7 @@ export function configurePassport(): void {
         }
       )
     );
+    registeredProviders.add("google");
   }
 
   const githubClientId = config.GITHUB_CLIENT_ID;
@@ -174,6 +182,7 @@ export function configurePassport(): void {
         }
       )
     );
+    registeredProviders.add("github");
   }
 }
 

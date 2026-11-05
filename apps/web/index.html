@@ -2,9 +2,64 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/png" href="/images/pairprep-logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PairPrep - Real-Time Collaborative Interview Platform</title>
+    <title>PairPrep · Collaborative Coding & Interview Preparation</title>
+    <meta
+      name="description"
+      content="A real-time collaborative coding room for you and a partner. Write code together live, run code in disposable sandboxes, and rehearse technical interviews."
+    />
+    <!-- CANONICAL_AND_OG_URL -->
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:title"
+      content="PairPrep · Collaborative Coding & Interview Preparation"
+    />
+    <meta
+      property="og:description"
+      content="A real-time collaborative coding room for you and a partner. Write code together live, run code in disposable sandboxes, and rehearse technical interviews."
+    />
+    <!-- OG_IMAGE_TAGS -->
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="PairPrep · Collaborative Coding & Interview Preparation"
+    />
+    <meta
+      name="twitter:description"
+      content="A real-time collaborative coding room for you and a partner. Write code together live, run code in disposable sandboxes, and rehearse technical interviews."
+    />
+
+    <!-- Static Hero Preload (Discovered immediately by browser preload scanner) -->
+    <link
+      rel="preload"
+      as="image"
+      imagesrcset="/images/hero-terrain-960w.webp 960w, /images/hero-terrain.webp 1920w"
+      imagesizes="100vw"
+      fetchpriority="high"
+      type="image/webp"
+    />
+
+    <!-- Fallback client-side route guard: noindex, nofollow on sensitive app paths -->
+    <script>
+      (function () {
+        var path = window.location.pathname;
+        if (
+          path.startsWith("/r/") ||
+          path === "/dashboard" ||
+          path.startsWith("/dashboard/")
+        ) {
+          var meta = document.createElement("meta");
+          meta.name = "robots";
+          meta.content = "noindex, nofollow";
+          document.head.appendChild(meta);
+        }
+      })();
+    </script>
   </head>
   <body class="bg-slate-950 text-slate-100 min-h-screen">
     <div id="root"></div>

@@ -35,3 +35,4 @@ export function isAllowedOrigin(originHeader?: string | string[]): boolean {
   const allowed = getAllowedOrigins();
   return allowed.has(origin.trim());
 }
+

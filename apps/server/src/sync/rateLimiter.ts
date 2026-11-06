@@ -2,7 +2,13 @@ import proxyaddr from "proxy-addr";
 import type { IncomingMessage } from "node:http";
 
 // Trusted subnets: loopback, Docker, and internal cluster subnets
-export const TRUSTED_PROXIES = ["loopback", "10.0.0.0/8", "172.16.0.0/12"];
+export const TRUSTED_PROXIES = [
+  "loopback",
+  "linklocal",
+  "uniquelocal",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+];
 const trustFn = proxyaddr.compile(TRUSTED_PROXIES);
 
 /**

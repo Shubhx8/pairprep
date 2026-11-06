@@ -18,6 +18,7 @@ import { identify } from "./middleware/identity.js";
 import { startArchiveJob, stopArchiveJob } from "./services/archiveJob.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
+import { attachSyncServer } from "./sync/hocuspocus.js";
 import { roomsRouter } from "./routes/rooms.js";
 import {
   getDatabaseStatus,
@@ -253,6 +254,7 @@ if (process.env["NODE_ENV"] !== "test") {
       }
     }
   });
+  attachSyncServer(server);
   setupGracefulShutdown(server);
 }
 

@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type Server as HttpServer } from "node:http";
-import { attachSyncServer, type SyncServerInstance } from "../../sync/hocuspocus.js";
+import {
+  attachSyncServer,
+  createSyncServer,
+  type SyncServerInstance,
+} from "../../sync/hocuspocus.js";
 import {
   HocuspocusProvider,
   HocuspocusProviderWebsocket,
@@ -13,6 +17,16 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
   let syncServer: SyncServerInstance | undefined;
   const providers: HocuspocusProvider[] = [];
   const wsProviders: HocuspocusProviderWebsocket[] = [];
+
+  class BrowserLikeWebSocket extends WebSocket {
+    constructor(url: string) {
+      super(url, {
+        headers: {
+          origin: "http://localhost:3000",
+        },
+      });
+    }
+  }
 
   afterEach(async () => {
     for (const provider of providers) {
@@ -38,9 +52,12 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
     }
   });
 
-  it("attaches to HTTP server at /sync and syncs document updates between two clients", async () => {
+  it("attaches to HTTP server at /sync with allowed origin and syncs updates", async () => {
     httpServer = createServer();
-    syncServer = attachSyncServer(httpServer);
+    syncServer = attachSyncServer(
+      httpServer,
+      createSyncServer({ requireAuth: false })
+    );
 
     await new Promise<void>((resolve) => {
       httpServer!.listen(0, () => resolve());
@@ -52,17 +69,18 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
     }
     const port = addr.port;
     const wsUrl = `ws://127.0.0.1:${port}/sync`;
+    const testDocId = "507f1f77bcf86cd799439011";
 
     const wsProvider1 = new HocuspocusProviderWebsocket({
       url: wsUrl,
-      WebSocketPolyfill: WebSocket,
+      WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
     });
     wsProviders.push(wsProvider1);
 
     const doc1 = new Y.Doc();
     const provider1 = new HocuspocusProvider({
       websocketProvider: wsProvider1,
-      name: "spike-room",
+      name: testDocId,
       document: doc1,
     });
     provider1.attach();
@@ -70,14 +88,14 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
 
     const wsProvider2 = new HocuspocusProviderWebsocket({
       url: wsUrl,
-      WebSocketPolyfill: WebSocket,
+      WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
     });
     wsProviders.push(wsProvider2);
 
     const doc2 = new Y.Doc();
     const provider2 = new HocuspocusProvider({
       websocketProvider: wsProvider2,
-      name: "spike-room",
+      name: testDocId,
       document: doc2,
     });
     provider2.attach();

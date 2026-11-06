@@ -12,10 +12,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hocuspocus/server": "4.7.1",
     "@pairprep/shared": "*",
     "connect-mongo": "5.1.0",
     "cookie-parser": "1.4.7",
     "cors": "^2.8.5",
+    "crossws": "0.4.15",
     "express": "^4.21.2",
     "express-rate-limit": "8.7.1",
     "express-session": "1.19.0",
@@ -25,14 +27,14 @@
     "passport-github2": "0.1.12",
     "passport-google-oauth20": "2.0.0",
     "pino": "10.4.0",
-    "zod": "4.6.7",
-    "@hocuspocus/server": "4.7.1",
-    "crossws": "0.4.15",
-    "yjs": "13.6.33",
+    "proxy-addr": "2.0.8",
+    "ws": "8.18.0",
     "y-protocols": "1.0.7",
-    "ws": "8.18.0"
+    "yjs": "13.6.33",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@hocuspocus/provider": "4.7.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
@@ -41,9 +43,9 @@
     "@types/passport": "1.0.17",
     "@types/passport-github2": "1.2.9",
     "@types/passport-google-oauth20": "2.0.17",
+    "@types/proxy-addr": "2.0.3",
+    "@types/ws": "8.5.14",
     "tsx": "^4.19.3",
-    "typescript": "^5.7.3",
-    "@hocuspocus/provider": "4.7.1",
-    "@types/ws": "8.5.14"
+    "typescript": "^5.7.3"
   }
 }

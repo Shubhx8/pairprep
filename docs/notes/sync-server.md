@@ -121,7 +121,103 @@ To defend against malicious message flooding, denial-of-service, or runaway scri
 
 ---
 
-## 7. Operational Troubleshooting
+## 7. Sync Server Statistics (`getSyncServerStats`)
+
+The sync server exposes an internal diagnostic function `getSyncServerStats()` providing real-time visibility into server operational health without leaking sensitive credentials, session tokens, room slugs, or document contents:
+
+```ts
+interface SyncServerStats {
+  status: "running" | "draining" | "drained" | "destroyed";
+  uptimeSeconds: number;
+  connections: {
+    activeConnections: number;
+    activeRooms: number;
+    activeDocuments: number;
+    pendingReservations: number;
+    upgradeRejections: number;
+    authenticationFailures: number;
+    rateLimitTerminations: number;
+  };
+  capacity: {
+    totalActiveRooms: number;
+    totalActiveConnections: number;
+    totalPendingReservations: number;
+    maxConnectionsPerRoom: 6;
+    roomsWithActiveConnections: number;
+    rooms: Array<{
+      roomId: string;
+      activeConnections: number;
+      pendingReservations: number;
+      distinctMembers: number;
+      isReadOnly: boolean;
+      utilizationPct: number;
+    }>;
+  };
+  persistence: {
+    pendingUpdates: number;
+    queuedUpdates: number;
+    inFlightUpdates: number;
+    roomsWithPendingUpdates: number;
+    oldestPendingAgeMs: number;
+    flushesCompleted: number;
+    flushFailures: number;
+    snapshotsSaved: number;
+    snapshotFailures: number;
+    activeSnapshotOperations: number;
+  };
+  rateLimiter: {
+    activeTrackedConnections: number;
+    maxTrackedCapacity: number;
+    rejections: {
+      messageRate: number;
+      byteRate: number;
+      capacitySaturated: number;
+      invalidIdentity: number;
+      total: number;
+    };
+  };
+}
+```
+
+---
+
+## 8. Graceful Shutdown & WebSocket Connection Drain
+
+### 8.1 Shutdown Lifecycle & Phases
+When the process receives a termination signal (`SIGTERM`, `SIGINT`) or calls `drainAndShutdown()`, the server executes a bounded 5-phase shutdown sequence:
+1. **Phase A (Admission Barrier)**:
+   - Sets internal status to `"draining"`.
+   - Rejects all subsequent HTTP `/sync` upgrades with `503 Service Unavailable` and `Retry-After: 30`.
+   - Fails ongoing `onAuthenticate` and `onLoadDocument` hooks with 503 errors.
+   - Drops late updates in `beforeHandleMessage`.
+   - Marks all active rooms read-only (`syncRegistry.setAllRoomsReadOnly()`).
+2. **Phase B (Orderly WebSocket Drain)**:
+   - Delivers WebSocket close code `1001` (`Going Away`) with reason `server_shutting_down` to all active connections.
+   - Cleanly closes Hocuspocus connection instances.
+3. **Phase C (Hard Drain Barrier)**:
+   - Enforces a configurable drain timeout (default 5,000 ms).
+   - Any surviving connections are forcefully closed via `crossws.closeAll(1001, ..., true)` and socket termination.
+   - Sets status to `"drained"`.
+4. **Phase D (Persistence Drain & Consistent Final Snapshots)**:
+   - Stops all recurring 5-minute snapshot intervals (`stopAllSnapshotIntervals()`).
+   - Awaits in-flight snapshots and flushes.
+   - Flushes all pending room queues to MongoDB under room mutexes.
+   - Writes consistent final document snapshots to `doc_snapshots`.
+   - Asserts that zero unflushed updates remain (`stats.pendingUpdates === 0`).
+5. **Phase E (Server Teardown & State Reset)**:
+   - Awaits Hocuspocus `server.destroy()`.
+   - Clears all registry connections and reservations.
+   - Resets connection rate limiter tables.
+   - Sets status to `"destroyed"`.
+
+### 8.2 Deadlock Prevention & MongoDB Teardown
+- Node.js's `http.Server.close(cb)` waits for all active TCP sockets to close before triggering its completion callback. Because upgraded WebSockets are active TCP connections, if WebSocket draining were deferred until inside `server.close()`, the HTTP server would deadlock until the hard 10s shutdown timeout.
+- In `index.ts`, `setupGracefulShutdown` initiates `syncServer.drainAndShutdown()` concurrently with `server.close()`.
+- MongoDB connection is disconnected strictly **after** `drainAndShutdown()` successfully flushes all pending updates, preventing write failures or unhandled rejections during server exit.
+
+---
+
+## 9. Operational Troubleshooting
 
 | Symptom | Probable Cause | Remediation |
 | :--- | :--- | :--- |

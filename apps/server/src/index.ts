@@ -168,16 +168,17 @@ app.use(errorHandler);
 export function setupGracefulShutdown(
   server: Server,
   onShutdown?: () => Promise<void> | void
-): { handleShutdown: (signal: string) => void } {
+): { handleShutdown: (signal: string) => Promise<void> } {
   let isShuttingDown = false;
+  let shutdownPromise: Promise<void> | null = null;
 
-  const handleShutdown = (signal: string) => {
+  const handleShutdown = (signal: string): Promise<void> => {
     if (isShuttingDown) {
       rootLogger.warn(
         { signal },
         "Shutdown already in progress. Ignoring duplicate signal."
       );
-      return;
+      return shutdownPromise ?? Promise.resolve();
     }
     isShuttingDown = true;
 
@@ -204,32 +205,56 @@ export function setupGracefulShutdown(
 
     stopArchiveJob();
 
-    // Stop accepting new connections while letting active requests finish
-    server.close(async () => {
-      clearInterval(idleInterval);
+    shutdownPromise = (async () => {
+      // 1. Initiate onShutdown (sync server drain & persistence flush) concurrently
+      // with server.close() so active WebSockets close and do not deadlock server.close()
+      const syncShutdownPromise = onShutdown
+        ? Promise.resolve(onShutdown())
+        : Promise.resolve();
+
+      // 2. Initiate HTTP server closure to stop accepting new HTTP requests
+      const serverClosePromise = new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      // Force close after 10 seconds max if requests or flush are hanging
+      const timeout = setTimeout(() => {
+        rootLogger.error("Shutdown timed out after 10s. Forcing exit.");
+        process.exit(1);
+      }, 10000);
+      timeout.unref();
+
       try {
+        await Promise.all([syncShutdownPromise, serverClosePromise]);
+        clearTimeout(timeout);
+        clearInterval(idleInterval);
+
+        // 3. Disconnect MongoDB only after all sync persistence writes and in-flight HTTP requests complete
         await disconnectDatabase();
-        if (onShutdown) {
-          await onShutdown();
-        }
-        rootLogger.info("All in-flight requests completed. Exiting cleanly.");
+        rootLogger.info(
+          "All in-flight requests and sync updates completed. Exiting cleanly."
+        );
         process.exit(0);
       } catch (err) {
+        clearTimeout(timeout);
+        clearInterval(idleInterval);
         rootLogger.error({ err }, "Error during cleanup shutdown tasks");
         process.exit(1);
       }
-    });
+    })();
 
-    // Force close after 10 seconds max if requests are hanging
-    const timeout = setTimeout(() => {
-      rootLogger.error("Shutdown timed out after 10s. Forcing exit.");
-      process.exit(1);
-    }, 10000);
-    timeout.unref();
+    return shutdownPromise;
   };
 
-  process.once("SIGTERM", () => handleShutdown("SIGTERM"));
-  process.once("SIGINT", () => handleShutdown("SIGINT"));
+  process.once("SIGTERM", () => {
+    void handleShutdown("SIGTERM");
+  });
+  process.once("SIGINT", () => {
+    void handleShutdown("SIGINT");
+  });
 
   return { handleShutdown };
 }
@@ -254,8 +279,10 @@ if (process.env["NODE_ENV"] !== "test") {
       }
     }
   });
-  attachSyncServer(server);
-  setupGracefulShutdown(server);
+  const syncServer = attachSyncServer(server);
+  setupGracefulShutdown(server, async () => {
+    await syncServer.drainAndShutdown();
+  });
 }
 
 export { server };

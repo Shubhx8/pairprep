@@ -51,12 +51,14 @@ export class UpgradeRateLimiter {
   private readonly maxRejections: number;
   private readonly maxEntries: number;
   private readonly entries: Map<string, number[]>;
+  private totalRejections = 0;
 
   constructor(options: UpgradeRateLimiterOptions = {}) {
     this.windowMs = options.windowMs ?? 60_000;
     this.maxRejections = options.maxRejections ?? 60;
     this.maxEntries = options.maxEntries ?? 5000;
     this.entries = new Map();
+    this.totalRejections = 0;
   }
 
   /**
@@ -93,6 +95,14 @@ export class UpgradeRateLimiter {
     const valid = timestamps.filter((t) => now - t < this.windowMs);
     valid.push(now);
     this.entries.set(normIp, valid);
+    this.totalRejections++;
+  }
+
+  /**
+   * Returns cumulative total of upgrade rejections recorded.
+   */
+  getTotalRejections(): number {
+    return this.totalRejections;
   }
 
   /**
@@ -103,10 +113,11 @@ export class UpgradeRateLimiter {
   }
 
   /**
-   * Clears all tracking state.
+   * Clears all tracking state and cumulative rejection counter.
    */
   resetAll(): void {
     this.entries.clear();
+    this.totalRejections = 0;
   }
 
   get size(): number {

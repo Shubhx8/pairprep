@@ -59,8 +59,39 @@ interface PendingQueue {
   debounceTimeout?: NodeJS.Timeout;
 }
 
+export interface PersistenceStats {
+  /** Total number of updates currently waiting in memory across all rooms (queued + inFlight) */
+  pendingUpdates: number;
+  /** Number of updates in queued state awaiting flush */
+  queuedUpdates: number;
+  /** Number of updates currently being written to MongoDB */
+  inFlightUpdates: number;
+  /** Number of rooms with unflushed updates */
+  roomsWithPendingUpdates: number;
+  /** Age of the oldest unflushed update across all rooms in milliseconds (0 if none) */
+  oldestPendingAgeMs: number;
+  /** Cumulative count of successfully completed database flushes */
+  flushesCompleted: number;
+  /** Cumulative count of database flush failures (requeued) */
+  flushFailures: number;
+  /** Cumulative count of snapshots successfully written to MongoDB */
+  snapshotsSaved: number;
+  /** Cumulative count of snapshot save failures */
+  snapshotFailures: number;
+  /** Count of snapshot operations currently in flight */
+  activeSnapshotOperations: number;
+}
+
 const pendingQueues = new Map<string, PendingQueue>();
 const snapshotIntervals = new Map<string, NodeJS.Timeout>();
+
+let flushesCompleted = 0;
+let flushFailures = 0;
+let snapshotsSaved = 0;
+let snapshotFailures = 0;
+let inFlightUpdatesCount = 0;
+const inFlightFlushes = new Set<Promise<void>>();
+const inFlightSnapshots = new Set<Promise<void>>();
 
 /**
  * Loads a document by replaying the latest snapshot and all subsequent updates.
@@ -237,76 +268,92 @@ export async function flushRoom(
     return;
   }
 
-  await roomMutex.runExclusive(roomId, async () => {
-    const queue = pendingQueues.get(roomId);
-    if (!queue || queue.updates.length === 0) {
-      if (forceSnapshot && queue?.document) {
-        await takeSnapshot(roomId, queue.document, true);
+  const flushPromise = (async () => {
+    await roomMutex.runExclusive(roomId, async () => {
+      const queue = pendingQueues.get(roomId);
+      if (!queue || queue.updates.length === 0) {
+        if (forceSnapshot && queue?.document) {
+          await takeSnapshot(roomId, queue.document, true);
+        }
+        return;
       }
-      return;
-    }
 
-    // Clear timers on captured queue
-    if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
-    if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
+      // Clear timers on captured queue
+      if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
+      if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
 
-    // Atomically capture batch and replace pending queue with an empty queue
-    const batch = queue.updates;
-    const originalFirstUnflushedAt = queue.firstUnflushedAt;
-    const document = queue.document;
+      // Atomically capture batch and replace pending queue with an empty queue
+      const batch = queue.updates;
+      const originalFirstUnflushedAt = queue.firstUnflushedAt;
+      const document = queue.document;
 
-    pendingQueues.set(roomId, {
-      roomId,
-      document,
-      updates: [],
-      firstUnflushedAt: 0,
+      inFlightUpdatesCount += batch.length;
+
+      pendingQueues.set(roomId, {
+        roomId,
+        document,
+        updates: [],
+        firstUnflushedAt: 0,
+      });
+
+      try {
+        // Find latest sequence in database for this room
+        const lastDoc = await DocUpdateModel.findOne({ roomId })
+          .sort({ seq: -1 })
+          .exec();
+        let currentSeq = lastDoc?.seq ?? 0;
+
+        // Write one doc_updates row per update in arrival order (no merging)
+        for (const item of batch) {
+          currentSeq++;
+          await DocUpdateModel.create({
+            roomId,
+            seq: currentSeq,
+            authorId: item.authorId,
+            update: Buffer.from(item.update),
+            size: item.update.byteLength,
+            ts: item.ts,
+          });
+        }
+
+        // Check document size against 2 MB cap
+        const fullDocState = Y.encodeStateAsUpdate(document);
+        if (fullDocState.byteLength > MAX_DOC_SIZE_BYTES) {
+          syncRegistry.setRoomReadOnly(roomId);
+          rootLogger.warn(
+            { roomId, size: fullDocState.byteLength, cap: MAX_DOC_SIZE_BYTES },
+            "Room document exceeded 2 MB size cap; set to read-only"
+          );
+        }
+
+        if (forceSnapshot) {
+          await saveSnapshot(roomId, currentSeq, fullDocState, document);
+        }
+
+        inFlightUpdatesCount -= batch.length;
+        flushesCompleted++;
+
+        // Clean up empty queue if no new updates arrived during DB write
+        const currentQueue = pendingQueues.get(roomId);
+        if (currentQueue && currentQueue.updates.length === 0) {
+          pendingQueues.delete(roomId);
+        }
+      } catch (err) {
+        inFlightUpdatesCount -= batch.length;
+        flushFailures++;
+        rootLogger.error({ err, roomId }, "Failed to flush updates to MongoDB");
+        requeueUpdates(roomId, batch, originalFirstUnflushedAt, document);
+        throw err;
+      }
     });
+  })();
 
-    try {
-      // Find latest sequence in database for this room
-      const lastDoc = await DocUpdateModel.findOne({ roomId })
-        .sort({ seq: -1 })
-        .exec();
-      let currentSeq = lastDoc?.seq ?? 0;
-
-      // Write one doc_updates row per update in arrival order (no merging)
-      for (const item of batch) {
-        currentSeq++;
-        await DocUpdateModel.create({
-          roomId,
-          seq: currentSeq,
-          authorId: item.authorId,
-          update: Buffer.from(item.update),
-          size: item.update.byteLength,
-          ts: item.ts,
-        });
-      }
-
-      // Check document size against 2 MB cap
-      const fullDocState = Y.encodeStateAsUpdate(document);
-      if (fullDocState.byteLength > MAX_DOC_SIZE_BYTES) {
-        syncRegistry.setRoomReadOnly(roomId);
-        rootLogger.warn(
-          { roomId, size: fullDocState.byteLength, cap: MAX_DOC_SIZE_BYTES },
-          "Room document exceeded 2 MB size cap; set to read-only"
-        );
-      }
-
-      if (forceSnapshot) {
-        await saveSnapshot(roomId, currentSeq, fullDocState, document);
-      }
-
-      // Clean up empty queue if no new updates arrived during DB write
-      const currentQueue = pendingQueues.get(roomId);
-      if (currentQueue && currentQueue.updates.length === 0) {
-        pendingQueues.delete(roomId);
-      }
-    } catch (err) {
-      rootLogger.error({ err, roomId }, "Failed to flush updates to MongoDB");
-      requeueUpdates(roomId, batch, originalFirstUnflushedAt, document);
-      throw err;
-    }
-  });
+  inFlightFlushes.add(flushPromise);
+  try {
+    await flushPromise;
+  } finally {
+    inFlightFlushes.delete(flushPromise);
+  }
 }
 
 /**
@@ -319,18 +366,32 @@ export async function takeSnapshot(
 ): Promise<void> {
   if (mongoose.connection.readyState !== 1) return;
 
-  await roomMutex.runExclusive(roomId, async () => {
-    const lastDoc = await DocUpdateModel.findOne({ roomId })
-      .sort({ seq: -1 })
-      .exec();
-    const currentSeq = lastDoc?.seq ?? 0;
+  const snapPromise = (async () => {
+    try {
+      await roomMutex.runExclusive(roomId, async () => {
+        const lastDoc = await DocUpdateModel.findOne({ roomId })
+          .sort({ seq: -1 })
+          .exec();
+        const currentSeq = lastDoc?.seq ?? 0;
 
-    const lastSnapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
-    if (force || !lastSnapshot || lastSnapshot.seq < currentSeq) {
-      const fullDocState = Y.encodeStateAsUpdate(document);
-      await saveSnapshot(roomId, currentSeq, fullDocState, document);
+        const lastSnapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
+        if (force || !lastSnapshot || lastSnapshot.seq < currentSeq) {
+          const fullDocState = Y.encodeStateAsUpdate(document);
+          await saveSnapshot(roomId, currentSeq, fullDocState, document);
+        }
+      });
+    } catch (err) {
+      snapshotFailures++;
+      throw err;
     }
-  });
+  })();
+
+  inFlightSnapshots.add(snapPromise);
+  try {
+    await snapPromise;
+  } finally {
+    inFlightSnapshots.delete(snapPromise);
+  }
 }
 
 /**
@@ -344,21 +405,28 @@ export async function saveSnapshot(
 ): Promise<void> {
   const text = document.getText("monaco")?.toString() || "";
 
-  await docSnapshotRepo.createSnapshot({
-    roomId,
-    seq,
-    state: Buffer.from(stateUpdate),
-    text,
-  });
+  try {
+    await docSnapshotRepo.createSnapshot({
+      roomId,
+      seq,
+      state: Buffer.from(stateUpdate),
+      text,
+    });
 
-  // Prune snapshots: keep only the latest 3
-  const snapshots = await DocSnapshotModel.find({ roomId })
-    .sort({ seq: -1 })
-    .exec();
+    // Prune snapshots: keep only the latest 3
+    const snapshots = await DocSnapshotModel.find({ roomId })
+      .sort({ seq: -1 })
+      .exec();
 
-  if (snapshots.length > MAX_SNAPSHOTS_TO_KEEP) {
-    const toDelete = snapshots.slice(MAX_SNAPSHOTS_TO_KEEP).map((s) => s._id);
-    await DocSnapshotModel.deleteMany({ _id: { $in: toDelete } }).exec();
+    if (snapshots.length > MAX_SNAPSHOTS_TO_KEEP) {
+      const toDelete = snapshots.slice(MAX_SNAPSHOTS_TO_KEEP).map((s) => s._id);
+      await DocSnapshotModel.deleteMany({ _id: { $in: toDelete } }).exec();
+    }
+
+    snapshotsSaved++;
+  } catch (err) {
+    snapshotFailures++;
+    throw err;
   }
 }
 
@@ -390,17 +458,130 @@ export function stopSnapshotInterval(roomId: string): void {
 }
 
 /**
- * Flushes all pending updates for all rooms (e.g. during graceful shutdown).
+ * Stops all active recurring snapshot timers across all rooms.
  */
-export async function flushAllPending(): Promise<void> {
-  const roomIds = Array.from(pendingQueues.keys());
-  for (const roomId of roomIds) {
-    try {
-      await flushRoom(roomId, true);
-    } catch (err) {
-      rootLogger.error({ err, roomId }, "Error flushing room during flushAll");
+export function stopAllSnapshotIntervals(): void {
+  for (const timer of snapshotIntervals.values()) {
+    clearInterval(timer);
+  }
+  snapshotIntervals.clear();
+}
+
+/**
+ * Returns an operational snapshot of persistence queues and health.
+ */
+export function getPendingPersistenceStats(now = Date.now()): PersistenceStats {
+  let queuedUpdates = 0;
+  let roomsWithPendingUpdates = 0;
+  let oldestTimestamp = 0;
+
+  for (const queue of pendingQueues.values()) {
+    if (queue.updates.length > 0) {
+      queuedUpdates += queue.updates.length;
+      roomsWithPendingUpdates++;
+      if (queue.firstUnflushedAt > 0) {
+        if (oldestTimestamp === 0 || queue.firstUnflushedAt < oldestTimestamp) {
+          oldestTimestamp = queue.firstUnflushedAt;
+        }
+      }
     }
   }
+
+  const oldestPendingAgeMs =
+    oldestTimestamp > 0 ? Math.max(0, now - oldestTimestamp) : 0;
+
+  return {
+    pendingUpdates: queuedUpdates + inFlightUpdatesCount,
+    queuedUpdates,
+    inFlightUpdates: inFlightUpdatesCount,
+    roomsWithPendingUpdates,
+    oldestPendingAgeMs,
+    flushesCompleted,
+    flushFailures,
+    snapshotsSaved,
+    snapshotFailures,
+    activeSnapshotOperations: inFlightSnapshots.size,
+  };
+}
+
+/**
+ * Flushes all pending updates for all rooms and optionally takes consistent final snapshots.
+ * Used during graceful server shutdown.
+ */
+export async function drainPersistenceAndSnapshot(
+  options: { takeFinalSnapshots?: boolean } = {}
+): Promise<void> {
+  const takeFinalSnapshots = options.takeFinalSnapshots ?? true;
+
+  // 1. Clear all recurring 5-minute snapshot timers
+  stopAllSnapshotIntervals();
+
+  // If MongoDB is not connected, we cannot persist to the database
+  if (mongoose.connection.readyState !== 1) {
+    rootLogger.warn(
+      { readyState: mongoose.connection.readyState },
+      "MongoDB is not connected. Skipping database persistence drain."
+    );
+    for (const queue of pendingQueues.values()) {
+      if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
+      if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
+    }
+    pendingQueues.clear();
+    return;
+  }
+
+  // 2. Await in-flight snapshot operations already running
+  if (inFlightSnapshots.size > 0) {
+    await Promise.all(Array.from(inFlightSnapshots));
+  }
+
+  // 3. Await in-flight flush operations already running
+  if (inFlightFlushes.size > 0) {
+    await Promise.all(Array.from(inFlightFlushes));
+  }
+
+  // 4. Capture all rooms with pending queues or active documents
+  const roomIds = Array.from(pendingQueues.keys());
+  const docsToSnapshot = new Map<string, Y.Doc>();
+
+  for (const roomId of roomIds) {
+    const queue = pendingQueues.get(roomId);
+    if (queue?.document) {
+      docsToSnapshot.set(roomId, queue.document);
+    }
+    // Flush updates to database first
+    await flushRoom(roomId, false);
+  }
+
+  // 5. Take final snapshots if requested and document exists
+  if (takeFinalSnapshots) {
+    for (const [roomId, doc] of docsToSnapshot.entries()) {
+      await takeSnapshot(roomId, doc, true);
+    }
+  }
+
+  // 6. Await any remaining flushes or snapshots
+  if (inFlightFlushes.size > 0) {
+    await Promise.all(Array.from(inFlightFlushes));
+  }
+  if (inFlightSnapshots.size > 0) {
+    await Promise.all(Array.from(inFlightSnapshots));
+  }
+
+  // 7. Verify no pending queues remain
+  const stats = getPendingPersistenceStats();
+  if (stats.pendingUpdates > 0) {
+    throw new Error(
+      `Persistence drain incomplete: ${stats.pendingUpdates} updates remain unflushed`
+    );
+  }
+}
+
+/**
+ * Flushes all pending updates for all rooms (legacy alias for drainPersistenceAndSnapshot).
+ */
+export async function flushAllPending(): Promise<void> {
+  await drainPersistenceAndSnapshot({ takeFinalSnapshots: true });
 }
 
 /**
@@ -412,9 +593,12 @@ export function resetPersistenceState(): void {
     if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
   }
   pendingQueues.clear();
-
-  for (const timer of snapshotIntervals.values()) {
-    clearInterval(timer);
-  }
-  snapshotIntervals.clear();
+  stopAllSnapshotIntervals();
+  flushesCompleted = 0;
+  flushFailures = 0;
+  snapshotsSaved = 0;
+  snapshotFailures = 0;
+  inFlightUpdatesCount = 0;
+  inFlightFlushes.clear();
+  inFlightSnapshots.clear();
 }

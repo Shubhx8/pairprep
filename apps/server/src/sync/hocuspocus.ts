@@ -12,7 +12,13 @@ import {
 } from "./connectionRateLimiter.js";
 import { resolvePrincipalFromCookies } from "../auth/sessionPrincipal.js";
 import type { Principal } from "../middleware/identity.js";
-import { syncRegistry } from "./syncRegistry.js";
+import {
+  syncRegistry,
+  type CapacityStats,
+  type RoomCapacityStat,
+} from "./syncRegistry.js";
+
+export type { RoomCapacityStat };
 import {
   loadDocument,
   queueUpdate,
@@ -20,7 +26,10 @@ import {
   takeSnapshot,
   startSnapshotInterval,
   stopSnapshotInterval,
-  flushAllPending,
+  stopAllSnapshotIntervals,
+  drainPersistenceAndSnapshot,
+  getPendingPersistenceStats,
+  type PersistenceStats,
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
@@ -28,10 +37,52 @@ import { clientMapRepo } from "../repos/clientMapRepo.js";
 import { rootLogger } from "../middleware/logger.js";
 import type { IRoom } from "../models/rooms.js";
 import type { IRoomMember } from "../models/room_members.js";
+import type { RateLimiterStats } from "./connectionRateLimiter.js";
+
+export interface ConnectionStats {
+  /** Total physical active WebSocket connections across all rooms */
+  activeConnections: number;
+  /** Total active rooms with at least one connection */
+  activeRooms: number;
+  /** Total loaded Yjs documents in memory */
+  activeDocuments: number;
+  /** Total pending slot reservations during handshake */
+  pendingReservations: number;
+  /** Cumulative count of upgrade handshakes rejected (bad origin, IP limited, shutting down) */
+  upgradeRejections: number;
+  /** Cumulative count of onAuthenticate failures (capacity, invalid doc, auth error, shutting down) */
+  authenticationFailures: number;
+  /** Cumulative count of connections terminated due to rate limit violation */
+  rateLimitTerminations: number;
+}
+
+export interface SyncServerStats {
+  /** Server lifecycle status: 'running' | 'shutting_down' | 'drained' | 'destroyed' */
+  status: "running" | "shutting_down" | "drained" | "destroyed";
+  /** System uptime of the sync server in seconds */
+  uptimeSeconds: number;
+  /** Connection metrics */
+  connections: ConnectionStats;
+  /** Room capacity utilization across active rooms */
+  capacity: CapacityStats;
+  /** Persistence queue and database durability health */
+  persistence: PersistenceStats;
+  /** Rate limiter operational metrics */
+  rateLimiter: RateLimiterStats & { upgradeIpRateLimitRejections: number };
+}
+
+export interface ShutdownOptions {
+  drainTimeoutMs?: number;
+  forceTimeoutMs?: number;
+}
 
 export interface SyncServerInstance {
   server: HocuspocusServer;
+  getStats: () => SyncServerStats;
+  drainAndShutdown: (options?: ShutdownOptions) => Promise<void>;
   destroy: () => Promise<void>;
+  isShuttingDown: () => boolean;
+  recordUpgradeRejection: () => void;
 }
 
 export interface CreateSyncServerOptions {
@@ -47,6 +98,63 @@ export interface SyncConnectionContext {
   [key: string]: unknown;
 }
 
+let activeSyncInstance: SyncServerInstance | undefined;
+
+/**
+ * Returns operational statistics for the active sync server instance.
+ * Safe for operational monitoring; never exposes credentials, tokens, or document content.
+ */
+export function getSyncServerStats(): SyncServerStats {
+  if (activeSyncInstance) {
+    return activeSyncInstance.getStats();
+  }
+  return {
+    status: "destroyed",
+    uptimeSeconds: 0,
+    connections: {
+      activeConnections: 0,
+      activeRooms: 0,
+      activeDocuments: 0,
+      pendingReservations: 0,
+      upgradeRejections: 0,
+      authenticationFailures: 0,
+      rateLimitTerminations: 0,
+    },
+    capacity: {
+      totalActiveRooms: 0,
+      totalActiveConnections: 0,
+      totalPendingReservations: 0,
+      maxConnectionsPerRoom: 6,
+      roomsWithActiveConnections: 0,
+      rooms: [],
+    },
+    persistence: {
+      pendingUpdates: 0,
+      queuedUpdates: 0,
+      inFlightUpdates: 0,
+      roomsWithPendingUpdates: 0,
+      oldestPendingAgeMs: 0,
+      flushesCompleted: 0,
+      flushFailures: 0,
+      snapshotsSaved: 0,
+      snapshotFailures: 0,
+      activeSnapshotOperations: 0,
+    },
+    rateLimiter: {
+      trackedConnections: 0,
+      maxEntries: 10_000,
+      rejections: {
+        messageRateLimit: 0,
+        byteRateLimit: 0,
+        capacityExceeded: 0,
+        invalidSocketIdentity: 0,
+        total: 0,
+      },
+      upgradeIpRateLimitRejections: 0,
+    },
+  };
+}
+
 /**
  * Creates a Hocuspocus server instance configured with maxPayload, authentication,
  * author attribution tracking, and persistence hooks.
@@ -57,29 +165,41 @@ export function createSyncServer(
   const requireAuth = options.requireAuth ?? true;
   const rateLimiter = options.rateLimiter ?? connectionRateLimiter;
 
+  const startedAt = Date.now();
+  let status: "running" | "shutting_down" | "drained" | "destroyed" = "running";
+  let isShuttingDown = false;
+  let upgradeRejections = 0;
+  let authenticationFailures = 0;
+  let rateLimitTerminations = 0;
+  let shutdownPromise: Promise<void> | null = null;
+
   const server = new HocuspocusServer({
     websocketOptions: {
       maxPayload: 1048576, // 1 MB WebSocket frame limit enforced at framing layer
     },
     async onAuthenticate(data) {
-      // 1. Validate documentName is a valid 24-character hex MongoDB ObjectId
-      if (!/^[0-9a-fA-F]{24}$/.test(data.documentName)) {
-        throw new Error("Invalid room document id");
-      }
-
-      const roomId = data.documentName;
-
-      // 2. Synchronous per-room capacity reservation (ROOM-4: max 6 active connections)
-      const reservation = syncRegistry.reserveSlot(roomId, data.socketId);
-      if (!reservation.success) {
-        const err = new Error(
-          "Room capacity exceeded: maximum 6 active connections"
-        );
-        (err as unknown as { reason: string }).reason = "room_capacity_exceeded";
-        throw err;
-      }
-
       try {
+        if (isShuttingDown) {
+          throw new Error("Server is shutting down");
+        }
+
+        // 1. Validate documentName is a valid 24-character hex MongoDB ObjectId
+        if (!/^[0-9a-fA-F]{24}$/.test(data.documentName)) {
+          throw new Error("Invalid room document id");
+        }
+
+        const roomId = data.documentName;
+
+        // 2. Synchronous per-room capacity reservation (ROOM-4: max 6 active connections)
+        const reservation = syncRegistry.reserveSlot(roomId, data.socketId);
+        if (!reservation.success) {
+          const err = new Error(
+            "Room capacity exceeded: maximum 6 active connections"
+          );
+          (err as unknown as { reason: string }).reason = "room_capacity_exceeded";
+          throw err;
+        }
+
         if (requireAuth) {
           let cookieHeader: string | undefined;
 
@@ -144,6 +264,11 @@ export function createSyncServer(
             const err = new Error("Forbidden: not a member of this room");
             (err as unknown as { reason: string }).reason = "not_room_member";
             throw err;
+          }
+
+          // Re-check shutdown status after asynchronous lookups
+          if (isShuttingDown) {
+            throw new Error("Server is shutting down");
           }
 
           // 3a. Distinct member limit (ROOM-4: max 6 distinct members)
@@ -216,6 +341,7 @@ export function createSyncServer(
           }
         }
       } catch (err) {
+        authenticationFailures++;
         // Guarantee slot reservation and rate-limiter state are released on every error/failure path
         syncRegistry.cancelReservation(data.socketId);
         rateLimiter.cleanup(data.socketId);
@@ -284,6 +410,9 @@ export function createSyncServer(
       }
     },
     async onLoadDocument(data) {
+      if (isShuttingDown) {
+        throw new Error("Server is shutting down");
+      }
       await loadDocument(data.documentName, data.document);
       startSnapshotInterval(data.documentName, data.document);
       return data.document;
@@ -353,6 +482,11 @@ export function createSyncServer(
       }
     },
     async beforeHandleMessage(data) {
+      if (isShuttingDown) {
+        // Drop any inbound message frames during server shutdown
+        return;
+      }
+
       if (data.update.byteLength > 1048576) {
         throw new Error("Update frame size exceeds 1 MB limit");
       }
@@ -360,6 +494,7 @@ export function createSyncServer(
       // Enforce per-connection message rate and byte throughput limits (flood defense)
       const socketId = data.socketId;
       if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
+        rateLimitTerminations++;
         rootLogger.warn(
           {
             roomId: data.documentName,
@@ -377,6 +512,7 @@ export function createSyncServer(
 
       const rateCheck = rateLimiter.consume(socketId, data.update.byteLength);
       if (!rateCheck.allowed) {
+        rateLimitTerminations++;
         rootLogger.warn(
           {
             socketId,
@@ -400,14 +536,118 @@ export function createSyncServer(
     },
   });
 
-  return {
-    server,
-    destroy: async () => {
-      await flushAllPending();
+  const drainAndShutdown = (opts: ShutdownOptions = {}): Promise<void> => {
+    if (shutdownPromise) {
+      return shutdownPromise;
+    }
+
+    shutdownPromise = (async () => {
+      const drainTimeoutMs = opts.drainTimeoutMs ?? 3000;
+      const startTime = Date.now();
+
+      // Phase A: Enter shutdown (synchronous state change)
+      status = "shutting_down";
+      isShuttingDown = true;
+
+      // Phase B & C: Lock edits, stop snapshot timers, drain connections
+      syncRegistry.setAllRoomsReadOnly();
+      stopAllSnapshotIntervals();
+
+      // Close all active connections cleanly with 1001 server_shutting_down
+      syncRegistry.closeAllConnections(1001, "server_shutting_down");
+
+      try {
+        const crossws = (server as unknown as Record<string, unknown>)["crossws"] as
+          | { closeAll?: (code: number, data: string, force: boolean) => void }
+          | undefined;
+        if (typeof crossws?.closeAll === "function") {
+          crossws.closeAll(1001, "server_shutting_down", false);
+        }
+      } catch {
+        // ignore
+      }
+
+      // Wait up to drainTimeoutMs for connections to unregister
+      while (
+        syncRegistry.getActiveConnectionCount() > 0 &&
+        Date.now() - startTime < drainTimeoutMs
+      ) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      // If any connections remain after drain timeout, force-terminate transports
+      if (syncRegistry.getActiveConnectionCount() > 0) {
+        rootLogger.warn(
+          { remaining: syncRegistry.getActiveConnectionCount() },
+          "Forcing WebSocket termination after drain timeout"
+        );
+        try {
+          const crossws = (server as unknown as Record<string, unknown>)["crossws"] as
+            | { closeAll?: (code: number, data: string, force: boolean) => void }
+            | undefined;
+          if (typeof crossws?.closeAll === "function") {
+            crossws.closeAll(1001, "server_shutting_down", true);
+          }
+        } catch {
+          // ignore
+        }
+        syncRegistry.forceDestroyAllTransports();
+      }
+
+      status = "drained";
+
+      // Phase D: Drain persistence and take consistent final snapshots
+      await drainPersistenceAndSnapshot({ takeFinalSnapshots: true });
+
+      // Phase E: Destroy server and reset state
       await server.destroy();
+      syncRegistry.resetAll();
       rateLimiter.resetAll();
+      status = "destroyed";
+    })();
+
+    return shutdownPromise;
+  };
+
+  const syncInstance: SyncServerInstance = {
+    server,
+    getStats: (): SyncServerStats => {
+      const capacity = syncRegistry.getCapacityStats();
+      const persistence = getPendingPersistenceStats();
+      const rateLimiterStats = rateLimiter.getStats();
+
+      return {
+        status,
+        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+        connections: {
+          activeConnections: syncRegistry.getActiveConnectionCount(),
+          activeRooms: syncRegistry.getActiveRoomCount(),
+          activeDocuments:
+            (server as unknown as { hocuspocus?: { getDocumentsCount?: () => number } })
+              .hocuspocus?.getDocumentsCount?.() ?? 0,
+          pendingReservations: syncRegistry.getPendingReservationCount(),
+          upgradeRejections,
+          authenticationFailures,
+          rateLimitTerminations,
+        },
+        capacity,
+        persistence,
+        rateLimiter: {
+          ...rateLimiterStats,
+          upgradeIpRateLimitRejections: syncUpgradeRateLimiter.getTotalRejections(),
+        },
+      };
+    },
+    drainAndShutdown,
+    destroy: () => drainAndShutdown(),
+    isShuttingDown: () => isShuttingDown,
+    recordUpgradeRejection: () => {
+      upgradeRejections++;
     },
   };
+
+  activeSyncInstance = syncInstance;
+  return syncInstance;
 }
 
 /**
@@ -447,10 +687,21 @@ export function attachSyncServer(
         return;
       }
 
+      // Reject all new upgrade attempts immediately during server shutdown
+      if (syncInstance.isShuttingDown()) {
+        syncInstance.recordUpgradeRejection();
+        socket.write(
+          "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 30\r\n\r\n"
+        );
+        socket.destroy();
+        return;
+      }
+
       const clientIp = getClientIp(request);
 
       // 1. IP rate limiter (checks rejected connection attempts)
       if (syncUpgradeRateLimiter.isRateLimited(clientIp)) {
+        syncInstance.recordUpgradeRejection();
         socket.write(
           "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n"
         );
@@ -460,6 +711,7 @@ export function attachSyncServer(
 
       // 2. Strict allowed Origin check
       if (!isAllowedOrigin(request.headers.origin)) {
+        syncInstance.recordUpgradeRejection();
         syncUpgradeRateLimiter.recordRejection(clientIp);
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         socket.destroy();

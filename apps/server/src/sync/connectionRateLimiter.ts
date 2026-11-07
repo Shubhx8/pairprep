@@ -19,6 +19,20 @@ export type RateLimitReason =
   | "rate_limiter_capacity_exceeded"
   | "invalid_socket_identity";
 
+export interface RateLimiterRejectionStats {
+  messageRateLimit: number;
+  byteRateLimit: number;
+  capacityExceeded: number;
+  invalidSocketIdentity: number;
+  total: number;
+}
+
+export interface RateLimiterStats {
+  trackedConnections: number;
+  maxEntries: number;
+  rejections: RateLimiterRejectionStats;
+}
+
 export type RateLimitResult =
   | { allowed: true }
   | {
@@ -46,6 +60,7 @@ export class ConnectionRateLimiter {
   private readonly entryTtlMs: number;
   private readonly maxEntries: number;
   private readonly entries: Map<string, ConnectionRateState>;
+  private readonly rejections: RateLimiterRejectionStats;
 
   constructor(options: ConnectionRateLimiterOptions = {}) {
     this.maxMessageBurst = options.maxMessageBurst ?? 100;
@@ -55,6 +70,13 @@ export class ConnectionRateLimiter {
     this.entryTtlMs = options.entryTtlMs ?? 60_000;
     this.maxEntries = options.maxEntries ?? 10_000;
     this.entries = new Map();
+    this.rejections = {
+      messageRateLimit: 0,
+      byteRateLimit: 0,
+      capacityExceeded: 0,
+      invalidSocketIdentity: 0,
+      total: 0,
+    };
   }
 
   /**
@@ -67,6 +89,8 @@ export class ConnectionRateLimiter {
     now = Date.now()
   ): RateLimitResult {
     if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
+      this.rejections.invalidSocketIdentity++;
+      this.rejections.total++;
       return { allowed: false, reason: "invalid_socket_identity" };
     }
 
@@ -77,6 +101,8 @@ export class ConnectionRateLimiter {
         this.prune(now);
         if (this.entries.size >= this.maxEntries) {
           // Reject new untracked connection to preserve capacity and prevent active connection eviction
+          this.rejections.capacityExceeded++;
+          this.rejections.total++;
           return { allowed: false, reason: "rate_limiter_capacity_exceeded" };
         }
       }
@@ -106,11 +132,15 @@ export class ConnectionRateLimiter {
 
     // Check message count
     if (state.messageTokens < 1) {
+      this.rejections.messageRateLimit++;
+      this.rejections.total++;
       return { allowed: false, reason: "message_rate_limit_exceeded" };
     }
 
     // Check byte volume
     if (state.byteTokens < byteLength) {
+      this.rejections.byteRateLimit++;
+      this.rejections.total++;
       return { allowed: false, reason: "byte_rate_limit_exceeded" };
     }
 
@@ -159,10 +189,33 @@ export class ConnectionRateLimiter {
   }
 
   /**
-   * Resets all tracked connections (useful in test teardown).
+   * Returns a snapshot of operational rate limiter metrics.
+   */
+  getStats(): RateLimiterStats {
+    return {
+      trackedConnections: this.entries.size,
+      maxEntries: this.maxEntries,
+      rejections: { ...this.rejections },
+    };
+  }
+
+  /**
+   * Resets all tracked connections and cumulative rejection counters.
    */
   resetAll(): void {
     this.entries.clear();
+    this.resetStats();
+  }
+
+  /**
+   * Resets cumulative rejection counters without clearing connection state.
+   */
+  resetStats(): void {
+    this.rejections.messageRateLimit = 0;
+    this.rejections.byteRateLimit = 0;
+    this.rejections.capacityExceeded = 0;
+    this.rejections.invalidSocketIdentity = 0;
+    this.rejections.total = 0;
   }
 
   /**

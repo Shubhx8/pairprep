@@ -15,6 +15,24 @@ export interface SyncConnectionLike {
   socketId?: string;
 }
 
+export interface RoomCapacityStat {
+  roomIndex: number;
+  activeConnections: number;
+  pendingReservations: number;
+  distinctMembers: number;
+  maxConnections: number;
+  isReadOnly: boolean;
+}
+
+export interface CapacityStats {
+  totalActiveRooms: number;
+  totalActiveConnections: number;
+  totalPendingReservations: number;
+  maxConnectionsPerRoom: number;
+  roomsWithActiveConnections: number;
+  rooms: RoomCapacityStat[];
+}
+
 export interface ConnectionReservation {
   socketId: string;
   roomId: string;
@@ -466,6 +484,15 @@ export class SyncRegistry {
   }
 
   /**
+   * Sets all currently active rooms to read-only mode (used during server shutdown).
+   */
+  setAllRoomsReadOnly(): void {
+    for (const roomId of this.roomActiveSockets.keys()) {
+      this.setRoomReadOnly(roomId);
+    }
+  }
+
+  /**
    * Returns active connection count for a room.
    */
   getRoomConnectionCount(roomId: string): number {
@@ -477,6 +504,126 @@ export class SyncRegistry {
    */
   getMemberConnectionCount(roomId: string, memberId: string): number {
     return this.memberSockets.get(`${roomId}:${memberId}`)?.size ?? 0;
+  }
+
+  /**
+   * Returns total count of active physical WebSocket connections across all rooms.
+   */
+  getActiveConnectionCount(): number {
+    return this.activeConnections.size;
+  }
+
+  /**
+   * Returns total count of rooms currently holding at least one active connection.
+   */
+  getActiveRoomCount(): number {
+    return this.roomActiveSockets.size;
+  }
+
+  /**
+   * Returns total count of pending connection reservations across all rooms.
+   */
+  getPendingReservationCount(): number {
+    return this.reservations.size;
+  }
+
+  /**
+   * Returns aggregate room capacity statistics without exposing raw room IDs or sensitive data.
+   */
+  getCapacityStats(): CapacityStats {
+    const roomKeys = Array.from(this.roomActiveSockets.keys());
+    const now = Date.now();
+    const rooms: RoomCapacityStat[] = roomKeys.map((roomId, idx) => {
+      const activeConnections = this.roomActiveSockets.get(roomId)?.size ?? 0;
+      let pendingReservations = 0;
+      for (const res of this.reservations.values()) {
+        if (res.roomId === roomId && now - res.reservedAt <= RESERVATION_TTL_MS) {
+          pendingReservations++;
+        }
+      }
+      return {
+        roomIndex: idx + 1,
+        activeConnections,
+        pendingReservations,
+        distinctMembers: this.getDistinctMemberCount(roomId, now),
+        maxConnections: MAX_ROOM_CONNECTIONS,
+        isReadOnly: this.readOnlyRooms.has(roomId),
+      };
+    });
+
+    return {
+      totalActiveRooms: this.roomActiveSockets.size,
+      totalActiveConnections: this.activeConnections.size,
+      totalPendingReservations: this.reservations.size,
+      maxConnectionsPerRoom: MAX_ROOM_CONNECTIONS,
+      roomsWithActiveConnections: roomKeys.filter(
+        (id) => (this.roomActiveSockets.get(id)?.size ?? 0) > 0
+      ).length,
+      rooms,
+    };
+  }
+
+  /**
+   * Closes all active WebSocket connections across all rooms with a specified close code and reason.
+   * Cancels all pending reservations and unregisters connections.
+   */
+  closeAllConnections(
+    code = 1001,
+    reason = "server_shutting_down"
+  ): number {
+    let closed = 0;
+    const socketIds = Array.from(this.activeConnections.keys());
+    for (const socketId of socketIds) {
+      const active = this.activeConnections.get(socketId);
+      if (active) {
+        try {
+          const conn = active.connection as {
+            close?: (opts?: { code?: number; reason?: string }) => void;
+            webSocket?: { close?: (code?: number, reason?: string) => void };
+          };
+          if (conn.webSocket && typeof conn.webSocket.close === "function") {
+            conn.webSocket.close(code, reason);
+          } else if (typeof conn.close === "function") {
+            conn.close({ code, reason });
+          }
+        } catch {
+          // ignore already closed
+        }
+        this.unregisterConnection(active.roomId, socketId);
+        closed++;
+      }
+    }
+    this.reservations.clear();
+    return closed;
+  }
+
+  /**
+   * Force-destroys any remaining underlying socket transports if graceful close did not complete.
+   */
+  forceDestroyAllTransports(): number {
+    let destroyed = 0;
+    const socketIds = Array.from(this.activeConnections.keys());
+    for (const socketId of socketIds) {
+      const active = this.activeConnections.get(socketId);
+      if (active) {
+        try {
+          const ws = active.connection.webSocket as
+            | { terminate?: () => void; _socket?: { destroy?: () => void } }
+            | undefined;
+          if (typeof ws?.terminate === "function") {
+            ws.terminate();
+          } else if (typeof ws?._socket?.destroy === "function") {
+            ws._socket.destroy();
+          }
+        } catch {
+          // ignore
+        }
+        this.unregisterConnection(active.roomId, socketId);
+        destroyed++;
+      }
+    }
+    this.reservations.clear();
+    return destroyed;
   }
 
   /**

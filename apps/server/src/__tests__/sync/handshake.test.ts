@@ -80,7 +80,7 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
       };
 
       expect(() => {
-        attachSyncServer(dummyHttp, mockBrokenServer);
+        attachSyncServer(dummyHttp, mockBrokenServer as unknown as SyncServerInstance);
       }).toThrow(/Hocuspocus internal crossws adapter not found/);
     });
   });

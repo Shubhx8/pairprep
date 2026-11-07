@@ -131,6 +131,20 @@ Task T07 implements the real-time collaborative document synchronization engine 
   - `socketId` must be a non-empty, non-whitespace string. Any message with a missing, empty, or whitespace socket identifier immediately fails closed with `invalid_socket_identity` (code 4029) and terminates the underlying transport without creating limiter entries.
 - **Lifecycle Cleanup**: Rate limiter state is cleaned up upon connection close (`onDisconnect`) and on failed authentication (`onAuthenticate` catch block). Idle connections are automatically pruned past 60s TTL, and total tracked connections are bounded to 10,000 to prevent memory exhaustion.
 
+### 2.7 Sync Server Statistics & Graceful Shutdown Drain
+- **Internal Operational Statistics (`getSyncServerStats`)**:
+  - Exposes an operational snapshot covering server lifecycle status (`running`, `draining`, `drained`, `destroyed`), monotonic uptime, physical connection counts, active rooms vs active documents, pending reservations, room capacity utilization, pending persistence updates (queued vs in-flight), oldest unflushed update age, monotonic database flush/snapshot counters, rate-limiter capacity and bucket metrics, and rejection counters.
+  - Safe for diagnostic emission: strictly omits raw tokens, cookies, slugs, or document contents.
+- **5-Phase Bounded Graceful Shutdown (`drainAndShutdown`)**:
+  - **Phase A (Admission Barrier)**: Rejects all incoming HTTP `/sync` upgrades with `503 Service Unavailable` (`Retry-After: 30`), fails `onAuthenticate` and `onLoadDocument` immediately, drops late update messages in `beforeHandleMessage`, and marks all existing rooms as read-only.
+  - **Phase B (Orderly WebSocket Drain)**: Iterates over all active connections and delivers RFC 6455 close frame `1001` with reason `server_shutting_down`. Clients detect clean disconnect and back off.
+  - **Phase C (Hard Drain Barrier)**: Enforces a configurable drain timeout (default 5,000 ms). If active sockets remain open after the drain window, forces transport destruction via `crossws.closeAll(1001, ..., true)` and socket termination.
+  - **Phase D (Persistence Drain & Final Snapshots)**: Cancels all recurring 5-minute snapshot timers (`stopAllSnapshotIntervals`), awaits in-flight snapshot and flush operations, flushes all pending queues to MongoDB under room mutexes, generates consistent final snapshots, and verifies zero unflushed updates remain in memory before allowing shutdown to continue.
+  - **Phase E (Server Teardown & Resource Reset)**: Awaits underlying Hocuspocus `server.destroy()`, clears all `syncRegistry` active sockets and reservations, resets `connectionRateLimiter` tables, and marks status as `destroyed`.
+- **Idempotency & Deadlock Prevention**:
+  - Concurrent invocations of `drainAndShutdown()` return the exact same in-flight `Promise<void>`, guaranteeing idempotent execution.
+  - In `setupGracefulShutdown` (`index.ts`), sync connection draining and HTTP `server.close()` run concurrently, preventing the Node.js HTTP server socket drain deadlock. MongoDB disconnect is deferred until *after* sync persistence flushes complete.
+
 ---
 
 ## 3. Core Modules & Implementation Details
@@ -187,6 +201,13 @@ Task T07 implements the real-time collaborative document synchronization engine 
   - `RateLimitError`: Standardized error carrying close code `4029` and reason string (`message_rate_limit_exceeded` or `byte_rate_limit_exceeded`).
   - `connectionRateLimiter`: Shared default singleton.
 
+### 3.7 `apps/server/src/index.ts` Graceful Shutdown Coordination
+- **Responsibilities**: Wires HTTP server teardown, WebSocket sync connection draining, and MongoDB disconnection.
+- **Shutdown Lifecycle**:
+  - `setupGracefulShutdown(server, syncServer)` initiates sync draining (`syncServer.drainAndShutdown()`) and HTTP server closing (`server.close()`) concurrently.
+  - Concurrency prevents Node.js HTTP server socket drain deadlock: `server.close()` hangs indefinitely waiting for open WebSocket TCP sockets unless they are severed concurrently by `drainAndShutdown()`.
+  - MongoDB disconnect is strictly deferred until *after* `syncServer.drainAndShutdown()` successfully flushes all pending updates to MongoDB, preventing `MongoNotConnectedError` during shutdown flushes.
+
 ---
 
 ## 4. Verification Evidence & Test Suite Summary
@@ -206,15 +227,18 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`attribution.test.ts`** | 7 | Client identity attribution (`ATTR-1`), first-claim-wins `$setOnInsert`, duplicate-key concurrency, identity hijacking prevention. | **PASS** |
 | **`livePermissions.test.ts`** | 6 | Live permission coordination (`ROOM-3`, `ROOM-6`, `ED-6`): demote to viewer (<1s revocation), promote to editor, kick termination (4003), room end read-only, room delete cascade (1000), interview candidate lifecycle. | **PASS** |
 | **`rateLimitFlood.test.ts`** | 15 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning, capacity saturation defense without active entry eviction, strict socket identity validation, distinct socket bucket isolation. | **PASS** |
+| **`shutdownStats.test.ts`** | 22 | Sync statistics & graceful shutdown drain: schema baseline, monotonic counters, connection counts, pending updates/snapshots, capacity utilization, rate limiter stats, admission barrier (503), close frame 1001 with reason `server_shutting_down`, hard drain barrier, persistence flush before DB disconnect, idempotency, and Node.js deadlock prevention. | **PASS** |
 
-**Total T07 Tests:** 11 test files, 66 passing tests, 0 failures.  
-**Full Monorepo Suite:** 49 test files, 343 passing tests, 0 failures.
+**Total T07 Tests:** 12 test files, 88 passing tests, 0 failures.  
+**Full Monorepo Suite:** 50 test files, 365 passing tests, 0 failures.
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
+[HEAD]  feat(sync): server statistics and graceful shutdown connection drain
+0928682 fix(sync): rate limiter capacity protection and strict socket identity
 fcb0d03 feat(sync): per-connection websocket message rate limiting and flood defense
 ac3b973 feat(sync): live room permission and lifecycle coordination with rest api
 3423207 feat(sync): map yjs client ids to authenticated actors for attr-1
@@ -224,5 +248,7 @@ e592a32 docs(sync): add comprehensive T07 document sync technical note
 c30f5a2 feat(sync): persistence, durability bound, document snapshots and crash recovery
 05d9e9f feat(sync): connection guard, sync registry, and room capacity enforcement
 633a498 feat(sync): handshake auth, session principal, allowed origins and ip rate limiting
+5a0238a spike(sync): minimal hocuspocus attach with provider test
+```
 5a0238a spike(sync): minimal hocuspocus attach with provider test
 ```

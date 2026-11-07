@@ -11,6 +11,7 @@ import {
   loadDocument,
   drainPersistenceAndSnapshot,
   getPendingPersistenceStats,
+  getActiveLoadedDocuments,
   resetPersistenceState,
   registerLoadedDocument,
   snapshotTestingHooks,
@@ -25,6 +26,7 @@ import {
   MAX_RETRY_BACKOFF_MS,
   RETRY_BACKOFF_FACTOR,
 } from "../../sync/persistence.js";
+import { ConnectionRateLimiter } from "../../sync/connectionRateLimiter.js";
 import {
   createSyncServer,
   attachSyncServer,
@@ -744,6 +746,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         await new Promise<void>((r) => httpServer!.close(() => r()));
         httpServer = null;
       }
+      resetPersistenceState();
     });
 
     it("pausing snapshot at beforeCaptureBarrier while concurrent WebSocket edits arrive preserves watermark equality and convergence", async () => {
@@ -842,22 +845,235 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       resumeBarrier();
       await snapPromise;
 
-      // 10. Flush any remaining updates
+      // 10. Client A sends an edit strictly after the snapshot watermark was captured
+      docA.getText("monaco").insert(
+        docA.getText("monaco").length,
+        " Post-snapshot edit."
+      );
+      provA.flushPendingUpdates();
+
+      await vi.waitFor(() => {
+        expect(docB.getText("monaco").toString()).toBe(
+          "Client A initial text. Client B concurrent edit. Post-snapshot edit."
+        );
+      });
+
+      // 11. Flush any remaining updates
       await flushRoom(roomId);
 
-      // 11. Assert snapshot and update state in MongoDB
+      // 12. Assert snapshot and update state in MongoDB
       const snap = await docSnapshotRepo.getLatestSnapshot(roomId);
       expect(snap).not.toBeNull();
       expect(snap!.seq).toBeGreaterThan(0);
+
+      // Verify updates after the snapshot watermark have sequence numbers strictly greater than watermark
+      const postWatermarkUpdates = await DocUpdateModel.find({
+        roomId,
+        seq: { $gt: snap!.seq },
+      }).sort({ seq: 1 });
+      expect(postWatermarkUpdates.length).toBeGreaterThan(0);
 
       // The snapshot captured state at barrier; verify doc reconstructed from snapshot + subsequent updates
       const reconstructedDoc = new Y.Doc();
       const loadResult = await loadDocument(roomId, reconstructedDoc);
       expect(loadResult.hasSnapshot).toBe(true);
       expect(reconstructedDoc.getText("monaco").toString()).toBe(
-        "Client A initial text. Client B concurrent edit."
+        "Client A initial text. Client B concurrent edit. Post-snapshot edit."
       );
+      expect(docA.getText("monaco").toString()).toBe(
+        "Client A initial text. Client B concurrent edit. Post-snapshot edit."
+      );
+      expect(docB.getText("monaco").toString()).toBe(
+        "Client A initial text. Client B concurrent edit. Post-snapshot edit."
+      );
+
+      // Explicit byte-for-byte Yjs state-vector equality comparison
+      const svReconstructed = Buffer.from(Y.encodeStateVector(reconstructedDoc));
+      const svA = Buffer.from(Y.encodeStateVector(docA));
+      const svB = Buffer.from(Y.encodeStateVector(docB));
+      expect(svReconstructed.equals(svA)).toBe(true);
+      expect(svReconstructed.equals(svB)).toBe(true);
+
+      // Diff encoding comparison: diff against reconstructed doc contains zero novel clock entries
+      const diffA = Y.encodeStateAsUpdate(docA, Y.encodeStateVector(reconstructedDoc));
+      expect(diffA.byteLength).toBeLessThanOrEqual(2); // empty update representation in Yjs is [0, 0]
+      const diffB = Y.encodeStateAsUpdate(reconstructedDoc, Y.encodeStateVector(docA));
+      expect(diffB.byteLength).toBeLessThanOrEqual(2);
     }, 15000);
+
+    it("rejects real WebSocket edit before Yjs application when queue capacity is saturated and preserves awareness/read-only", async () => {
+      let pauseBarrierResolve: () => void = () => {};
+      const pauseBarrierPromise = new Promise<void>((r) => {
+        pauseBarrierResolve = r;
+      });
+      let pauseDb = true;
+
+      const origCreate = DocUpdateModel.create.bind(DocUpdateModel);
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
+        if (pauseDb) {
+          await pauseBarrierPromise;
+        }
+        return origCreate(...(args as Parameters<typeof DocUpdateModel.create>));
+      });
+
+      try {
+        const customLimiter = new ConnectionRateLimiter({
+          maxMessageBurst: 5000,
+          messageRefillPerSec: 5000,
+          maxByteBurst: 10 * 1024 * 1024,
+          byteRefillPerSec: 10 * 1024 * 1024,
+        });
+
+        httpServer = createServer();
+        syncServer = createSyncServer({
+          requireAuth: false,
+          rateLimiter: customLimiter,
+        });
+        attachSyncServer(httpServer, syncServer);
+
+        await new Promise<void>((resolve) => {
+          httpServer!.listen(0, resolve);
+        });
+        const addr = httpServer.address();
+        if (!addr || typeof addr === "string") throw new Error("Invalid address");
+        const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+        // Connect Client A (editor)
+        const wsA = new HocuspocusProviderWebsocket({
+          url: wsUrl,
+          WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+        });
+        wsProviders.push(wsA);
+        const docA = new Y.Doc();
+        const provA = new HocuspocusProvider({
+          websocketProvider: wsA,
+          name: roomId,
+          document: docA,
+        });
+        providers.push(provA);
+        provA.attach();
+
+        // Connect Client B (editor who will attempt rejected edit)
+        const wsB = new HocuspocusProviderWebsocket({
+          url: wsUrl,
+          WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+        });
+        wsProviders.push(wsB);
+        const docB = new Y.Doc();
+        const provB = new HocuspocusProvider({
+          websocketProvider: wsB,
+          name: roomId,
+          document: docB,
+        });
+        providers.push(provB);
+        provB.attach();
+
+        await Promise.all([
+          new Promise<void>((r) => provA.on("synced", () => r())),
+          new Promise<void>((r) => provB.on("synced", () => r())),
+        ]);
+
+        // Client A sends 1,000 real WebSocket updates to exhaust MAX_PENDING_UPDATES_PER_ROOM
+        const textA = docA.getText("monaco");
+        for (let i = 0; i < MAX_PENDING_UPDATES_PER_ROOM; i++) {
+          textA.insert(textA.length, "x");
+          provA.flushPendingUpdates();
+        }
+
+        // Wait for room to be backpressured by persistence capacity
+        await vi.waitFor(() => {
+          expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+        }, { timeout: 10000 });
+
+        // Capture server-side state
+        const serverDoc = getActiveLoadedDocuments().get(roomId);
+        expect(serverDoc).toBeDefined();
+        const serverTextBefore = serverDoc!.getText("monaco").toString();
+        const serverSvBefore = Buffer.from(Y.encodeStateVector(serverDoc!));
+        const updatesBefore = await DocUpdateModel.countDocuments({ roomId });
+
+        // Client B sends an edit over WebSocket while queue is saturated
+        const textB = docB.getText("monaco");
+        textB.insert(0, "REJECTED_MUTATION_");
+        provB.flushPendingUpdates();
+
+        // Allow WebSocket message to reach server and be evaluated by beforeHandleMessage
+        await new Promise((r) => setTimeout(r, 400));
+
+        // Required assertions:
+        // 1. Server Y.Doc content remains unchanged
+        expect(serverDoc!.getText("monaco").toString()).toBe(serverTextBefore);
+        // 2. Server Yjs state vector remains unchanged
+        expect(Buffer.from(Y.encodeStateVector(serverDoc!)).equals(serverSvBefore)).toBe(true);
+        // 3. No new doc_updates record is created for rejected edit
+        const updatesAfter = await DocUpdateModel.countDocuments({ roomId });
+        expect(updatesAfter).toBe(updatesBefore);
+        // 4. Client A never receives the rejected edit
+        expect(docA.getText("monaco").toString()).not.toContain("REJECTED_MUTATION_");
+        // 5. Room remains protected by backpressure
+        expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+
+        // Verify awareness updates remain functional during backpressure
+        let awarenessReceived = false;
+        provB.on("awarenessUpdate", () => {
+          const states = provB.awareness?.getStates();
+          if (states) {
+            for (const [, state] of states) {
+              if ((state as { user?: { name: string } })?.user?.name === "Alice") {
+                awarenessReceived = true;
+              }
+            }
+          }
+        });
+        provA.setAwarenessField("user", { name: "Alice" });
+        provA.flushPendingUpdates();
+        await vi.waitFor(() => {
+          expect(awarenessReceived).toBe(true);
+        }, { timeout: 5000 });
+
+        // Verify read-only clients can still connect and synchronize during backpressure
+        const wsC = new HocuspocusProviderWebsocket({
+          url: wsUrl,
+          WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+        });
+        wsProviders.push(wsC);
+        const docC = new Y.Doc();
+        const provC = new HocuspocusProvider({
+          websocketProvider: wsC,
+          name: roomId,
+          document: docC,
+        });
+        providers.push(provC);
+        provC.attach();
+        await new Promise<void>((r) => provC.on("synced", () => r()));
+        // Synchronized document matches current server state
+        expect(docC.getText("monaco").toString()).toBe(serverTextBefore);
+
+        // Resume persistence and verify capacity recovery
+        pauseDb = false;
+        pauseBarrierResolve();
+        while (getPendingPersistenceStats().queuedUpdates > 0) {
+          await flushRoom(roomId);
+        }
+
+        // Backpressure clears once queue falls below recovery threshold
+        await vi.waitFor(() => {
+          expect(syncRegistry.isRoomBackpressured(roomId)).toBe(false);
+        }, { timeout: 5000 });
+
+        // Authorized editor (Client A) can edit again
+        textA.insert(0, "POST_RECOVERY_EDIT_");
+        provA.flushPendingUpdates();
+        await vi.waitFor(() => {
+          expect(docC.getText("monaco").toString()).toContain("POST_RECOVERY_EDIT_");
+        }, { timeout: 5000 });
+
+      } finally {
+        pauseDb = false;
+        pauseBarrierResolve();
+        vi.restoreAllMocks();
+      }
+    }, 30000);
   });
 
   // =========================================================================

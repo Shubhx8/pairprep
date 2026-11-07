@@ -238,6 +238,13 @@ export class SyncRegistry {
   }
 
   /**
+   * Returns an active connection by its socket ID, if registered.
+   */
+  getConnection(socketId: string): ActiveConnection | undefined {
+    return this.activeConnections.get(socketId);
+  }
+
+  /**
    * Unregisters a connection on disconnect.
    */
   unregisterConnection(roomId: string, socketId: string): void {

@@ -1,6 +1,8 @@
 import { Server as HocuspocusServer } from "@hocuspocus/server";
 import type { Server as HttpServer, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
+import * as Y from "yjs";
+import mongoose from "mongoose";
 import { isAllowedOrigin } from "./origin.js";
 import { getClientIp, syncUpgradeRateLimiter } from "./rateLimiter.js";
 import { resolvePrincipalFromCookies } from "../auth/sessionPrincipal.js";
@@ -17,6 +19,7 @@ import {
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
+import { clientMapRepo } from "../repos/clientMapRepo.js";
 import type { IRoom } from "../models/rooms.js";
 import type { IRoomMember } from "../models/room_members.js";
 
@@ -38,7 +41,8 @@ export interface SyncConnectionContext {
 }
 
 /**
- * Creates a Hocuspocus server instance configured with maxPayload and authentication hooks.
+ * Creates a Hocuspocus server instance configured with maxPayload, authentication,
+ * author attribution tracking, and persistence hooks.
  */
 export function createSyncServer(
   options: CreateSyncServerOptions = {}
@@ -272,10 +276,61 @@ export function createSyncServer(
       startSnapshotInterval(data.documentName, data.document);
       return data.document;
     },
+    async onAwarenessUpdate(data) {
+      const roomId = data.documentName;
+      let actorId: string | undefined;
+
+      if (data.connection) {
+        const ctx = data.connection.context as SyncConnectionContext | undefined;
+        actorId = ctx?.principal?.id;
+        if (!actorId) {
+          const connMeta = syncRegistry.getConnection(data.connection.socketId);
+          actorId = connMeta?.memberId;
+        }
+      }
+
+      if (actorId && mongoose.connection.readyState === 1) {
+        const clientIds = new Set<number>();
+        if (Array.isArray(data.added)) {
+          for (const id of data.added) {
+            if (typeof id === "number") clientIds.add(id);
+          }
+        }
+        if (Array.isArray(data.states)) {
+          for (const s of data.states) {
+            if (typeof s?.clientId === "number") clientIds.add(s.clientId);
+          }
+        }
+
+        for (const clientId of clientIds) {
+          await clientMapRepo.registerClient(roomId, clientId, actorId);
+        }
+      }
+    },
     async onChange(data) {
       const context = data.context as SyncConnectionContext;
+      // Always populate doc_updates.authorId strictly from the authenticated connection context,
+      // never trusting client-supplied identifiers (PRD ATTR-1 / Non-negotiable security rule #2)
       const authorId = context?.principal?.id ?? data.socketId ?? "anonymous";
       queueUpdate(data.documentName, authorId, data.update, data.document);
+
+      // Register Yjs clientIds from update metadata to authenticated actorId (first claim wins)
+      if (context?.principal?.id && mongoose.connection.readyState === 1) {
+        try {
+          const meta = Y.parseUpdateMeta(data.update);
+          for (const clientId of meta.from.keys()) {
+            if (typeof clientId === "number") {
+              await clientMapRepo.registerClient(
+                data.documentName,
+                clientId,
+                context.principal.id
+              );
+            }
+          }
+        } catch {
+          // Non-blocking: corrupt metadata or non-parseable updates should not fail ingestion
+        }
+      }
     },
     async beforeHandleMessage(data) {
       if (data.update.byteLength > 1048576) {

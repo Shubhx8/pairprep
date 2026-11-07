@@ -1281,12 +1281,190 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       ).toBeFalsy();
       expect(syncServer.getStats().status).toBe("destroyed");
 
-      // Verify physical socket sharing: if another document is active, its connection and limiter state remain intact
+      // 7. Verify that no late persistence operation occurs
+      const persistenceStats = getPendingPersistenceStats();
+      expect(persistenceStats.pendingUpdates).toBe(0);
+      expect(persistenceStats.queuedUpdates).toBe(0);
+      expect(persistenceStats.inFlightUpdates).toBe(0);
+      expect(persistenceStats.roomsWithPendingUpdates).toBe(0);
+
+      snapSpy.mockRestore();
+    });
+
+    it("releases all waiter reservations and cleans up limiters when concurrent document load fails", async () => {
+      const limiter = new ConnectionRateLimiter();
+      syncServer = createSyncServer({ requireAuth: false, rateLimiter: limiter });
+      const hp = (
+        syncServer.server as unknown as {
+          hocuspocus: {
+            loadingDocuments: Map<string, Promise<unknown>>;
+            documents: Map<string, unknown>;
+            createDocument: (
+              name: string,
+              req: unknown,
+              sockId: string,
+              cfg: unknown,
+              ctx: unknown
+            ) => Promise<unknown>;
+          };
+        }
+      ).hocuspocus;
+
+      const testRoomId = "507f1f77bcf86cd799439099";
+      const aliceSocket = "sock_alice_waiter";
+      const bobSocket = "sock_bob_waiter";
+
+      // 1. Client A authenticates and reserves slot
+      const onAuth = syncServer.server.configuration.onAuthenticate;
+      expect(onAuth).toBeDefined();
+
+      await onAuth!({
+        documentName: testRoomId,
+        socketId: aliceSocket,
+        connectionConfig: { readOnly: false },
+        context: {},
+        instance: syncServer.server,
+        requestHeaders: {},
+        requestParameters: new URLSearchParams(),
+      } as unknown as Parameters<NonNullable<typeof onAuth>>[0]);
+
+      limiter.consume(aliceSocket, 100);
+      expect(syncRegistry.getReservation(aliceSocket)?.roomId).toBe(testRoomId);
+      expect(syncRegistry.getPendingReservationCount()).toBe(1);
+
+      // 2. Pause document loading in flight
+      let pauseResolve!: () => void;
+      const pausePromise = new Promise<void>((r) => {
+        pauseResolve = r;
+      });
+
+      let reachedLoadResolve!: () => void;
+      const reachedLoadPromise = new Promise<void>((r) => {
+        reachedLoadResolve = r;
+      });
+
+      const snapSpy = vi
+        .spyOn(DocSnapshotModel, "findOne")
+        .mockImplementation(() => {
+          reachedLoadResolve();
+          return {
+            sort: () => ({
+              exec: async () => {
+                await pausePromise;
+                throw new Error("Simulated concurrent load database failure");
+              },
+            }),
+          } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
+        });
+
+      // Alice begins loading document
+      const aliceDocPromise = hp.createDocument(
+        testRoomId,
+        new Request("http://localhost"),
+        aliceSocket,
+        { readOnly: false },
+        {}
+      );
+
+      // Wait until Alice's load is in-flight and paused at database query
+      await reachedLoadPromise;
+      expect(hp.loadingDocuments.has(testRoomId)).toBe(true);
+      const sharedLoadingPromise = hp.loadingDocuments.get(testRoomId);
+      expect(sharedLoadingPromise).toBeDefined();
+
+      // 3. Client B authenticates for the same document
+      await onAuth!({
+        documentName: testRoomId,
+        socketId: bobSocket,
+        connectionConfig: { readOnly: false },
+        context: {},
+        instance: syncServer.server,
+        requestHeaders: {},
+        requestParameters: new URLSearchParams(),
+      } as unknown as Parameters<NonNullable<typeof onAuth>>[0]);
+
+      limiter.consume(bobSocket, 100);
+
+      // Client B shares the loading promise
+      const bobDocPromise = hp.createDocument(
+        testRoomId,
+        new Request("http://localhost"),
+        bobSocket,
+        { readOnly: false },
+        {}
+      );
+
+      // 4. Confirm both reservations are active in SyncRegistry
+      expect(syncRegistry.getPendingReservationCount()).toBe(2);
+      expect(syncRegistry.getReservation(aliceSocket)?.roomId).toBe(testRoomId);
+      expect(syncRegistry.getReservation(bobSocket)?.roomId).toBe(testRoomId);
+      expect(syncRegistry.getPendingReservationsForRoom(testRoomId)).toEqual(
+        expect.arrayContaining([aliceSocket, bobSocket])
+      );
+
+      // 5. Confirm Client B's connection is awaiting the shared load
+      expect(hp.loadingDocuments.get(testRoomId)).toBe(sharedLoadingPromise);
+
+      // 6. Resume and fail document loading
+      pauseResolve();
+
+      // 7. Verify both clients fail to establish connection
+      await expect(aliceDocPromise).rejects.toThrow(
+        "Simulated concurrent load database failure"
+      );
+      await expect(bobDocPromise).rejects.toThrow(
+        "Simulated concurrent load database failure"
+      );
+
+      // 8. Verify both reservations are released
+      expect(syncRegistry.getPendingReservationCount()).toBe(0);
+      expect(syncRegistry.getReservation(aliceSocket)).toBeUndefined();
+      expect(syncRegistry.getReservation(bobSocket)).toBeUndefined();
+      expect(syncRegistry.getPendingReservationsForRoom(testRoomId)).toHaveLength(0);
+
+      // 9. Verify both rate limiters are cleaned up when neither socket has other work
+      expect(limiter.getStats().trackedConnections).toBe(0);
+
+      // 10. Verify zero leftover connection, document, or persistence state
+      expect(syncRegistry.getActiveConnectionCount()).toBe(0);
+      expect(syncRegistry.getActiveRoomCount()).toBe(0);
+      expect(syncRegistry.getConnection(aliceSocket)).toBeUndefined();
+      expect(syncRegistry.getConnection(bobSocket)).toBeUndefined();
+      expect(hp.documents.has(testRoomId)).toBe(false);
+      expect(hp.loadingDocuments.has(testRoomId)).toBe(false);
+      const persistenceStats = getPendingPersistenceStats();
+      expect(persistenceStats.pendingUpdates).toBe(0);
+      expect(persistenceStats.queuedUpdates).toBe(0);
+      expect(persistenceStats.inFlightUpdates).toBe(0);
+      expect(persistenceStats.roomsWithPendingUpdates).toBe(0);
+
+      snapSpy.mockRestore();
+    });
+
+    it("preserves multi-document socket sharing and limiter state when one document load fails", async () => {
+      const limiter = new ConnectionRateLimiter();
+      syncServer = createSyncServer({ requireAuth: false, rateLimiter: limiter });
+      const hp = (
+        syncServer.server as unknown as {
+          hocuspocus: {
+            loadingDocuments: Map<string, Promise<unknown>>;
+            documents: Map<string, unknown>;
+            createDocument: (
+              name: string,
+              req: unknown,
+              sockId: string,
+              cfg: unknown,
+              ctx: unknown
+            ) => Promise<unknown>;
+          };
+        }
+      ).hocuspocus;
+
       const sharedSocketId = "sock_shared_multi_doc";
       const roomA = "507f1f77bcf86cd799439077";
       const roomB = "507f1f77bcf86cd799439066";
 
-      // Register active connection for roomA
+      // 1. A physical connection has an active connection in Room A
       syncRegistry.reserveSlot(roomA, sharedSocketId);
       syncRegistry.promoteReservation(
         sharedSocketId,
@@ -1295,16 +1473,29 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         { id: "user_shared", type: "user", displayName: "Shared", role: "user" },
         { readOnly: false } as unknown as import("../../sync/syncRegistry.js").SyncConnectionLike
       );
-      expect(syncRegistry.getConnection(sharedSocketId)).toBeDefined();
+      limiter.consume(sharedSocketId, 50);
 
-      // Reserve slot for roomB on same physical socket
-      syncRegistry.reserveSlot(roomB, sharedSocketId);
-      expect(syncRegistry.getPendingReservationCount()).toBe(1);
+      expect(syncRegistry.getConnection(sharedSocketId)?.roomId).toBe(roomA);
+      expect(limiter.getStats().trackedConnections).toBe(1);
 
-      // Failing document load for roomB releases roomB's reservation but does NOT unregister roomA or drop limiter state
-      const server2 = createSyncServer({ requireAuth: false });
-      const onLoadDoc2 = server2.server.configuration.onLoadDocument;
-      const snapSpy2 = vi
+      // 2. Physical connection begins loading Room B
+      const onAuth = syncServer.server.configuration.onAuthenticate;
+      expect(onAuth).toBeDefined();
+
+      await onAuth!({
+        documentName: roomB,
+        socketId: sharedSocketId,
+        connectionConfig: { readOnly: false },
+        context: {},
+        instance: syncServer.server,
+        requestHeaders: {},
+        requestParameters: new URLSearchParams(),
+      } as unknown as Parameters<NonNullable<typeof onAuth>>[0]);
+
+      expect(syncRegistry.getReservation(sharedSocketId)?.roomId).toBe(roomB);
+
+      // Room B's load fails
+      const snapSpy = vi
         .spyOn(DocSnapshotModel, "findOne")
         .mockImplementationOnce(() => ({
           sort: () => ({
@@ -1315,30 +1506,26 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         } as unknown as ReturnType<typeof DocSnapshotModel.findOne>));
 
       await expect(
-        onLoadDoc2!({
-          documentName: roomB,
-          document: new Y.Doc(),
-          instance: server2.server,
-          requestHeaders: {},
-          requestParameters: new URLSearchParams(),
-          socketId: sharedSocketId,
-        } as unknown as Parameters<NonNullable<typeof onLoadDoc2>>[0])
+        hp.createDocument(
+          roomB,
+          new Request("http://localhost"),
+          sharedSocketId,
+          { readOnly: false },
+          {}
+        )
       ).rejects.toThrow("Simulated load failure for roomB");
 
-      // roomB reservation released, but roomA active connection preserved!
+      // 3. Confirm Room B's reservation is cancelled
       expect(syncRegistry.getReservation(sharedSocketId)).toBeUndefined();
-      expect(syncRegistry.getConnection(sharedSocketId)?.roomId).toBe(roomA);
+      expect(syncRegistry.getPendingReservationsForRoom(roomB)).toHaveLength(0);
 
-      // 7. Verify that no late persistence operation occurs
-      const persistenceStats = getPendingPersistenceStats();
-      expect(persistenceStats.pendingUpdates).toBe(0);
-      expect(persistenceStats.queuedUpdates).toBe(0);
-      expect(persistenceStats.inFlightUpdates).toBe(0);
-      expect(persistenceStats.roomsWithPendingUpdates).toBe(0);
+      // 4. Confirm Room A's connection and rate-limiter state are not removed
+      const roomAConn = syncRegistry.getConnection(sharedSocketId);
+      expect(roomAConn).toBeDefined();
+      expect(roomAConn?.roomId).toBe(roomA);
+      expect(limiter.getStats().trackedConnections).toBe(1);
 
       snapSpy.mockRestore();
-      snapSpy2.mockRestore();
-      await server2.destroy();
     });
   });
 });

@@ -65,6 +65,11 @@ When all participants disconnect from a room (`clientsCount === 0`):
 3. The 5-minute recurring snapshot timer is cleared.
 4. The document is evicted from Hocuspocus memory (`hocuspocusInstance.unloadDocument(doc)`).
 
+### 3.4 Concurrent Document-Load Deduplication & Cohort Waiter Cleanup
+- **Hocuspocus 4.7.1 In-Flight Deduplication**: In Hocuspocus 4.7.1, `createDocument()` deduplicates in-flight loads by document name (`this.loadingDocuments.get(documentName)`). Multiple concurrent incoming connections for the same document share a single in-flight `loadDocument()` promise after each independently reserving a room slot in `onAuthenticate`.
+- **Cohort Waiter Tracking (`DocumentLoadWaiterRegistry`)**: To ensure no pending reservations or rate-limiter entries are orphaned if that shared load fails or is aborted during shutdown, the server registers each connection in `documentLoadWaiters` upon reservation.
+- **Fail-Safe Cleanup on Load Failure**: If `onLoadDocument` throws (due to MongoDB error, corrupted snapshot, or shutdown abort), `cleanupFailedLoad` cancels reservations for the entire cohort of waiting sockets (`documentLoadWaiters.clearWaiters(roomId)` and `syncRegistry.cancelReservationsForRoom(roomId)`), and cleans up each socket's rate-limiter state only if that physical socket has no other active document connections or pending reservations. Multi-document physical socket sharing is strictly preserved.
+
 ---
 
 ## 4. Client Identity Attribution & Security (`ATTR-1`)

@@ -231,6 +231,35 @@ export class SyncRegistry {
   }
 
   /**
+   * Returns all socket IDs that currently hold a pending reservation for the given room.
+   */
+  getPendingReservationsForRoom(roomId: string, now = Date.now()): string[] {
+    this.pruneExpiredReservations(now);
+    const sockets: string[] = [];
+    for (const res of this.reservations.values()) {
+      if (res.roomId === roomId && now - res.reservedAt <= RESERVATION_TTL_MS) {
+        sockets.push(res.socketId);
+      }
+    }
+    return sockets;
+  }
+
+  /**
+   * Cancels all pending reservations for a specific room (e.g. when document loading fails).
+   * Returns the list of socket IDs whose reservations were released.
+   */
+  cancelReservationsForRoom(roomId: string): string[] {
+    const cancelledSockets: string[] = [];
+    for (const [socketId, res] of this.reservations.entries()) {
+      if (res.roomId === roomId) {
+        this.reservations.delete(socketId);
+        cancelledSockets.push(socketId);
+      }
+    }
+    return cancelledSockets;
+  }
+
+  /**
    * Promotes a reservation to an active connection once connected hook fires.
    */
   promoteReservation(

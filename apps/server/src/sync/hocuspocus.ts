@@ -17,8 +17,10 @@ import {
   type CapacityStats,
   type RoomCapacityStat,
 } from "./syncRegistry.js";
+import { documentLoadWaiters } from "./documentWaiters.js";
 
 export type { RoomCapacityStat };
+export { documentLoadWaiters };
 import {
   loadDocument,
   queueUpdate,
@@ -199,6 +201,7 @@ export function createSyncServer(
           (err as unknown as { reason: string }).reason = "room_capacity_exceeded";
           throw err;
         }
+        documentLoadWaiters.addWaiter(roomId, data.socketId);
 
         if (requireAuth) {
           let cookieHeader: string | undefined;
@@ -355,6 +358,7 @@ export function createSyncServer(
         }
       } catch (err) {
         authenticationFailures++;
+        documentLoadWaiters.removeWaiter(data.documentName, data.socketId);
         // Guarantee slot reservation and rate-limiter state are released on every error/failure path
         syncRegistry.cancelReservation(data.socketId, data.documentName);
         const hasActiveConn = !!syncRegistry.getConnection(data.socketId);
@@ -367,6 +371,8 @@ export function createSyncServer(
       }
     },
     async connected(data) {
+      documentLoadWaiters.removeWaiter(data.documentName, data.socketId);
+
       if (isShuttingDown) {
         syncRegistry.cancelReservation(data.socketId, data.documentName);
         const hasActiveConn = !!syncRegistry.getConnection(data.socketId);
@@ -447,16 +453,27 @@ export function createSyncServer(
       const roomId = data.documentName;
       const socketId = data.socketId;
 
-      const cleanupFailedLoad = () => {
-        // Release pending reservation for this room
-        syncRegistry.cancelReservation(socketId, roomId);
+      documentLoadWaiters.addWaiter(roomId, socketId);
 
-        // Only clean up rate limiter if this socket is not actively used by another document
-        const hasActiveConn = !!syncRegistry.getConnection(socketId);
-        const hasOtherReservation =
-          syncRegistry.getReservation(socketId) !== undefined;
-        if (!hasActiveConn && !hasOtherReservation) {
-          rateLimiter.cleanup(socketId);
+      const cleanupFailedLoad = () => {
+        // Retrieve and clear all sockets waiting for this document load
+        const waiters = documentLoadWaiters.clearWaiters(roomId);
+        // Cancel all pending reservations for this room in syncRegistry
+        const cancelledFromRoom = syncRegistry.cancelReservationsForRoom(roomId);
+        const affectedSockets = new Set<string>([
+          socketId,
+          ...waiters,
+          ...cancelledFromRoom,
+        ]);
+
+        for (const sock of affectedSockets) {
+          syncRegistry.cancelReservation(sock, roomId);
+          const hasActiveConn = !!syncRegistry.getConnection(sock);
+          const hasOtherReservation =
+            syncRegistry.getReservation(sock) !== undefined;
+          if (!hasActiveConn && !hasOtherReservation) {
+            rateLimiter.cleanup(sock);
+          }
         }
       };
 
@@ -673,6 +690,7 @@ export function createSyncServer(
       await server.destroy();
       syncRegistry.resetAll();
       rateLimiter.resetAll();
+      documentLoadWaiters.resetAll();
       status = "destroyed";
     })();
 

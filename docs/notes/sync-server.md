@@ -93,12 +93,35 @@ Room REST APIs directly coordinate with the in-memory `SyncRegistry`:
 
 ---
 
-## 6. Operational Troubleshooting
+## 6. Per-Connection Rate Limiting & Flood Defense (`SEC-3`)
+
+### 6.1 Dual Token Bucket Architecture
+To defend against malicious message flooding, denial-of-service, or runaway scripts without impacting normal collaborative editing or initial synchronization, the sync server implements `ConnectionRateLimiter`:
+- **Message Token Bucket**:
+  - Burst Capacity: 100 messages.
+  - Refill Rate: 50 messages/second.
+- **Byte Token Bucket**:
+  - Burst Capacity: 2,097,152 bytes (2 MB).
+  - Refill Rate: 1,048,576 bytes/second (1 MB/second).
+
+### 6.2 Hook Interception & Close Semantics
+- Evaluated inside Hocuspocus `beforeHandleMessage` for **both** document synchronization updates (`MessageType.Sync`) and awareness frames (`MessageType.Awareness`).
+- If either the message token bucket or byte token bucket is depleted:
+  1. A structured warning log is emitted (`rootLogger.warn`).
+  2. The underlying WebSocket is immediately severed at the transport layer (`ws.close(4029, reason)`).
+  3. `RateLimitError` is thrown, halting Hocuspocus message processing, clearing the message queue (`messageQueue.length = 0`), and preventing any mutation or peer broadcast.
+  4. The close event is delivered to the client with application close code `4029` and reason `message_rate_limit_exceeded` or `byte_rate_limit_exceeded`.
+- State is cleared on disconnect (`onDisconnect`) and on handshake failure (`onAuthenticate` catch block).
+
+---
+
+## 7. Operational Troubleshooting
 
 | Symptom | Probable Cause | Remediation |
 | :--- | :--- | :--- |
 | **HTTP 403 on `/sync`** | Invalid or missing `Origin` header. | Verify client sends an allowed origin matching `APP_URL` or localhost in development. |
 | **HTTP 429 on `/sync`** | More than 60 rejected upgrade attempts per minute from client IP. | Check for misconfigured authentication cookies causing rapid reconnection loops. |
+| **WebSocket Close Code 4029** | Connection exceeded message rate limit (50 msgs/s) or byte volume limit (1 MB/s). | Throttled client loop, excessive awareness updates, or large document paste. Back off transmission. |
 | **`room_capacity_exceeded`** | Room already has 6 active connections or reservations. | Check for stale connections or multiple tabs from participants. |
 | **`member_connection_limit_exceeded`** | Single member has 3 concurrent tabs/connections in one room. | Close duplicate browser tabs. |
 | **Room locked in read-only** | Document size exceeded 2 MB soft cap or owner ended session. | Check document size or room status; inspect `doc_updates` size. |

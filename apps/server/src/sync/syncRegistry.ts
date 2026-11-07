@@ -1,4 +1,5 @@
 import type { Principal } from "../middleware/identity.js";
+import type { CloseEvent } from "@hocuspocus/common";
 
 export const MAX_ROOM_MEMBERS = 6;
 export const MAX_ROOM_CONNECTIONS = 6;
@@ -10,7 +11,7 @@ export interface SyncConnectionLike {
   webSocket?: {
     close: (code?: number, reason?: string) => void;
   };
-  close?: (options?: unknown) => void;
+  close?: (event?: CloseEvent) => void;
   socketId?: string;
 }
 

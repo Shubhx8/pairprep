@@ -5,6 +5,11 @@ import * as Y from "yjs";
 import mongoose from "mongoose";
 import { isAllowedOrigin } from "./origin.js";
 import { getClientIp, syncUpgradeRateLimiter } from "./rateLimiter.js";
+import {
+  ConnectionRateLimiter,
+  RateLimitError,
+  connectionRateLimiter,
+} from "./connectionRateLimiter.js";
 import { resolvePrincipalFromCookies } from "../auth/sessionPrincipal.js";
 import type { Principal } from "../middleware/identity.js";
 import { syncRegistry } from "./syncRegistry.js";
@@ -31,6 +36,7 @@ export interface SyncServerInstance {
 
 export interface CreateSyncServerOptions {
   requireAuth?: boolean;
+  rateLimiter?: ConnectionRateLimiter;
 }
 
 export interface SyncConnectionContext {
@@ -49,6 +55,7 @@ export function createSyncServer(
   options: CreateSyncServerOptions = {}
 ): SyncServerInstance {
   const requireAuth = options.requireAuth ?? true;
+  const rateLimiter = options.rateLimiter ?? connectionRateLimiter;
 
   const server = new HocuspocusServer({
     websocketOptions: {
@@ -209,8 +216,9 @@ export function createSyncServer(
           }
         }
       } catch (err) {
-        // Guarantee slot reservation is released on every error/failure path
+        // Guarantee slot reservation and rate-limiter state are released on every error/failure path
         syncRegistry.cancelReservation(data.socketId);
+        rateLimiter.cleanup(data.socketId);
         throw err;
       }
     },
@@ -249,8 +257,9 @@ export function createSyncServer(
         stopSnapshotInterval(roomId);
       }
 
-      // 3. Unregister connection from sync registry
+      // 3. Unregister connection from sync registry and clean up rate limiter
       syncRegistry.unregisterConnection(roomId, data.socketId);
+      rateLimiter.cleanup(data.socketId);
 
       // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
       if (data.clientsCount === 0) {
@@ -343,6 +352,38 @@ export function createSyncServer(
       if (data.update.byteLength > 1048576) {
         throw new Error("Update frame size exceeds 1 MB limit");
       }
+
+      // Enforce per-connection message rate and byte throughput limits (flood defense)
+      const socketId =
+        data.socketId ||
+        (data.connection as unknown as { socketId?: string })?.socketId ||
+        "unknown";
+      const rateCheck = rateLimiter.consume(socketId, data.update.byteLength);
+      if (!rateCheck.allowed) {
+        rootLogger.warn(
+          {
+            socketId,
+            roomId: data.documentName,
+            reason: rateCheck.reason,
+            byteLength: data.update.byteLength,
+          },
+          "WebSocket message rate/volume limit exceeded; terminating connection"
+        );
+        try {
+          const ws = (
+            data.connection as unknown as {
+              webSocket?: { close?: (code?: number, reason?: string) => void };
+            }
+          )?.webSocket;
+          if (ws && typeof ws.close === "function") {
+            ws.close(4029, rateCheck.reason);
+          }
+        } catch {
+          // ignore already closed
+        }
+        throw new RateLimitError(rateCheck.reason);
+      }
+
       if (syncRegistry.isRoomReadOnly(data.documentName)) {
         data.connection.readOnly = true;
       }
@@ -354,6 +395,7 @@ export function createSyncServer(
     destroy: async () => {
       await flushAllPending();
       await server.destroy();
+      rateLimiter.resetAll();
     },
   };
 }

@@ -2,8 +2,8 @@
 
 > **Task**: T07 — Document Sync Server  
 > **Status**: Completed  
-> **Requirements Addressed**: `ED-2`, `ED-6`, `PER-1`, `ED-4`, `ROOM-4`, `CONC-1`, `CONC-2`, `ATTR-1`, `SEC-1`, `SEC-2`, `AD-1`  
-> **Primary Components Built**: Hocuspocus Sync Server (`hocuspocus.ts`), In-Memory Sync Registry (`syncRegistry.ts`), Persistence & Durability Engine (`persistence.ts`), Origin Verifier (`origin.ts`), Subnet Rate Limiter (`rateLimiter.ts`), Session Principal Resolver (`sessionPrincipal.ts`), Author Attribution Engine (`clientMapRepo.ts` & `models/client_map.ts`)
+> **Requirements Addressed**: `ED-2`, `ED-6`, `PER-1`, `ED-4`, `ROOM-4`, `CONC-1`, `CONC-2`, `ATTR-1`, `SEC-1`, `SEC-2`, `SEC-3`, `AD-1`  
+> **Primary Components Built**: Hocuspocus Sync Server (`hocuspocus.ts`), In-Memory Sync Registry (`syncRegistry.ts`), Persistence & Durability Engine (`persistence.ts`), Origin Verifier (`origin.ts`), Subnet Rate Limiter (`rateLimiter.ts`), Connection Rate Limiter (`connectionRateLimiter.ts`), Session Principal Resolver (`sessionPrincipal.ts`), Author Attribution Engine (`clientMapRepo.ts` & `models/client_map.ts`)
 
 ---
 
@@ -26,6 +26,7 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`ATTR-1`** | Trusted author mapping to `client_map`. | Unique compound index `{ roomId: 1, clientId: 1 }` on `client_map` with atomic `$setOnInsert` for first-claim-wins; server context derives `doc_updates.authorId`; forged clientIds are logged as warnings and cannot hijack attribution. | **Verified** |
 | **`SEC-1`** | Origin header verification. | Upgrade requests require allowed `Origin` headers matching `APP_URL` or localhost dev origins; unauthorized origins are rejected with HTTP 403. | **Verified** |
 | **`SEC-2`** | IP rate limiting & proxy spoofing defense. | `proxy-addr` inspects `X-Forwarded-For` strictly from trusted subnets (`loopback`, `linklocal`, `uniquelocal`, `10.0.0.0/8`, `172.16.0.0/12`); sliding window limits failed upgrades to 60/min. | **Verified** |
+| **`SEC-3`** | WebSocket message rate limiting & flood defense. | `ConnectionRateLimiter` enforces dual token bucket per socket (100 msgs burst @ 50/s, 2 MB burst @ 1 MB/s); covers sync updates and awareness frames; closes malicious flood sockets with code 4029. | **Verified** |
 | **`AD-1`** | Shared Node.js HTTP process on `/sync`. | HTTP `upgrade` listener delegates WebSocket handshakes on `/sync` to Hocuspocus via internal `crossws.handleUpgrade`. | **Verified** |
 
 ---
@@ -113,6 +114,17 @@ Task T07 implements the real-time collaborative document synchronization engine 
 - **Atomic Upsert & Unique Compound Index**: `ClientMapModel` defines a unique compound index on `{ roomId: 1, clientId: 1 }`. Registration executes an atomic `findOneAndUpdate` with `$setOnInsert`. If another actor later submits updates or awareness claiming that same `clientId`, the server detects the conflict, safely logs a warning, and retains the original mapping.
 - **Cryptographic Independence**: Yjs client IDs are arbitrary 32-bit integers generated client-side and are NEVER treated as cryptographic proof of identity. The write path for `doc_updates` populates `authorId` strictly from the server-side authenticated connection context (`context.principal.id`), preventing attribution forgery even if a client forges its local Yjs `clientID`.
 
+### 2.6 Per-Connection WebSocket Message Rate Limiting & Flood Defense (`SEC-3`)
+- **Dual Token-Bucket Algorithm**:
+  - **Message Frequency Bucket**: Burst capacity of 100 messages, refilled at 50 messages/sec.
+  - **Byte Volume Bucket**: Burst capacity of 2,097,152 bytes (2 MB), refilled at 1,048,576 bytes/sec (1 MB/sec).
+- **Universal Frame Coverage**: Evaluated inside `beforeHandleMessage`, which intercepts all WebSocket message types including `MessageType.Sync` (document updates) and `MessageType.Awareness` (presence frames). Neither update frames nor awareness traffic can bypass rate accounting.
+- **Fail-Safe Flood Mitigation**:
+  - When a connection exceeds its message or byte token budget, `RateLimitError` is raised with application close code `4029` and structured reason (`message_rate_limit_exceeded` or `byte_rate_limit_exceeded`).
+  - The transport WebSocket is severed immediately (`data.connection.webSocket.close(4029, ...)`).
+  - Hocuspocus message processing halts immediately and drains queued flood frames (`messageQueue.length = 0`), ensuring rejected updates never mutate the document or broadcast to other peers.
+- **Lifecycle Cleanup**: Rate limiter state is cleaned up upon connection close (`onDisconnect`) and on failed authentication (`onAuthenticate` catch block). Idle connections are automatically pruned past 60s TTL, and total tracked connections are bounded to 10,000 to prevent memory exhaustion.
+
 ---
 
 ## 3. Core Modules & Implementation Details
@@ -162,6 +174,13 @@ Task T07 implements the real-time collaborative document synchronization engine 
 - **Allowed Origins**: `APP_URL`, `http://localhost:3000`, `http://127.0.0.1:3000`.
 - **IP Rate Limiter**: 60 rejected upgrade attempts per minute per derived client IP.
 
+### 3.6 `apps/server/src/sync/connectionRateLimiter.ts`
+- **Responsibilities**: Implements per-connection dual token bucket message-rate and byte-throughput accounting.
+- **Key Exports**:
+  - `ConnectionRateLimiter`: Configurable token-bucket engine (`maxMessageBurst`, `messageRefillPerSec`, `maxByteBurst`, `byteRefillPerSec`, `entryTtlMs`, `maxEntries`).
+  - `RateLimitError`: Standardized error carrying close code `4029` and reason string (`message_rate_limit_exceeded` or `byte_rate_limit_exceeded`).
+  - `connectionRateLimiter`: Shared default singleton.
+
 ---
 
 ## 4. Verification Evidence & Test Suite Summary
@@ -180,15 +199,18 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`concurrency.test.ts`** | 3 | 6 concurrent participants typing without conflict (`CONC-1`), idempotent duplicate updates (`CONC-2`), read-only enforcement in `beforeHandleMessage` (`ED-6`). | **PASS** |
 | **`attribution.test.ts`** | 7 | Client identity attribution (`ATTR-1`), first-claim-wins `$setOnInsert`, duplicate-key concurrency, identity hijacking prevention. | **PASS** |
 | **`livePermissions.test.ts`** | 6 | Live permission coordination (`ROOM-3`, `ROOM-6`, `ED-6`): demote to viewer (<1s revocation), promote to editor, kick termination (4003), room end read-only, room delete cascade (1000), interview candidate lifecycle. | **PASS** |
+| **`rateLimitFlood.test.ts`** | 10 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning. | **PASS** |
 
-**Total T07 Tests:** 10 test files, 51 passing tests, 0 failures.  
-**Full Monorepo Suite:** 48 test files, 328 passing tests, 0 failures.
+**Total T07 Tests:** 11 test files, 61 passing tests, 0 failures.  
+**Full Monorepo Suite:** 49 test files, 338 passing tests, 0 failures.
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
+ac3b973 feat(sync): live room permission and lifecycle coordination with rest api
+3423207 feat(sync): map yjs client ids to authenticated actors for attr-1
 e592a32 docs(sync): add comprehensive T07 document sync technical note
 4ca477e test(sync): full integration test suite, disconnect lifecycle and concurrency
 3b86a3d fix(sync): arrival-order writes, 5-min snapshot interval, requeue durability and unload on disconnect

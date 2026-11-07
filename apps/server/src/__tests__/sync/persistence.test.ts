@@ -4,6 +4,7 @@ import * as Y from "yjs";
 import {
   loadDocument,
   queueUpdate,
+  requeueUpdates,
   flushRoom,
   saveSnapshot,
   resetPersistenceState,
@@ -124,18 +125,18 @@ describe("T07 Persistence & Durability (PER-1)", () => {
     });
   });
 
-  describe("Coalescence, Debounce & Strictly Increasing Sequences", () => {
-    it("coalesces updates per author using Y.mergeUpdates and strictly increases seq under concurrent flushes", async () => {
+  describe("Arrival Order, Debounce & Strictly Increasing Sequences", () => {
+    it("writes one doc_updates row per update in flat arrival order and strictly increases seq under concurrent flushes", async () => {
       const doc = new Y.Doc();
       const text = doc.getText("monaco");
 
-      // Author A inserts 3 chars
+      // Author A inserts 2 updates
       text.insert(0, "A1");
       const uA1 = Y.encodeStateAsUpdate(doc);
       text.insert(text.length, "A2");
       const uA2 = Y.encodeStateAsUpdate(doc);
 
-      // Author B inserts 2 chars
+      // Author B inserts 1 update
       text.insert(text.length, "B1");
       const uB1 = Y.encodeStateAsUpdate(doc);
 
@@ -147,12 +148,14 @@ describe("T07 Persistence & Durability (PER-1)", () => {
       await flushRoom(roomId);
 
       const savedUpdates = await DocUpdateModel.find({ roomId }).sort({ seq: 1 }).exec();
-      // Expect 2 coalesced updates: 1 for author_A (merged uA1+uA2), 1 for author_B
-      expect(savedUpdates.length).toBe(2);
+      // Expect exactly 3 updates in arrival order without merging
+      expect(savedUpdates.length).toBe(3);
       expect(savedUpdates[0]!.seq).toBe(1);
       expect(savedUpdates[1]!.seq).toBe(2);
+      expect(savedUpdates[2]!.seq).toBe(3);
       expect(savedUpdates[0]!.authorId).toBe("author_A");
-      expect(savedUpdates[1]!.authorId).toBe("author_B");
+      expect(savedUpdates[1]!.authorId).toBe("author_A");
+      expect(savedUpdates[2]!.authorId).toBe("author_B");
 
       // Concurrent flushes maintain strictly increasing sequence without gaps
       const concurrentPromises: Promise<void>[] = [];
@@ -167,10 +170,41 @@ describe("T07 Persistence & Durability (PER-1)", () => {
       await Promise.all(concurrentPromises);
 
       const allUpdates = await DocUpdateModel.find({ roomId }).sort({ seq: 1 }).exec();
+      expect(allUpdates.length).toBe(8);
       const seqs = allUpdates.map((u) => u.seq);
       for (let i = 0; i < seqs.length; i++) {
         expect(seqs[i]).toBe(i + 1);
       }
+    });
+
+    it("preserves arrival order and original firstUnflushedAt when requeueing after failure", async () => {
+      const doc = new Y.Doc();
+      const text = doc.getText("monaco");
+      text.insert(0, "u1");
+      const u1 = Y.encodeStateAsUpdate(doc);
+
+      const originalTimestamp = Date.now() - 1000;
+      requeueUpdates(
+        roomId,
+        [{ authorId: "author_failed", update: u1, ts: new Date(originalTimestamp) }],
+        originalTimestamp,
+        doc
+      );
+
+      // Now add a newer update
+      text.insert(text.length, "u2");
+      const u2 = Y.encodeStateAsUpdate(doc);
+      queueUpdate(roomId, "author_new", u2, doc);
+
+      // Flush
+      await flushRoom(roomId);
+
+      const savedUpdates = await DocUpdateModel.find({ roomId }).sort({ seq: 1 }).exec();
+      expect(savedUpdates.length).toBe(2);
+      expect(savedUpdates[0]!.authorId).toBe("author_failed");
+      expect(savedUpdates[1]!.authorId).toBe("author_new");
+      expect(savedUpdates[0]!.seq).toBe(1);
+      expect(savedUpdates[1]!.seq).toBe(2);
     });
   });
 
@@ -214,3 +248,4 @@ describe("T07 Persistence & Durability (PER-1)", () => {
     });
   });
 });
+

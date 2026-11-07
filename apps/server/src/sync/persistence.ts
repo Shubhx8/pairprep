@@ -11,7 +11,7 @@ export const FLUSH_DEBOUNCE_MS = 250;
 export const MAX_FLUSH_DEADLINE_MS = 2000;
 export const MAX_DOC_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB cap
 export const MAX_SNAPSHOTS_TO_KEEP = 3;
-export const SNAPSHOT_UPDATE_INTERVAL = 50; // Save snapshot every 50 updates
+export const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Keyed Promise mutex to ensure strictly sequential, serialized flush and snapshot
@@ -44,16 +44,23 @@ export class RoomMutex {
 
 export const roomMutex = new RoomMutex();
 
+export interface QueuedUpdate {
+  authorId: string;
+  update: Uint8Array;
+  ts: Date;
+}
+
 interface PendingQueue {
   roomId: string;
   document: Y.Doc;
-  authorUpdates: Map<string, Uint8Array[]>; // authorId -> array of updates
+  updates: QueuedUpdate[]; // flat arrival-order array
   firstUnflushedAt: number;
   flushDeadlineTimeout?: NodeJS.Timeout;
   debounceTimeout?: NodeJS.Timeout;
 }
 
 const pendingQueues = new Map<string, PendingQueue>();
+const snapshotIntervals = new Map<string, NodeJS.Timeout>();
 
 /**
  * Loads a document by replaying the latest snapshot and all subsequent updates.
@@ -101,8 +108,8 @@ export async function loadDocument(
 }
 
 /**
- * Enqueues an inbound update for deferred persistence.
- * Implements coalescence per author with a fixed 2,000 ms durability bound (PER-1).
+ * Enqueues an inbound update for deferred persistence in arrival order.
+ * Implements a flat arrival-order array with a fixed 2,000 ms durability bound (PER-1).
  */
 export function queueUpdate(
   roomId: string,
@@ -113,14 +120,19 @@ export function queueUpdate(
   let queue = pendingQueues.get(roomId);
   const now = Date.now();
 
-  if (!queue) {
-    queue = {
-      roomId,
-      document,
-      authorUpdates: new Map<string, Uint8Array[]>(),
-      firstUnflushedAt: now,
-    };
-    pendingQueues.set(roomId, queue);
+  if (!queue || queue.updates.length === 0) {
+    if (!queue) {
+      queue = {
+        roomId,
+        document,
+        updates: [],
+        firstUnflushedAt: now,
+      };
+      pendingQueues.set(roomId, queue);
+    } else {
+      queue.document = document;
+      queue.firstUnflushedAt = now;
+    }
 
     // Hard deadline timer: guarantees flush within 2 seconds even during continuous typing
     queue.flushDeadlineTimeout = setTimeout(() => {
@@ -130,11 +142,12 @@ export function queueUpdate(
     }, MAX_FLUSH_DEADLINE_MS);
   }
 
-  // Add update to author's bucket
-  if (!queue.authorUpdates.has(authorId)) {
-    queue.authorUpdates.set(authorId, []);
-  }
-  queue.authorUpdates.get(authorId)!.push(update);
+  // Append update in flat arrival order
+  queue.updates.push({
+    authorId,
+    update,
+    ts: new Date(),
+  });
 
   // Debounce timer: flushes within 250 ms of quiet period, capped at hard deadline
   if (queue.debounceTimeout) {
@@ -154,9 +167,67 @@ export function queueUpdate(
 }
 
 /**
+ * Re-queues updates on flush failure, preserving original arrival order and firstUnflushedAt.
+ * Schedules the deadline timer for the remaining durability time.
+ */
+export function requeueUpdates(
+  roomId: string,
+  failedBatch: QueuedUpdate[],
+  originalFirstUnflushedAt: number,
+  document?: Y.Doc
+): void {
+  let queue = pendingQueues.get(roomId);
+  const now = Date.now();
+
+  if (!queue) {
+    if (!document) {
+      rootLogger.error({ roomId }, "Cannot requeue updates without document reference");
+      return;
+    }
+    queue = {
+      roomId,
+      document,
+      updates: [...failedBatch],
+      firstUnflushedAt: originalFirstUnflushedAt,
+    };
+    pendingQueues.set(roomId, queue);
+  } else {
+    // Prepend failed batch in front of any updates that arrived while flush was executing
+    queue.updates = [...failedBatch, ...queue.updates];
+    // Preserve the original (older) firstUnflushedAt
+    queue.firstUnflushedAt =
+      queue.firstUnflushedAt > 0
+        ? Math.min(queue.firstUnflushedAt, originalFirstUnflushedAt)
+        : originalFirstUnflushedAt;
+  }
+
+  // Clear timers before rescheduling with remaining deadline
+  if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
+  if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
+
+  const remainingDeadline = Math.max(
+    0,
+    queue.firstUnflushedAt + MAX_FLUSH_DEADLINE_MS - now
+  );
+
+  queue.flushDeadlineTimeout = setTimeout(() => {
+    flushRoom(roomId).catch((err) => {
+      rootLogger.error({ err, roomId }, "Error in deadline flush after requeue");
+    });
+  }, remainingDeadline);
+
+  const debounceDelay = Math.min(FLUSH_DEBOUNCE_MS, remainingDeadline);
+  queue.debounceTimeout = setTimeout(() => {
+    flushRoom(roomId).catch((err) => {
+      rootLogger.error({ err, roomId }, "Error in debounced flush after requeue");
+    });
+  }, debounceDelay);
+}
+
+/**
  * Flushes all pending updates for a room under the room mutex.
- * Coalesces updates per author using Y.mergeUpdates, writes them to doc_updates
- * with strictly increasing seq, checks 2 MB doc cap, and creates/prunes snapshots.
+ * Writes each update in flat arrival order, checks 2 MB doc cap,
+ * and handles failures without losing updates or resetting firstUnflushedAt.
  */
 export async function flushRoom(
   roomId: string,
@@ -166,17 +237,31 @@ export async function flushRoom(
     return;
   }
 
-  const queue = pendingQueues.get(roomId);
-  if (!queue) return;
-
-  // Clear timers and remove from pending queue
-  if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
-  if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
-  pendingQueues.delete(roomId);
-
-  if (queue.authorUpdates.size === 0) return;
-
   await roomMutex.runExclusive(roomId, async () => {
+    const queue = pendingQueues.get(roomId);
+    if (!queue || queue.updates.length === 0) {
+      if (forceSnapshot && queue?.document) {
+        await takeSnapshot(roomId, queue.document, true);
+      }
+      return;
+    }
+
+    // Clear timers on captured queue
+    if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
+    if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
+
+    // Atomically capture batch and replace pending queue with an empty queue
+    const batch = queue.updates;
+    const originalFirstUnflushedAt = queue.firstUnflushedAt;
+    const document = queue.document;
+
+    pendingQueues.set(roomId, {
+      roomId,
+      document,
+      updates: [],
+      firstUnflushedAt: 0,
+    });
+
     try {
       // Find latest sequence in database for this room
       const lastDoc = await DocUpdateModel.findOne({ roomId })
@@ -184,26 +269,21 @@ export async function flushRoom(
         .exec();
       let currentSeq = lastDoc?.seq ?? 0;
 
-      // Coalesce updates per author with Y.mergeUpdates
-      for (const [authorId, updates] of queue.authorUpdates.entries()) {
-        if (!updates || updates.length === 0) continue;
-
-        const mergedUpdate =
-          updates.length === 1 ? updates[0]! : Y.mergeUpdates(updates);
-
+      // Write one doc_updates row per update in arrival order (no merging)
+      for (const item of batch) {
         currentSeq++;
         await DocUpdateModel.create({
           roomId,
           seq: currentSeq,
-          authorId,
-          update: Buffer.from(mergedUpdate),
-          size: mergedUpdate.byteLength,
-          ts: new Date(),
+          authorId: item.authorId,
+          update: Buffer.from(item.update),
+          size: item.update.byteLength,
+          ts: item.ts,
         });
       }
 
       // Check document size against 2 MB cap
-      const fullDocState = Y.encodeStateAsUpdate(queue.document);
+      const fullDocState = Y.encodeStateAsUpdate(document);
       if (fullDocState.byteLength > MAX_DOC_SIZE_BYTES) {
         syncRegistry.setRoomReadOnly(roomId);
         rootLogger.warn(
@@ -212,25 +292,43 @@ export async function flushRoom(
         );
       }
 
-      // Snapshot rule: save snapshot if interval reached or forced, and prune to 3 latest
-      const lastSnapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
-      const shouldSnapshot =
-        forceSnapshot ||
-        !lastSnapshot ||
-        currentSeq - lastSnapshot.seq >= SNAPSHOT_UPDATE_INTERVAL;
+      if (forceSnapshot) {
+        await saveSnapshot(roomId, currentSeq, fullDocState, document);
+      }
 
-      if (shouldSnapshot && (!lastSnapshot || lastSnapshot.seq < currentSeq)) {
-        await saveSnapshot(roomId, currentSeq, fullDocState, queue.document);
+      // Clean up empty queue if no new updates arrived during DB write
+      const currentQueue = pendingQueues.get(roomId);
+      if (currentQueue && currentQueue.updates.length === 0) {
+        pendingQueues.delete(roomId);
       }
     } catch (err) {
       rootLogger.error({ err, roomId }, "Failed to flush updates to MongoDB");
-      // Re-queue updates so they are not lost
-      for (const [authorId, updates] of queue.authorUpdates.entries()) {
-        for (const u of updates) {
-          queueUpdate(roomId, authorId, u, queue.document);
-        }
-      }
+      requeueUpdates(roomId, batch, originalFirstUnflushedAt, document);
       throw err;
+    }
+  });
+}
+
+/**
+ * Takes a snapshot of the document if updates occurred since the last snapshot, or if forced.
+ */
+export async function takeSnapshot(
+  roomId: string,
+  document: Y.Doc,
+  force = false
+): Promise<void> {
+  if (mongoose.connection.readyState !== 1) return;
+
+  await roomMutex.runExclusive(roomId, async () => {
+    const lastDoc = await DocUpdateModel.findOne({ roomId })
+      .sort({ seq: -1 })
+      .exec();
+    const currentSeq = lastDoc?.seq ?? 0;
+
+    const lastSnapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
+    if (force || !lastSnapshot || lastSnapshot.seq < currentSeq) {
+      const fullDocState = Y.encodeStateAsUpdate(document);
+      await saveSnapshot(roomId, currentSeq, fullDocState, document);
     }
   });
 }
@@ -265,6 +363,33 @@ export async function saveSnapshot(
 }
 
 /**
+ * Starts a 5-minute recurring snapshot timer for a loaded room.
+ */
+export function startSnapshotInterval(roomId: string, document: Y.Doc): void {
+  stopSnapshotInterval(roomId);
+
+  const timer = setInterval(() => {
+    takeSnapshot(roomId, document).catch((err) => {
+      rootLogger.error({ err, roomId }, "Error in periodic 5-minute snapshot");
+    });
+  }, SNAPSHOT_INTERVAL_MS);
+
+  timer.unref();
+  snapshotIntervals.set(roomId, timer);
+}
+
+/**
+ * Stops the periodic snapshot timer for a room.
+ */
+export function stopSnapshotInterval(roomId: string): void {
+  const timer = snapshotIntervals.get(roomId);
+  if (timer) {
+    clearInterval(timer);
+    snapshotIntervals.delete(roomId);
+  }
+}
+
+/**
  * Flushes all pending updates for all rooms (e.g. during graceful shutdown).
  */
 export async function flushAllPending(): Promise<void> {
@@ -287,4 +412,9 @@ export function resetPersistenceState(): void {
     if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
   }
   pendingQueues.clear();
+
+  for (const timer of snapshotIntervals.values()) {
+    clearInterval(timer);
+  }
+  snapshotIntervals.clear();
 }

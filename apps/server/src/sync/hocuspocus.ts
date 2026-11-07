@@ -9,6 +9,10 @@ import { syncRegistry } from "./syncRegistry.js";
 import {
   loadDocument,
   queueUpdate,
+  flushRoom,
+  takeSnapshot,
+  startSnapshotInterval,
+  stopSnapshotInterval,
   flushAllPending,
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
@@ -229,9 +233,33 @@ export function createSyncServer(
     },
     async onDisconnect(data) {
       syncRegistry.unregisterConnection(data.documentName, data.socketId);
+
+      if (data.clientsCount === 0) {
+        stopSnapshotInterval(data.documentName);
+        await flushRoom(data.documentName, true);
+        await takeSnapshot(data.documentName, data.document, true);
+
+        const hocuspocusInstance =
+          (data.instance as
+            | { unloadDocument?: (doc: unknown) => Promise<void> }
+            | undefined) ??
+          (
+            server as unknown as {
+              hocuspocus?: { unloadDocument?: (doc: unknown) => Promise<void> };
+            }
+          ).hocuspocus;
+
+        if (
+          hocuspocusInstance &&
+          typeof hocuspocusInstance.unloadDocument === "function"
+        ) {
+          await hocuspocusInstance.unloadDocument(data.document);
+        }
+      }
     },
     async onLoadDocument(data) {
       await loadDocument(data.documentName, data.document);
+      startSnapshotInterval(data.documentName, data.document);
       return data.document;
     },
     async onChange(data) {

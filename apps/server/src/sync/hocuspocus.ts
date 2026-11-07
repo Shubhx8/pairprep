@@ -232,12 +232,22 @@ export function createSyncServer(
       );
     },
     async onDisconnect(data) {
-      syncRegistry.unregisterConnection(data.documentName, data.socketId);
+      const roomId = data.documentName;
 
+      // 1. Flush pending updates and snapshot on disconnect
+      await flushRoom(roomId, true);
+
+      // 2. Stop snapshot interval when room is empty
+      if (!data.clientsCount || data.clientsCount === 0) {
+        stopSnapshotInterval(roomId);
+      }
+
+      // 3. Unregister connection from sync registry
+      syncRegistry.unregisterConnection(roomId, data.socketId);
+
+      // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
       if (data.clientsCount === 0) {
-        stopSnapshotInterval(data.documentName);
-        await flushRoom(data.documentName, true);
-        await takeSnapshot(data.documentName, data.document, true);
+        await takeSnapshot(roomId, data.document, true);
 
         const hocuspocusInstance =
           (data.instance as

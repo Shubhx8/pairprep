@@ -456,17 +456,12 @@ export function createSyncServer(
       documentLoadWaiters.addWaiter(roomId, socketId);
 
       const cleanupFailedLoad = () => {
-        // Retrieve and clear all sockets waiting for this document load
+        // Retrieve and clear exact socket IDs tracked as waiting for this document load
         const waiters = documentLoadWaiters.clearWaiters(roomId);
-        // Cancel all pending reservations for this room in syncRegistry
-        const cancelledFromRoom = syncRegistry.cancelReservationsForRoom(roomId);
-        const affectedSockets = new Set<string>([
-          socketId,
-          ...waiters,
-          ...cancelledFromRoom,
-        ]);
+        const affectedSockets = new Set<string>([socketId, ...waiters]);
 
         for (const sock of affectedSockets) {
+          // Cancel only this socket's reservation for roomId
           syncRegistry.cancelReservation(sock, roomId);
           const hasActiveConn = !!syncRegistry.getConnection(sock);
           const hasOtherReservation =

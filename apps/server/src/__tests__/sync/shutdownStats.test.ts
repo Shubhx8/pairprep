@@ -1297,7 +1297,6 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       const hp = (
         syncServer.server as unknown as {
           hocuspocus: {
-            loadingDocuments: Map<string, Promise<unknown>>;
             documents: Map<string, unknown>;
             createDocument: (
               name: string,
@@ -1311,8 +1310,10 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       ).hocuspocus;
 
       const testRoomId = "507f1f77bcf86cd799439099";
+      const unrelatedRoomId = "507f1f77bcf86cd799439088";
       const aliceSocket = "sock_alice_waiter";
       const bobSocket = "sock_bob_waiter";
+      const charlieSocket = "sock_charlie_unrelated";
 
       // 1. Client A authenticates and reserves slot
       const onAuth = syncServer.server.configuration.onAuthenticate;
@@ -1332,7 +1333,13 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       expect(syncRegistry.getReservation(aliceSocket)?.roomId).toBe(testRoomId);
       expect(syncRegistry.getPendingReservationCount()).toBe(1);
 
-      // 2. Pause document loading in flight
+      // Set up an unrelated reservation for another room to verify it is NOT cancelled
+      syncRegistry.reserveSlot(unrelatedRoomId, charlieSocket);
+      limiter.consume(charlieSocket, 100);
+      expect(syncRegistry.getReservation(charlieSocket)?.roomId).toBe(unrelatedRoomId);
+      expect(syncRegistry.getPendingReservationCount()).toBe(2);
+
+      // 2. Pause document loading in flight and track observable loader invocation count
       let pauseResolve!: () => void;
       const pausePromise = new Promise<void>((r) => {
         pauseResolve = r;
@@ -1343,9 +1350,12 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         reachedLoadResolve = r;
       });
 
+      let loaderInvocationCount = 0;
+
       const snapSpy = vi
         .spyOn(DocSnapshotModel, "findOne")
         .mockImplementation(() => {
+          loaderInvocationCount++;
           reachedLoadResolve();
           return {
             sort: () => ({
@@ -1368,9 +1378,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
       // Wait until Alice's load is in-flight and paused at database query
       await reachedLoadPromise;
-      expect(hp.loadingDocuments.has(testRoomId)).toBe(true);
-      const sharedLoadingPromise = hp.loadingDocuments.get(testRoomId);
-      expect(sharedLoadingPromise).toBeDefined();
+      expect(loaderInvocationCount).toBe(1);
 
       // 3. Client B authenticates for the same document
       await onAuth!({
@@ -1385,7 +1393,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
       limiter.consume(bobSocket, 100);
 
-      // Client B shares the loading promise
+      // Client B initiates loading for the same document while Alice's load is still in flight
       const bobDocPromise = hp.createDocument(
         testRoomId,
         new Request("http://localhost"),
@@ -1394,21 +1402,27 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         {}
       );
 
-      // 4. Confirm both reservations are active in SyncRegistry
-      expect(syncRegistry.getPendingReservationCount()).toBe(2);
+      // Observable loader invocation count proves deduplication:
+      // Even though Bob requested loading, the underlying loader was NOT invoked a second time
+      expect(loaderInvocationCount).toBe(1);
+
+      // 4. Confirm reservations in SyncRegistry:
+      // Alice and Bob hold reservations for testRoomId, and Charlie holds reservation for unrelatedRoomId
+      expect(syncRegistry.getPendingReservationCount()).toBe(3);
       expect(syncRegistry.getReservation(aliceSocket)?.roomId).toBe(testRoomId);
       expect(syncRegistry.getReservation(bobSocket)?.roomId).toBe(testRoomId);
+      expect(syncRegistry.getReservation(charlieSocket)?.roomId).toBe(unrelatedRoomId);
       expect(syncRegistry.getPendingReservationsForRoom(testRoomId)).toEqual(
         expect.arrayContaining([aliceSocket, bobSocket])
       );
+      expect(syncRegistry.getPendingReservationsForRoom(unrelatedRoomId)).toEqual([
+        charlieSocket,
+      ]);
 
-      // 5. Confirm Client B's connection is awaiting the shared load
-      expect(hp.loadingDocuments.get(testRoomId)).toBe(sharedLoadingPromise);
-
-      // 6. Resume and fail document loading
+      // 5. Resume and fail document loading
       pauseResolve();
 
-      // 7. Verify both clients fail to establish connection
+      // 6. Verify both clients fail to establish connection with the exact same error
       await expect(aliceDocPromise).rejects.toThrow(
         "Simulated concurrent load database failure"
       );
@@ -1416,27 +1430,41 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         "Simulated concurrent load database failure"
       );
 
-      // 8. Verify both reservations are released
-      expect(syncRegistry.getPendingReservationCount()).toBe(0);
+      // Loader was invoked exactly once throughout the entire deduplicated cycle
+      expect(loaderInvocationCount).toBe(1);
+
+      // 7. Verify both reservations for testRoomId are released
       expect(syncRegistry.getReservation(aliceSocket)).toBeUndefined();
       expect(syncRegistry.getReservation(bobSocket)).toBeUndefined();
       expect(syncRegistry.getPendingReservationsForRoom(testRoomId)).toHaveLength(0);
 
-      // 9. Verify both rate limiters are cleaned up when neither socket has other work
-      expect(limiter.getStats().trackedConnections).toBe(0);
+      // 8. Regression assertion: Unrelated reservation for unrelatedRoomId was NOT cancelled!
+      expect(syncRegistry.getReservation(charlieSocket)?.roomId).toBe(unrelatedRoomId);
+      expect(syncRegistry.getPendingReservationsForRoom(unrelatedRoomId)).toEqual([
+        charlieSocket,
+      ]);
+      expect(syncRegistry.getPendingReservationCount()).toBe(1);
 
-      // 10. Verify zero leftover connection, document, or persistence state
+      // 9. Verify rate limiters for testRoomId were cleaned up, while Charlie's limiter remains active
+      expect(limiter.getStats().trackedConnections).toBe(1);
+
+      // 10. Verify zero leftover connection, document, or persistence state for testRoomId
       expect(syncRegistry.getActiveConnectionCount()).toBe(0);
       expect(syncRegistry.getActiveRoomCount()).toBe(0);
       expect(syncRegistry.getConnection(aliceSocket)).toBeUndefined();
       expect(syncRegistry.getConnection(bobSocket)).toBeUndefined();
       expect(hp.documents.has(testRoomId)).toBe(false);
-      expect(hp.loadingDocuments.has(testRoomId)).toBe(false);
       const persistenceStats = getPendingPersistenceStats();
       expect(persistenceStats.pendingUpdates).toBe(0);
       expect(persistenceStats.queuedUpdates).toBe(0);
       expect(persistenceStats.inFlightUpdates).toBe(0);
       expect(persistenceStats.roomsWithPendingUpdates).toBe(0);
+
+      // Clean up the unrelated test reservation
+      syncRegistry.cancelReservation(charlieSocket, unrelatedRoomId);
+      limiter.cleanup(charlieSocket);
+      expect(syncRegistry.getPendingReservationCount()).toBe(0);
+      expect(limiter.getStats().trackedConnections).toBe(0);
 
       snapSpy.mockRestore();
     });
@@ -1447,7 +1475,6 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       const hp = (
         syncServer.server as unknown as {
           hocuspocus: {
-            loadingDocuments: Map<string, Promise<unknown>>;
             documents: Map<string, unknown>;
             createDocument: (
               name: string,

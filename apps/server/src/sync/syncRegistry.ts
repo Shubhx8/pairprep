@@ -245,21 +245,6 @@ export class SyncRegistry {
   }
 
   /**
-   * Cancels all pending reservations for a specific room (e.g. when document loading fails).
-   * Returns the list of socket IDs whose reservations were released.
-   */
-  cancelReservationsForRoom(roomId: string): string[] {
-    const cancelledSockets: string[] = [];
-    for (const [socketId, res] of this.reservations.entries()) {
-      if (res.roomId === roomId) {
-        this.reservations.delete(socketId);
-        cancelledSockets.push(socketId);
-      }
-    }
-    return cancelledSockets;
-  }
-
-  /**
    * Promotes a reservation to an active connection once connected hook fires.
    */
   promoteReservation(

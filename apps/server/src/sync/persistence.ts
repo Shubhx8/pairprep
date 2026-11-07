@@ -94,6 +94,210 @@ const activeLoadedDocuments = new Map<string, Y.Doc>();
 const inFlightUpdatesByRoom = new Map<string, number>();
 const inFlightBytesByRoom = new Map<string, number>();
 
+// Admission reservations for pre-mutation capacity gating
+interface AdmissionReservation {
+  roomId: string;
+  socketId: string;
+  bytes: number;
+  ts: number;
+}
+
+const reservedUpdatesByRoom = new Map<string, number>();
+const reservedBytesByRoom = new Map<string, number>();
+const activeReservationsBySocket = new Map<string, AdmissionReservation[]>();
+
+/**
+ * Checks if a room has reached its configured persistence capacity (including in-flight and reservations).
+ */
+export function isRoomAtPersistenceCapacity(
+  roomId: string,
+  additionalBytes = 0
+): boolean {
+  const queue = pendingQueues.get(roomId);
+  const pendingCount = queue?.updates.length ?? 0;
+  const pendingBytes = queue?.totalBytes ?? 0;
+  const inFlightCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
+  const inFlightBytes = inFlightBytesByRoom.get(roomId) ?? 0;
+  const reservedCount = reservedUpdatesByRoom.get(roomId) ?? 0;
+  const reservedBytes = reservedBytesByRoom.get(roomId) ?? 0;
+
+  const totalCount = pendingCount + inFlightCount + reservedCount;
+  const totalBytes = pendingBytes + inFlightBytes + reservedBytes + additionalBytes;
+
+  return (
+    totalCount >= MAX_PENDING_UPDATES_PER_ROOM ||
+    totalBytes >= MAX_PENDING_BYTES_PER_ROOM
+  );
+}
+
+/**
+ * Attempts to synchronously reserve admission capacity BEFORE a document mutation is applied.
+ * Returns { allowed: true } if capacity is available, or { allowed: false, reason: "queue_capacity_exceeded" }
+ * and activates room backpressure if capacity is exhausted.
+ */
+export function tryReserveAdmission(
+  roomId: string,
+  socketId: string,
+  frameBytes: number
+): { allowed: boolean; reason?: string } {
+  const queue = pendingQueues.get(roomId);
+  const pendingCount = queue?.updates.length ?? 0;
+  const pendingBytes = queue?.totalBytes ?? 0;
+  const inFlightCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
+  const inFlightBytes = inFlightBytesByRoom.get(roomId) ?? 0;
+  const reservedCount = reservedUpdatesByRoom.get(roomId) ?? 0;
+  const reservedBytes = reservedBytesByRoom.get(roomId) ?? 0;
+
+  const totalCount = pendingCount + inFlightCount + reservedCount;
+  const totalBytes = pendingBytes + inFlightBytes + reservedBytes;
+
+  if (
+    totalCount + 1 > MAX_PENDING_UPDATES_PER_ROOM ||
+    totalBytes + frameBytes > MAX_PENDING_BYTES_PER_ROOM
+  ) {
+    syncRegistry.setRoomBackpressure(roomId, true);
+    rootLogger.warn(
+      {
+        roomId,
+        socketId,
+        totalCount,
+        totalBytes,
+        frameBytes,
+        capCount: MAX_PENDING_UPDATES_PER_ROOM,
+        capBytes: MAX_PENDING_BYTES_PER_ROOM,
+      },
+      "Pre-mutation admission rejected: room persistence capacity exhausted"
+    );
+    return { allowed: false, reason: "queue_capacity_exceeded" };
+  }
+
+  reservedUpdatesByRoom.set(roomId, reservedCount + 1);
+  reservedBytesByRoom.set(roomId, reservedBytes + frameBytes);
+
+  const list = activeReservationsBySocket.get(socketId) ?? [];
+  list.push({ roomId, socketId, bytes: frameBytes, ts: Date.now() });
+  activeReservationsBySocket.set(socketId, list);
+
+  return { allowed: true };
+}
+
+/**
+ * Transfers an active admission reservation into the pending persistence queue.
+ * Decrements reserved counters and increments queued counters without double-counting.
+ */
+export function transferAdmissionReservation(
+  roomId: string,
+  socketId: string
+): void {
+  const list = activeReservationsBySocket.get(socketId);
+  if (list && list.length > 0) {
+    const idx = list.findIndex((r) => r.roomId === roomId);
+    if (idx !== -1) {
+      const res = list.splice(idx, 1)[0]!;
+      if (list.length === 0) {
+        activeReservationsBySocket.delete(socketId);
+      }
+      const curResCount = reservedUpdatesByRoom.get(roomId) ?? 0;
+      reservedUpdatesByRoom.set(roomId, Math.max(0, curResCount - 1));
+      const curResBytes = reservedBytesByRoom.get(roomId) ?? 0;
+      reservedBytesByRoom.set(roomId, Math.max(0, curResBytes - res.bytes));
+    }
+  }
+}
+
+/**
+ * Checks whether room load has dropped below recovery threshold and releases write backpressure.
+ */
+export function checkAndReleaseBackpressure(roomId: string): void {
+  if (syncRegistry.isRoomBackpressured(roomId)) {
+    const activeQ = pendingQueues.get(roomId);
+    const inFlightRemainingCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
+    const inFlightRemainingBytes = inFlightBytesByRoom.get(roomId) ?? 0;
+    const reservedRemainingCount = reservedUpdatesByRoom.get(roomId) ?? 0;
+    const reservedRemainingBytes = reservedBytesByRoom.get(roomId) ?? 0;
+    const remainingCount =
+      (activeQ?.updates.length ?? 0) +
+      inFlightRemainingCount +
+      reservedRemainingCount;
+    const remainingBytes =
+      (activeQ?.totalBytes ?? 0) +
+      inFlightRemainingBytes +
+      reservedRemainingBytes;
+    if (
+      remainingCount <=
+        MAX_PENDING_UPDATES_PER_ROOM * RECOVERY_THRESHOLD_RATIO &&
+      remainingBytes <= MAX_PENDING_BYTES_PER_ROOM * RECOVERY_THRESHOLD_RATIO
+    ) {
+      syncRegistry.setRoomBackpressure(roomId, false);
+    }
+  }
+}
+
+/**
+ * Releases an admission reservation for non-mutating messages or failed/aborted frames.
+ */
+export function releaseAdmissionReservation(
+  roomId: string,
+  socketId: string
+): void {
+  transferAdmissionReservation(roomId, socketId);
+  checkAndReleaseBackpressure(roomId);
+}
+
+/**
+ * Clears all admission reservations for a socket, room, or globally on reset.
+ */
+export function clearAdmissionReservations(
+  socketId?: string,
+  roomId?: string
+): void {
+  if (socketId) {
+    const list = activeReservationsBySocket.get(socketId);
+    if (list) {
+      for (const res of list) {
+        const curResCount = reservedUpdatesByRoom.get(res.roomId) ?? 0;
+        reservedUpdatesByRoom.set(res.roomId, Math.max(0, curResCount - 1));
+        const curResBytes = reservedBytesByRoom.get(res.roomId) ?? 0;
+        reservedBytesByRoom.set(res.roomId, Math.max(0, curResBytes - res.bytes));
+      }
+      activeReservationsBySocket.delete(socketId);
+    }
+  } else if (roomId) {
+    reservedUpdatesByRoom.delete(roomId);
+    reservedBytesByRoom.delete(roomId);
+    for (const [sock, list] of activeReservationsBySocket.entries()) {
+      const filtered = list.filter((r) => r.roomId !== roomId);
+      if (filtered.length === 0) {
+        activeReservationsBySocket.delete(sock);
+      } else {
+        activeReservationsBySocket.set(sock, filtered);
+      }
+    }
+    checkAndReleaseBackpressure(roomId);
+  } else {
+    reservedUpdatesByRoom.clear();
+    reservedBytesByRoom.clear();
+    activeReservationsBySocket.clear();
+  }
+}
+
+/**
+ * Returns reserved admission count and bytes for observability and testing.
+ */
+export function getReservedAdmissionStats(roomId?: string): { count: number; bytes: number } {
+  if (roomId) {
+    return {
+      count: reservedUpdatesByRoom.get(roomId) ?? 0,
+      bytes: reservedBytesByRoom.get(roomId) ?? 0,
+    };
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const c of reservedUpdatesByRoom.values()) count += c;
+  for (const b of reservedBytesByRoom.values()) bytes += b;
+  return { count, bytes };
+}
+
 // Synchronous document mutation tracking for exact snapshot consistency
 const roomAppliedUpdates = new Map<string, number>();
 const roomPersistedUpdates = new Map<string, number>();
@@ -199,13 +403,19 @@ async function loadDocumentLocked(
 /**
  * Enqueues an inbound update for deferred persistence in arrival order.
  * Enforces per-room update count and byte budget backpressure.
+ * When socketId is provided, transfers any pre-mutation admission reservation
+ * into queued persistence accounting without double-counting.
  */
 export function queueUpdate(
   roomId: string,
   authorId: string,
   update: Uint8Array,
-  document: Y.Doc
+  document: Y.Doc,
+  socketId?: string
 ): void {
+  if (socketId) {
+    transferAdmissionReservation(roomId, socketId);
+  }
   registerLoadedDocument(roomId, document);
   let queue = pendingQueues.get(roomId);
   const now = Date.now();
@@ -245,9 +455,11 @@ export function queueUpdate(
     roomAppliedUpdates.set(roomId, minRequiredApplied);
   }
 
-  // Combined pending + in-flight capacity check
-  const totalCount = queue.updates.length + inFlightCount;
-  const totalBytes = queue.totalBytes + inFlightBytes;
+  // Combined pending + in-flight + reserved capacity check
+  const reservedCount = reservedUpdatesByRoom.get(roomId) ?? 0;
+  const reservedBytes = reservedBytesByRoom.get(roomId) ?? 0;
+  const totalCount = queue.updates.length + inFlightCount + reservedCount;
+  const totalBytes = queue.totalBytes + inFlightBytes + reservedBytes;
 
   if (
     totalCount >= MAX_PENDING_UPDATES_PER_ROOM ||
@@ -398,6 +610,7 @@ async function flushRoomLocked(
   const doc = queue?.document ?? activeLoadedDocuments.get(roomId);
 
   if (!queue || queue.updates.length === 0) {
+    checkAndReleaseBackpressure(roomId);
     if (forceSnapshot && doc) {
       await takeSnapshotLocked(roomId, doc, true);
     }
@@ -591,23 +804,8 @@ async function flushRoomLocked(
       }
     }
 
-    // Release backpressure if queue fell below recovery threshold (accounting for in-flight)
-    if (syncRegistry.isRoomBackpressured(roomId)) {
-      const activeQ = pendingQueues.get(roomId);
-      const inFlightRemainingCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
-      const inFlightRemainingBytes = inFlightBytesByRoom.get(roomId) ?? 0;
-      const remainingCount =
-        (activeQ?.updates.length ?? 0) + inFlightRemainingCount;
-      const remainingBytes =
-        (activeQ?.totalBytes ?? 0) + inFlightRemainingBytes;
-      if (
-        remainingCount <=
-          MAX_PENDING_UPDATES_PER_ROOM * RECOVERY_THRESHOLD_RATIO &&
-        remainingBytes <= MAX_PENDING_BYTES_PER_ROOM * RECOVERY_THRESHOLD_RATIO
-      ) {
-        syncRegistry.setRoomBackpressure(roomId, false);
-      }
-    }
+    // Release backpressure if queue fell below recovery threshold (accounting for in-flight and reservations)
+    checkAndReleaseBackpressure(roomId);
 
     if (forceSnapshot && docToEncode) {
       await takeSnapshotLocked(roomId, docToEncode, true);
@@ -1021,6 +1219,7 @@ export function resetPersistenceState(): void {
   }
   pendingQueues.clear();
   activeLoadedDocuments.clear();
+  clearAdmissionReservations();
   stopAllSnapshotIntervals();
   flushesCompleted = 0;
   flushFailures = 0;

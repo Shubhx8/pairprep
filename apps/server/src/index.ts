@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
-import { Server } from "node:http";
+import { Server, createServer } from "node:http";
 import { config } from "./config.js";
 import { requestLogger, rootLogger } from "./middleware/logger.js";
 import { createSessionMiddleware } from "./middleware/session.js";
@@ -18,12 +18,13 @@ import { identify } from "./middleware/identity.js";
 import { startArchiveJob, stopArchiveJob } from "./services/archiveJob.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
-import { attachSyncServer } from "./sync/hocuspocus.js";
+import { attachSyncServer, SyncServerInstance } from "./sync/hocuspocus.js";
 import { roomsRouter } from "./routes/rooms.js";
 import {
   getDatabaseStatus,
   connectDatabase,
   disconnectDatabase,
+  verifyRequiredDatabaseIndexes,
 } from "./db/connection.js";
 import {
   PingResponse,
@@ -259,30 +260,89 @@ export function setupGracefulShutdown(
   return { handleShutdown };
 }
 
+export interface BootstrapResult {
+  server: Server;
+  syncServer: SyncServerInstance;
+  handleShutdown: (signal: string) => Promise<void>;
+}
+
+/**
+ * Executes the authoritative 10-step server bootstrap lifecycle:
+ * 1. Initialize configuration (loaded via config.js)
+ * 2. Connect to MongoDB
+ * 3. Initialize/provision required database indexes (via Mongoose model init)
+ * 4. Verify physical MongoDB indexes directly via driver catalog
+ * 5. Initialize application jobs requiring database (startArchiveJob)
+ * 6. Construct HTTP server without listening
+ * 7. Attach sync server and WebSocket upgrade handler
+ * 8. Register graceful shutdown handlers
+ * 9. Start listening for HTTP traffic
+ * 10. Report application readiness
+ * Fails fast with descriptive error if database connection or index verification fails.
+ */
+export async function bootstrapServer(
+  port = PORT,
+  mongoUri = config.MONGODB_URI,
+  dbOptions?: {
+    maxRetries?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+  }
+): Promise<BootstrapResult> {
+  // 1. Initialize configuration (already loaded via config import)
+
+  // 2. Connect to MongoDB
+  if (mongoUri) {
+    await connectDatabase(mongoUri, dbOptions);
+
+    // 3 & 4. Initialize and physically verify required MongoDB indexes
+    await verifyRequiredDatabaseIndexes();
+
+    // 5. Initialize application jobs that require the database
+    startArchiveJob();
+  }
+
+  // 6. Construct the HTTP server without listening
+  const httpServer = createServer(app);
+
+  // 7. Attach the sync server and upgrade handler
+  const syncServer = attachSyncServer(httpServer);
+
+  // 8. Register graceful shutdown handlers
+  const { handleShutdown } = setupGracefulShutdown(httpServer, async () => {
+    await syncServer.drainAndShutdown();
+  });
+
+  // 9. Start listening for HTTP traffic
+  await new Promise<void>((resolve, reject) => {
+    httpServer.listen(port, () => resolve());
+    httpServer.once("error", reject);
+  });
+
+  // 10. Report application readiness
+  rootLogger.info(
+    { port, env: config.NODE_ENV },
+    `[PairPrep Server] running on http://localhost:${port}`
+  );
+
+  return { server: httpServer, syncServer, handleShutdown };
+}
+
 let server: Server | undefined;
 
 if (process.env["NODE_ENV"] !== "test") {
-  server = app.listen(PORT, async () => {
-    rootLogger.info(
-      { port: PORT, env: config.NODE_ENV },
-      `[PairPrep Server] running on http://localhost:${PORT}`
-    );
-    if (config.MONGODB_URI) {
-      try {
-        await connectDatabase(config.MONGODB_URI);
-        startArchiveJob();
-      } catch (err) {
-        rootLogger.error(
-          { err },
-          "Initial MongoDB connection failed; server will continue running (healthz will report db: down)"
-        );
-      }
+  bootstrapServer().then(
+    (res) => {
+      server = res.server;
+    },
+    (err) => {
+      rootLogger.fatal(
+        { err },
+        "Fatal error during server bootstrap; terminating process"
+      );
+      process.exit(1);
     }
-  });
-  const syncServer = attachSyncServer(server);
-  setupGracefulShutdown(server, async () => {
-    await syncServer.drainAndShutdown();
-  });
+  );
 }
 
 export { server };

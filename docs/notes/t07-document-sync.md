@@ -307,13 +307,29 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **F: Multi-Room Teardown Isolation** | Room B completes flush and snapshot despite Room A rejection. | `persistenceHardeningGaps.test.ts` | `room B completes flush and snapshot despite room A rejection` | Multi-room mock / MongoMemoryServer | **PASS** |
 | **F: Multi-Room Teardown Isolation** | `drainPersistenceAndSnapshot` reports Room A failure in aggregate error without false success. | `persistenceHardeningGaps.test.ts` | `drainPersistenceAndSnapshot reports room A failure in aggregate error` | Multi-room mock / MongoMemoryServer | **PASS** |
 | **F: Multi-Room Teardown Isolation** | Active loaded room with empty queue still produces consistent final snapshot during shutdown. | `persistenceHardeningGaps.test.ts` | `active loaded room with empty queue still produces snapshot during shutdown` | In-memory active documents registry | **PASS** |
+| **G: Production Index Readiness** | Fails startup if MongoDB is not connected before index verification. | `startupIndexReadiness.test.ts` | `fails startup if MongoDB is not connected before index verification` | Unit / mock connection | **PASS** |
+| **G: Production Index Readiness** | Verifies required compound unique index `roomId_1_seq_1` exists. | `startupIndexReadiness.test.ts` | `verifies required compound unique index roomId_1_seq_1 exists` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **G: Production Index Readiness** | Aborts startup immediately if unique index is missing without opening HTTP port. | `startupIndexReadiness.test.ts` | `aborts startup immediately if unique index is missing` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **G: Production Index Readiness** | Aborts startup immediately if index exists but is non-unique. | `startupIndexReadiness.test.ts` | `aborts startup if index exists but is non-unique` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **G: Production Index Readiness** | Preserves custom DBA/analytics indexes non-destructively without calling `syncIndexes`. | `startupIndexReadiness.test.ts` | `preserves custom DBA indexes without calling syncIndexes` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **G: Production Index Readiness** | Executes complete 10-step `bootstrapServer` lifecycle and graceful teardown. | `startupIndexReadiness.test.ts` | `executes complete 10-step bootstrapServer lifecycle and graceful teardown` | Full HTTP + Sync + MongoDB lifecycle | **PASS** |
+| **G: Production Index Readiness** | Fails fast if MongoDB connection is unreachable during startup. | `startupIndexReadiness.test.ts` | `fails fast if MongoDB connection is unreachable` | Integration / unreachable port | **PASS** |
+| **H: Real Client Snapshot Consistency** | Real HocuspocusProvider WebSocket clients typing during paused snapshot creation maintains watermark and converges on loadDocument. | `persistenceHardeningGaps.test.ts` | `real HocuspocusProvider clients typing during paused snapshot creation maintains watermark and converges on loadDocument` | Real WebSocket (`HocuspocusProvider` + `ws`) + `MongoMemoryServer` | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Rejects incoming update before document mutation when pending count limit is reached. | `persistenceHardeningGaps.test.ts` | `rejects incoming update before document mutation when pending count limit is reached` | Unit / persistence admission | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Rejects incoming update before document mutation when byte limit is reached. | `persistenceHardeningGaps.test.ts` | `rejects incoming update before document mutation when byte limit is reached` | Unit / persistence admission | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Handles multi-socket concurrent admission contention cleanly. | `persistenceHardeningGaps.test.ts` | `handles multi-socket concurrent admission contention cleanly` | Unit / persistence admission | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Releases reserved admission on non-mutating message via `afterHandleMessage`. | `persistenceHardeningGaps.test.ts` | `releases reserved admission on non-mutating message via afterHandleMessage` | Unit / persistence admission | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Releases reserved admission on socket disconnect via `clearAdmissionReservations`. | `persistenceHardeningGaps.test.ts` | `releases reserved admission on socket disconnect via clearAdmissionReservations` | Unit / persistence admission | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Transfers reserved capacity to queued update without double counting. | `persistenceHardeningGaps.test.ts` | `transfers reserved capacity to queued update without double counting` | Unit / persistence admission | **PASS** |
+| **I: Pre-Mutation Capacity Admission** | Flush room backpressure release check accounts for active reservations. | `persistenceHardeningGaps.test.ts` | `flushRoom backpressure release check accounts for active reservations` | Unit / persistence admission | **PASS** |
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
-[HEAD]  fix(sync): close persistence hardening verification gaps
+[HEAD]  fix(sync): finalize persistence production readiness and admission safety
+0988d7a fix(sync): close persistence hardening verification gaps
 f2e5551 fix(sync): harden persistence retries and snapshot consistency
 754f407 fix(sync): precise failed-load cohort cleanup and loader deduplication
 829feba fix(sync): concurrent document-load waiter reservation cleanup

@@ -31,6 +31,9 @@ import {
   drainPersistenceAndSnapshot,
   getPendingPersistenceStats,
   unregisterLoadedDocument,
+  tryReserveAdmission,
+  releaseAdmissionReservation,
+  clearAdmissionReservations,
   type PersistenceStats,
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
@@ -431,9 +434,10 @@ export function createSyncServer(
         stopSnapshotInterval(roomId);
       }
 
-      // 3. Unregister connection from sync registry and clean up rate limiter
+      // 3. Unregister connection from sync registry and clean up rate limiter & admission reservations
       syncRegistry.unregisterConnection(roomId, data.socketId);
       rateLimiter.cleanup(data.socketId);
+      clearAdmissionReservations(data.socketId, roomId);
 
       // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
       if (isRoomEmpty) {
@@ -543,7 +547,14 @@ export function createSyncServer(
         (typeof data.socketId === "string" && data.socketId.trim()
           ? data.socketId
           : "anonymous");
-      queueUpdate(data.documentName, authorId, data.update, data.document);
+      const socketId = data.connection?.socketId ?? data.socketId;
+      queueUpdate(
+        data.documentName,
+        authorId,
+        data.update,
+        data.document,
+        socketId
+      );
 
       // Register Yjs clientIds from update metadata to authenticated actorId (first claim wins)
       if (connContext?.principal?.id && mongoose.connection.readyState === 1) {
@@ -619,7 +630,26 @@ export function createSyncServer(
 
       if (syncRegistry.isRoomReadOnly(data.documentName)) {
         data.connection.readOnly = true;
+        return;
       }
+
+      if (data.connection.readOnly) {
+        return;
+      }
+
+      // Synchronously reserve admission capacity before document mutation is applied
+      const admission = tryReserveAdmission(
+        data.documentName,
+        socketId,
+        data.update.byteLength
+      );
+      if (!admission.allowed) {
+        data.connection.readOnly = true;
+        return;
+      }
+    },
+    async afterHandleMessage(data) {
+      releaseAdmissionReservation(data.documentName, data.socketId);
     },
     async beforeHandleAwareness(data) {
       if (isShuttingDown) {
@@ -703,6 +733,7 @@ export function createSyncServer(
       syncRegistry.resetAll();
       rateLimiter.resetAll();
       documentLoadWaiters.resetAll();
+      clearAdmissionReservations();
       status = "destroyed";
     })();
 

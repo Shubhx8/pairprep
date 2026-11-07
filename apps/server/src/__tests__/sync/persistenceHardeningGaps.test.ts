@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createServer, type Server as HttpServer } from "node:http";
 import mongoose from "mongoose";
 import * as Y from "yjs";
+import WebSocket from "ws";
 import {
   queueUpdate,
   requeueUpdates,
@@ -12,15 +14,43 @@ import {
   resetPersistenceState,
   registerLoadedDocument,
   snapshotTestingHooks,
+  tryReserveAdmission,
+  releaseAdmissionReservation,
+  clearAdmissionReservations,
+  getReservedAdmissionStats,
+  isRoomAtPersistenceCapacity,
+  MAX_PENDING_UPDATES_PER_ROOM,
+  MAX_PENDING_BYTES_PER_ROOM,
   MIN_RETRY_BACKOFF_MS,
   MAX_RETRY_BACKOFF_MS,
   RETRY_BACKOFF_FACTOR,
 } from "../../sync/persistence.js";
+import {
+  createSyncServer,
+  attachSyncServer,
+  type SyncServerInstance,
+} from "../../sync/hocuspocus.js";
+import {
+  HocuspocusProvider,
+  HocuspocusProviderWebsocket,
+} from "@hocuspocus/provider";
 import { DocUpdateModel } from "../../models/doc_updates.js";
 import { DocSnapshotModel } from "../../models/doc_snapshots.js";
 import { docSnapshotRepo } from "../../repos/docSnapshotRepo.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
 import { config } from "../../config.js";
+
+class BrowserLikeWebSocket extends WebSocket {
+  constructor(url: string, protocols?: string | string[], options?: object) {
+    super(url, protocols, {
+      ...options,
+      headers: {
+        origin: "http://localhost:3000",
+        ...((options as { headers?: Record<string, string> })?.headers || {}),
+      },
+    });
+  }
+}
 
 describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", () => {
   const roomId = "507f1f77bcf86cd799439011";
@@ -689,6 +719,303 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       const snap = await docSnapshotRepo.getLatestSnapshot(roomBId);
       expect(snap).not.toBeNull();
       expect(snap!.text).toBe("Active Loaded Text");
+    });
+  });
+
+  // =========================================================================
+  // Commit 5e Task B: Real HocuspocusProvider Snapshot Integration Test
+  // =========================================================================
+  describe("Commit 5e Task B: Real HocuspocusProvider Snapshot Integration Test", () => {
+    let httpServer: HttpServer | null = null;
+    let syncServer: SyncServerInstance | null = null;
+    const providers: HocuspocusProvider[] = [];
+    const wsProviders: HocuspocusProviderWebsocket[] = [];
+
+    afterEach(async () => {
+      for (const p of providers) p.destroy();
+      for (const w of wsProviders) w.destroy();
+      providers.length = 0;
+      wsProviders.length = 0;
+      if (syncServer) {
+        await syncServer.drainAndShutdown({ drainTimeoutMs: 1000 }).catch(() => {});
+        syncServer = null;
+      }
+      if (httpServer) {
+        await new Promise<void>((r) => httpServer!.close(() => r()));
+        httpServer = null;
+      }
+    });
+
+    it("pausing snapshot at beforeCaptureBarrier while concurrent WebSocket edits arrive preserves watermark equality and convergence", async () => {
+      // 1. Setup real HTTP server with Hocuspocus sync
+      httpServer = createServer();
+      syncServer = createSyncServer({ requireAuth: false });
+      attachSyncServer(httpServer, syncServer);
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, resolve);
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      // 2. Connect Client A via real HocuspocusProvider
+      const wsA = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsA);
+      const docA = new Y.Doc();
+      const provA = new HocuspocusProvider({
+        websocketProvider: wsA,
+        name: roomId,
+        document: docA,
+      });
+      providers.push(provA);
+      provA.attach();
+
+      // 3. Connect Client B via real HocuspocusProvider
+      const wsB = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsB);
+      const docB = new Y.Doc();
+      const provB = new HocuspocusProvider({
+        websocketProvider: wsB,
+        name: roomId,
+        document: docB,
+      });
+      providers.push(provB);
+      provB.attach();
+
+      // 4. Wait for both clients to connect and synchronize
+      await Promise.all([
+        new Promise<void>((r) => provA.on("synced", () => r())),
+        new Promise<void>((r) => provB.on("synced", () => r())),
+      ]);
+
+      // 5. Client A inputs initial text over WebSocket
+      docA.getText("monaco").insert(0, "Client A initial text. ");
+
+      // Await propagation to Client B over WebSocket
+      await vi.waitFor(() => {
+        expect(docB.getText("monaco").toString()).toBe("Client A initial text. ");
+      });
+
+      // 6. Set up snapshot barrier hook to pause right before state capture
+      let barrierReached: () => void = () => {};
+      const barrierReachedPromise = new Promise<void>((r) => {
+        barrierReached = r;
+      });
+      let resumeBarrier: () => void = () => {};
+      const resumeBarrierPromise = new Promise<void>((r) => {
+        resumeBarrier = r;
+      });
+
+      snapshotTestingHooks.beforeCaptureBarrier = async () => {
+        snapshotTestingHooks.beforeCaptureBarrier = null;
+        barrierReached();
+        await resumeBarrierPromise;
+      };
+
+      // 7. Trigger snapshot creation (this will flush initial edits and pause at barrier)
+      const snapPromise = takeSnapshot(roomId, docA, true);
+
+      // Wait until snapshot has locked the mutex and reached the capture barrier
+      await barrierReachedPromise;
+
+      // 8. While snapshot is paused at the barrier, Client B sends concurrent edits over WebSocket
+      docB.getText("monaco").insert(
+        docB.getText("monaco").length,
+        "Client B concurrent edit."
+      );
+
+      // Verify Client A receives Client B's edits over WebSocket
+      await vi.waitFor(() => {
+        expect(docA.getText("monaco").toString()).toBe(
+          "Client A initial text. Client B concurrent edit."
+        );
+      });
+
+      // 9. Resume the snapshot capture
+      resumeBarrier();
+      await snapPromise;
+
+      // 10. Flush any remaining updates
+      await flushRoom(roomId);
+
+      // 11. Assert snapshot and update state in MongoDB
+      const snap = await docSnapshotRepo.getLatestSnapshot(roomId);
+      expect(snap).not.toBeNull();
+      expect(snap!.seq).toBeGreaterThan(0);
+
+      // The snapshot captured state at barrier; verify doc reconstructed from snapshot + subsequent updates
+      const reconstructedDoc = new Y.Doc();
+      const loadResult = await loadDocument(roomId, reconstructedDoc);
+      expect(loadResult.hasSnapshot).toBe(true);
+      expect(reconstructedDoc.getText("monaco").toString()).toBe(
+        "Client A initial text. Client B concurrent edit."
+      );
+    }, 15000);
+  });
+
+  // =========================================================================
+  // Commit 5e Task C: Safe Pre-Mutation Persistence Queue Capacity Admission
+  // =========================================================================
+  describe("Commit 5e Task C: Safe Pre-Mutation Persistence Queue Capacity Admission", () => {
+    it("pre-mutation capacity rejection prevents document mutation when update count cap is exhausted", () => {
+      const doc = new Y.Doc();
+      const dummyUpdate = new Uint8Array([1, 2, 3]);
+
+      // 1. Fill room persistence queue up to MAX_PENDING_UPDATES_PER_ROOM (1,000)
+      for (let i = 0; i < MAX_PENDING_UPDATES_PER_ROOM; i++) {
+        queueUpdate(roomId, `user_${i}`, dummyUpdate, doc);
+      }
+
+      expect(isRoomAtPersistenceCapacity(roomId)).toBe(true);
+
+      // 2. Synchronous pre-mutation admission reservation check
+      const admission = tryReserveAdmission(roomId, "sock_rejected_count", 100);
+      expect(admission.allowed).toBe(false);
+      expect(admission.reason).toBe("queue_capacity_exceeded");
+      expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+
+      // Total queued updates remains capped at exactly 1000
+      const stats = getPendingPersistenceStats();
+      expect(stats.queuedUpdates).toBe(MAX_PENDING_UPDATES_PER_ROOM);
+    });
+
+    it("pre-mutation capacity rejection prevents document mutation when byte capacity is exhausted", () => {
+      const doc = new Y.Doc();
+      // Put room at byte limit (MAX_PENDING_BYTES_PER_ROOM = 4 MB)
+      const chunkSize = MAX_PENDING_BYTES_PER_ROOM / 4; // 1 MB
+      for (let i = 0; i < 4; i++) {
+        queueUpdate(roomId, `user_${i}`, new Uint8Array(chunkSize), doc);
+      }
+
+      // Room is at byte capacity
+      expect(isRoomAtPersistenceCapacity(roomId)).toBe(true);
+
+      // Next frame of 1 KB cannot be admitted
+      const admission = tryReserveAdmission(roomId, "sock_rejected_bytes", 1024);
+      expect(admission.allowed).toBe(false);
+      expect(admission.reason).toBe("queue_capacity_exceeded");
+      expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+    });
+
+    it("multiple concurrent sockets competing for remaining capacity cannot exceed cap", () => {
+      const doc = new Y.Doc();
+      const dummyUpdate = new Uint8Array([1, 2, 3]);
+
+      // Fill room to MAX_PENDING_UPDATES_PER_ROOM - 2
+      for (let i = 0; i < MAX_PENDING_UPDATES_PER_ROOM - 2; i++) {
+        queueUpdate(roomId, `user_${i}`, dummyUpdate, doc);
+      }
+
+      // Sockets 1 and 2 reserve the remaining 2 slots
+      const res1 = tryReserveAdmission(roomId, "sock_1", 10);
+      expect(res1.allowed).toBe(true);
+      const res2 = tryReserveAdmission(roomId, "sock_2", 10);
+      expect(res2.allowed).toBe(true);
+
+      const reservedStats = getReservedAdmissionStats(roomId);
+      expect(reservedStats.count).toBe(2);
+
+      // Socket 3 attempts to reserve and MUST be rejected
+      const res3 = tryReserveAdmission(roomId, "sock_3", 10);
+      expect(res3.allowed).toBe(false);
+      expect(res3.reason).toBe("queue_capacity_exceeded");
+
+      // Clean up reservations
+      releaseAdmissionReservation(roomId, "sock_1");
+      releaseAdmissionReservation(roomId, "sock_2");
+      const afterRelease = getReservedAdmissionStats(roomId);
+      expect(afterRelease.count).toBe(0);
+    });
+
+    it("non-mutating message frame releases admission reservation cleanly", () => {
+      const sock = "sock_non_mutating";
+      const res = tryReserveAdmission(roomId, sock, 250);
+      expect(res.allowed).toBe(true);
+
+      expect(getReservedAdmissionStats(roomId).count).toBe(1);
+      expect(getReservedAdmissionStats(roomId).bytes).toBe(250);
+
+      // Non-mutating frame does not trigger onChange; afterHandleMessage calls release
+      releaseAdmissionReservation(roomId, sock);
+
+      expect(getReservedAdmissionStats(roomId).count).toBe(0);
+      expect(getReservedAdmissionStats(roomId).bytes).toBe(0);
+    });
+
+    it("socket disconnect cleans up any pending admission reservations", () => {
+      const sock = "sock_dc";
+      const res = tryReserveAdmission(roomId, sock, 400);
+      expect(res.allowed).toBe(true);
+      expect(getReservedAdmissionStats(roomId).count).toBe(1);
+
+      // onDisconnect cleans up reservations
+      clearAdmissionReservations(sock, roomId);
+      expect(getReservedAdmissionStats(roomId).count).toBe(0);
+      expect(getReservedAdmissionStats(roomId).bytes).toBe(0);
+    });
+
+    it("mutating message transfers reservation into queue accounting without double-counting", () => {
+      const doc = new Y.Doc();
+      const sock = "sock_mutate";
+      const updateData = new Uint8Array([4, 5, 6]);
+
+      const res = tryReserveAdmission(roomId, sock, updateData.byteLength);
+      expect(res.allowed).toBe(true);
+      expect(getReservedAdmissionStats(roomId).count).toBe(1);
+
+      // onChange arrives and calls queueUpdate with socketId
+      queueUpdate(roomId, "author_transfer", updateData, doc, sock);
+
+      // Reservation transferred: reserved count is 0, queued count is 1
+      expect(getReservedAdmissionStats(roomId).count).toBe(0);
+      const stats = getPendingPersistenceStats();
+      expect(stats.queuedUpdates).toBe(1);
+
+      // Calling afterHandleMessage release is a safe no-op since reservation already transferred
+      releaseAdmissionReservation(roomId, sock);
+      expect(getReservedAdmissionStats(roomId).count).toBe(0);
+      expect(getPendingPersistenceStats().queuedUpdates).toBe(1);
+    });
+
+    it("flushRoom backpressure release check accounts for active reservations", async () => {
+      const doc = new Y.Doc();
+      const updateData = new Uint8Array([1, 2, 3]);
+
+      // Set backpressure on room
+      syncRegistry.setRoomBackpressure(roomId, true);
+      expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+
+      // Queue 50 updates
+      for (let i = 0; i < 50; i++) {
+        queueUpdate(roomId, `author_${i}`, updateData, doc);
+      }
+
+      // Create 850 admission reservations -> total = 50 + 850 = 900 <= 1000
+      for (let i = 0; i < 850; i++) {
+        const res = tryReserveAdmission(roomId, `sock_res_${i}`, 10);
+        expect(res.allowed).toBe(true);
+      }
+
+      // Flush the 50 queued updates
+      await flushRoom(roomId);
+
+      // Backpressure should NOT release because 850 reservations remain active (850 > 800)
+      expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+
+      // Clear the reservations
+      clearAdmissionReservations(undefined, roomId);
+      expect(getReservedAdmissionStats(roomId).count).toBe(0);
+
+      // Now flush again with 0 updates and 0 reservations -> backpressure clears!
+      await flushRoom(roomId);
+      expect(syncRegistry.isRoomBackpressured(roomId)).toBe(false);
     });
   });
 });

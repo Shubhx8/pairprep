@@ -262,6 +262,37 @@ When the process receives a termination signal (`SIGTERM`, `SIGINT`) or calls `d
 - In `index.ts`, `setupGracefulShutdown` initiates `syncServer.drainAndShutdown()` concurrently with `server.close()`.
 - MongoDB connection is disconnected strictly **after** `drainAndShutdown()` successfully flushes all pending updates, preventing write failures or unhandled rejections during server exit.
 
+### 8.3 10-Step Deterministic Startup Lifecycle & Index Readiness
+To guarantee that write serialization and crash recovery are physically protected before serving any application or synchronization traffic, server startup follows an explicit 10-step bootstrap lifecycle (`bootstrapServer()`):
+
+1. **Database Connection**: Connects to MongoDB with configurable retry logic via `connectDatabase(mongoUri, dbOptions)`.
+2. **Physical Index Readiness Verification**: Awaits Mongoose schema initialization via `DocUpdateModel.init()` / `DocSnapshotModel.init()` and physically inspects the collections via `collection.listIndexes().toArray()`. Confirms the existence of the critical compound unique index `{ roomId: 1, seq: 1 }` (`roomId_1_seq_1`) with `unique === true`.
+   - *Non-Destructive Enforcement*: Never executes `syncIndexes()` in production, preserving custom DBA indexes, operational metadata, or partial/TTL configurations. If the required unique index is missing or non-unique, startup halts immediately with a descriptive fatal error.
+3. **Application Instantiation**: Creates the Express REST application (`createApp()`).
+4. **HTTP Server Attachment**: Wraps Express in Node.js `http.Server` via `createServer(app)`.
+5. **Sync Server Initialization**: Instantiates Hocuspocus with sync registry, authentication hooks, and persistence drivers (`createSyncServer(httpServer)`).
+6. **Transport Protocol Upgrade**: Binds the WebSocket `/sync` upgrade listener to `httpServer` with IP rate limiting and origin verification.
+7. **Signal & Teardown Handlers**: Registers coordinated SIGINT/SIGTERM listener handlers (`setupGracefulShutdown(httpServer, syncServer)`).
+8. **Network Port Binding**: Begins listening on the configured TCP port (`server.listen(port)`).
+9. **Readiness Confirmation**: Emits deterministic startup and index readiness confirmation logs.
+10. **Runtime Handle Return**: Returns `{ server, syncServer }` handle for operational process managers and end-to-end integration tests.
+
+### 8.4 Pre-Mutation Admission Capacity & Reservation Lifecycle
+To prevent document mutation when persistence queues are saturated, admission capacity is checked and reserved at the transport layer before any Yjs document mutation occurs:
+
+1. **Synchronous Reservation (`beforeHandleMessage`)**:
+   - Before passing an incoming WebSocket message to Hocuspocus for decoding or mutation, `tryReserveAdmission(roomId, socketId, frameBytes)` evaluates the room's total pending updates, in-flight writes, and active pre-mutation reservations against `MAX_PENDING_UPDATES_PER_ROOM` (1,000) and `MAX_PENDING_BYTES_PER_ROOM` (4 MB).
+   - If capacity is saturated, admission is denied, marking `connection.readOnly = true` to protect in-memory queues from unpersisted mutations.
+2. **Atomic Transfer on Mutation (`onChange`)**:
+   - If the message mutates the Yjs document, `onChange` invokes `queueUpdate(..., socketId)`.
+   - `transferAdmissionReservation(roomId, socketId)` atomically transfers the reserved count and byte volume into queued pending state without double-counting.
+3. **Cleanup for Non-Mutating Frames (`afterHandleMessage`)**:
+   - For non-mutating messages (such as sync step queries or awareness frames), `afterHandleMessage(data)` automatically releases the held reservation.
+4. **Disconnect & Error Cleanup (`onDisconnect`)**:
+   - If a client disconnects or aborts before mutation processing completes, `clearAdmissionReservations(socketId, roomId)` instantly reclaims all held reservations.
+5. **Backpressure Release Boundary**:
+   - `checkAndReleaseBackpressure(roomId)` verifies that both queued persistence load and active pre-mutation reservations have fallen below the recovery threshold (`RESUME_UNFLUSHED_UPDATES_PER_ROOM = 800` and `RESUME_UNFLUSHED_BYTES_PER_ROOM = 3.2 MB`) before restoring write permissions to eligible editors.
+
 ---
 
 ## 9. Operational Troubleshooting

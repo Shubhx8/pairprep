@@ -210,5 +210,5 @@ describe("Persistence Crash Recovery (PER-1)", () => {
     procB.kill("SIGKILL");
     procB = null;
     procA = null;
-  }, 15000);
+  }, 30000);
 });

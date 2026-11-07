@@ -219,13 +219,37 @@ Task T07 implements the real-time collaborative document synchronization engine 
   - Concurrency prevents Node.js HTTP server socket drain deadlock: `server.close()` hangs indefinitely waiting for open WebSocket TCP sockets unless they are severed concurrently by `drainAndShutdown()`.
   - MongoDB disconnect is strictly deferred until *after* `syncServer.drainAndShutdown()` successfully flushes all pending updates to MongoDB, preventing `MongoNotConnectedError` during shutdown flushes.
 
-### 3.8 `apps/server/src/sync/persistence.ts` Retry & Snapshot Consistency Hardening
+### 3.8 `apps/server/src/sync/persistence.ts` Retry, Snapshot Consistency & Gap Closures
 - **Stable Assigned Sequences**: `QueuedUpdate.seq` is allocated once when a batch is first prepared for database insertion. When a write fails, `requeueUpdates` preserves these exact sequence numbers across retries rather than re-allocating new sequences, completely eliminating duplicate or out-of-order sequence holes.
-- **Idempotent Pre-Insert Reconciliation**: Upon retrying a batch, the flush worker queries existing records in the target sequence range (`{ roomId, seq: { $gte: minSeq, $lte: maxSeq } }`). Records matching both `authorId` and binary payload buffer are recognized as already committed and skipped; conflicting records throw an immediate consistency failure.
-- **Bounded Retry Backoff with Jitter**: Exponential backoff (`MIN_RETRY_BACKOFF_MS = 250`, `MAX_RETRY_BACKOFF_MS = 5000`, factor 2 with random jitter) eliminates zero-delay spin loops on consecutive database failures. Resets upon successful write.
-- **Bounded Persistence Queue & Synchronous Backpressure**: Strict capacity limits (`MAX_PENDING_UPDATES_PER_ROOM = 1000`, `MAX_PENDING_BYTES_PER_ROOM = 4 MB`) engage room backpressure via `syncRegistry.setRoomBackpressure(roomId, true)`. Incoming edit frames are rejected in `beforeHandleMessage` while preserving all already-accepted updates. Recovers automatically once the queue drains below 50% capacity.
-- **Watermark Lockstep Consistency**: `takeSnapshotLocked` flushes all pending updates under the `RoomMutex` *before* encoding `Y.encodeStateAsUpdate(document)`, ensuring zero gap between document state and stored watermark. Redundant snapshots (`seq === lastSnapshot.seq`) are deduplicated.
-- **Active Loaded Document Registry**: Tracks active open documents so that graceful shutdown snapshots all open rooms (even with zero unflushed updates), final disconnects take exactly one snapshot, and intermediate disconnects flush without creating unnecessary snapshots.
+- **Idempotent Pre-Insert Reconciliation & Unique Index Enforcement**:
+  - The `doc_updates` collection enforces a unique compound index on `{ roomId: 1, seq: 1 }` (`roomId_1_seq_1`).
+  - Upon retrying a batch, the flush worker queries existing records in the target sequence range (`{ roomId, seq: { $gte: minSeq, $lte: maxSeq } }`). Records matching both `authorId` and binary payload buffer are recognized as already committed and skipped; conflicting records throw an immediate consistency failure (`Consistency failure: conflicting record in roomId=... at seq=...`).
+  - Concurrent insert races triggering MongoDB `E11000 duplicate key error` are intercepted: matching records are reconciled idempotently while conflicting records fail visibly.
+- **Bounded Retry Backoff with Jitter & Reset Policy**:
+  - Exponential backoff (`MIN_RETRY_BACKOFF_MS = 250`, `MAX_RETRY_BACKOFF_MS = 5000`, factor 2 with random jitter) eliminates zero-delay spin loops on consecutive database failures.
+  - Partial batch failures increment the room failure counter; `failureCount` resets to 0 strictly upon complete logical confirmation of the batch.
+- **Bounded Persistence Queue & In-Flight Accounting**:
+  - Strict capacity limits (`MAX_PENDING_UPDATES_PER_ROOM = 1000`, `MAX_PENDING_BYTES_PER_ROOM = 4 MB`) evaluate combined pending and in-flight updates: `(pending + inFlight >= 1000)` or `(pendingBytes + inFlightBytes >= 4 MB)`.
+  - When a flush fails, `requeueUpdates` transfers counts and bytes from the in-flight maps back to the pending queue without double-counting capacity.
+  - Saturated rooms engage backpressure via `syncRegistry.setRoomBackpressure(roomId, true)`. Incoming edit frames are rejected in `beforeHandleMessage` while preserving all already-accepted updates.
+- **Authoritative Multi-Factor Effective Read-Only Calculation**:
+  - `syncRegistry.calculateEffectiveReadOnly(active)` evaluates seven orthogonal permission constraints:
+    1. Server shutdown barrier (`isShuttingDownState`).
+    2. Permanent room read-only (document exceeding 2 MB soft cap or room locked).
+    3. Persistence queue backpressure (`backpressuredRooms`).
+    4. Ended or archived room lifecycle status (`status === "ended" || status === "archived"`).
+    5. Member role assignment (`role === "viewer"`).
+    6. Interview candidate role outside live interview window (`status !== "live"`).
+    7. Explicit member demotion/restriction (`readOnlyMembers`).
+  - When backpressure clears, `setRoomBackpressure(roomId, false)` re-evaluates all seven criteria for each active connection, ensuring viewers, candidates in open rooms, and demoted members are never mistakenly restored to writable mode.
+- **Synchronous Revision Tracking & Snapshot Microtask Barrier**:
+  - Yjs document mutations are tracked synchronously via `document.on("update")` (`roomAppliedUpdates` vs `roomPersistedUpdates`).
+  - `takeSnapshotLocked` flushes pending updates under the `RoomMutex`, yields microtasks to allow in-flight Hocuspocus `onChange` events to complete, verifies `appliedUpdates === persistedUpdates`, and encodes `Y.encodeStateAsUpdate(document)` with zero async gap.
+  - Redundant snapshots (`seq === lastSnapshot.seq`) are deduplicated.
+- **Multi-Room Graceful Shutdown Error Isolation**:
+  - `drainPersistenceAndSnapshot` iterates over all active loaded documents and pending room queues concurrently using `Promise.allSettled`.
+  - A persistence or snapshot failure in Room A does not block Room B from flushing its queue or capturing its final snapshot.
+  - Completed rooms persist final snapshots; failed rooms are recorded in an aggregate error. Shutdown refuses to mark global drain success if any unflushed updates remain in memory.
 - **Strict Database Availability Guard**: `loadDocument` strictly checks `mongoose.connection.readyState === 1` and throws immediately if MongoDB is disconnected, preventing serving blank documents on database outages.
 
 ---
@@ -249,16 +273,48 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`rateLimitFlood.test.ts`** | 15 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning, capacity saturation defense without active entry eviction, strict socket identity validation, distinct socket bucket isolation. | **PASS** |
 | **`shutdownStats.test.ts`** | 30 | Sync statistics & graceful shutdown drain: schema baseline, monotonic counters, connection counts, pending updates/snapshots, capacity utilization, rate limiter stats, admission barrier (503), close frame 1001 with reason `server_shutting_down`, hard drain barrier, persistence flush before DB disconnect, idempotency, Node.js deadlock prevention, in-flight auth/load race barriers (Test A & B), forced-drain transport termination (Test C), persistence failure rejection (Test D), inbound awareness shutdown barrier, failed document-load reservation cleanup, concurrent document-load cohort waiter cleanup, and multi-document physical socket sharing preservation. | **PASS** |
 | **`persistenceHardening.test.ts`** | 19 | Persistence retry & snapshot consistency hardening (Commit 5): RoomMutex tail-promise cleanup, stable assigned sequence numbers across retries, hash-verified reconciliation, bounded backoff with exponential backoff and jitter, backpressure bounds (count & byte caps) and recovery hysteresis, exact snapshot watermarks, snapshot deduplication, deterministic pruning ({ seq: -1, ts: -1, _id: -1 }), disconnect snapshot lifecycle, active loaded document shutdown drain. | **PASS** |
+| **`persistenceHardeningGaps.test.ts`** | 18 | Persistence hardening verification gap closures: snapshot-to-update microtask lockstep barrier, authoritative multi-factor effective read-only calculation across 7 scenarios, consecutive failure backoff bounds (250ms–5000ms) with failure count reset on full success, compound unique index `roomId_1_seq_1` and ambiguous-write E11000 reconciliation, combined pending + in-flight queue bounding without requeue double-counting, and multi-room shutdown flush/snapshot error isolation via `Promise.allSettled`. | **PASS** |
 
-**Total T07 Tests:** 13 test files, 115 passing tests, 0 failures.  
-**Full Monorepo Suite:** 51 test files, 392 passing tests, 0 failures.
+**Total T07 Tests:** 14 test files, 133 passing tests, 0 failures.  
+**Full Monorepo Suite:** 52 test files, 410 passing tests, 0 failures.
+
+### 4.2 Test-to-Acceptance Verification Mapping
+
+| Correction | Target Invariant | Test File | Test Name | Execution Mode | Verification Result |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **A: Snapshot Consistency Barrier** | Zero async gap; snapshot watermark `seq` matches Yjs state vector exactly; applied updates equal persisted updates before snapshot encoding. | `persistenceHardeningGaps.test.ts` | `snapshot capture barrier flushes pending queue and pauses new updates at exact boundary` | In-memory Yjs + test barrier hooks | **PASS** |
+| **A: Snapshot Consistency Barrier** | Updates arriving at boundary are strictly included in snapshot or assigned `seq > watermark`. | `persistenceHardeningGaps.test.ts` | `update arriving at boundary is either in snapshot or in doc_updates with seq > watermark` | In-memory Yjs + MongoMemoryServer | **PASS** |
+| **B: Backpressure Permission Restoration** | Normal editor is restored to writable mode when backpressure clears. | `persistenceHardeningGaps.test.ts` | `restores normal editor when backpressure clears` | Unit/integration registry | **PASS** |
+| **B: Backpressure Permission Restoration** | Viewer role remains `readOnly: true` when backpressure clears. | `persistenceHardeningGaps.test.ts` | `preserves viewer read-only when backpressure clears` | Unit/integration registry | **PASS** |
+| **B: Backpressure Permission Restoration** | Ended room remains `readOnly: true` when backpressure clears. | `persistenceHardeningGaps.test.ts` | `preserves ended room read-only when backpressure clears` | Unit/integration registry | **PASS** |
+| **B: Backpressure Permission Restoration** | Candidate outside live window (`status === "open"`) remains `readOnly: true` when backpressure clears. | `persistenceHardeningGaps.test.ts` | `preserves candidate outside live window read-only when backpressure clears` | Unit/integration registry | **PASS** |
+| **B: Backpressure Permission Restoration** | Connection in shutdown barrier remains `readOnly: true` when backpressure clears. | `persistenceHardeningGaps.test.ts` | `preserves shutting-down connection read-only when backpressure clears` | Unit/integration registry | **PASS** |
+| **B: Backpressure Permission Restoration** | Removed member remains disconnected and untracked. | `persistenceHardeningGaps.test.ts` | `preserves removed member disconnected` | Unit/integration registry | **PASS** |
+| **B: Backpressure Permission Restoration** | Simultaneous room lifecycle transition during backpressure correctly recalculates effective permissions. | `persistenceHardeningGaps.test.ts` | `handles simultaneous room lifecycle change during backpressure` | Unit/integration registry | **PASS** |
+| **C: Retry Backoff & Counter Reset** | Consecutive partial batch failures increase failure counter and delays (250ms -> 500ms -> 1000ms). | `persistenceHardeningGaps.test.ts` | `consecutive flush failures increase failure counter and delays (250ms -> 500ms -> 1000ms)` | Mock timer / simulated retry batches | **PASS** |
+| **C: Retry Backoff & Counter Reset** | Exponential backoff is strictly bounded at 5,000ms without 0ms spin loop. | `persistenceHardeningGaps.test.ts` | `bounded at 5,000ms without 0ms spin loop` | Simulated exponential backoff | **PASS** |
+| **C: Retry Backoff & Counter Reset** | Failure counter resets to 0 strictly after complete logical batch confirmation. | `persistenceHardeningGaps.test.ts` | `resets failure counter only after complete batch success` | Simulated batch execution | **PASS** |
+| **D: Unique Index & Ambiguous Ack** | MongoDB collection creates unique compound index `roomId_1_seq_1`. | `persistenceHardeningGaps.test.ts` | `schema creates unique compound index { roomId: 1, seq: 1 } (roomId_1_seq_1)` | Real MongoDB (`MongoMemoryServer`) + `syncIndexes()` | **PASS** |
+| **D: Unique Index & Ambiguous Ack** | Retrying batch after ambiguous write succeeds idempotently without inserting duplicate records. | `persistenceHardeningGaps.test.ts` | `retrying batch after ambiguous write succeeds idempotently without inserting duplicates` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **D: Unique Index & Ambiguous Ack** | Matching duplicate record in sequence range is skipped without error. | `persistenceHardeningGaps.test.ts` | `matching duplicate record in sequence range is skipped` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **D: Unique Index & Ambiguous Ack** | Conflicting record in sequence range triggers immediate consistency error. | `persistenceHardeningGaps.test.ts` | `conflicting record in sequence range triggers consistency error` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **D: Unique Index & Ambiguous Ack** | Concurrent insert race with `E11000` duplicate key reconciles identical write cleanly. | `persistenceHardeningGaps.test.ts` | `concurrent insert race with E11000 duplicate key reconciles identical write` | Real MongoDB (`MongoMemoryServer`) | **PASS** |
+| **E: Queue Capacity Accounting** | Enforces combined pending + in-flight count limit (1000 updates). | `persistenceHardeningGaps.test.ts` | `enforces combined pending + in-flight count limit (1000)` | In-memory persistence queue | **PASS** |
+| **E: Queue Capacity Accounting** | Enforces combined pending + in-flight byte volume limit (4 MB). | `persistenceHardeningGaps.test.ts` | `enforces combined pending + in-flight byte limit (4 MB)` | In-memory persistence queue | **PASS** |
+| **E: Queue Capacity Accounting** | Requeueing failed batch transfers in-flight accounting back to pending without double-counting. | `persistenceHardeningGaps.test.ts` | `requeueing failed batch transfers in-flight back to pending without double-counting` | In-memory persistence queue | **PASS** |
+| **E: Queue Capacity Accounting** | Releases in-flight capacity after successful flush. | `persistenceHardeningGaps.test.ts` | `releases in-flight capacity after successful flush` | In-memory persistence queue | **PASS** |
+| **F: Multi-Room Teardown Isolation** | Room A persistence failure does not prevent Room B from draining and snapshotting. | `persistenceHardeningGaps.test.ts` | `room A failure does not prevent room B from draining and snapshotting` | Multi-room mock / MongoMemoryServer | **PASS** |
+| **F: Multi-Room Teardown Isolation** | Room B completes flush and snapshot despite Room A rejection. | `persistenceHardeningGaps.test.ts` | `room B completes flush and snapshot despite room A rejection` | Multi-room mock / MongoMemoryServer | **PASS** |
+| **F: Multi-Room Teardown Isolation** | `drainPersistenceAndSnapshot` reports Room A failure in aggregate error without false success. | `persistenceHardeningGaps.test.ts` | `drainPersistenceAndSnapshot reports room A failure in aggregate error` | Multi-room mock / MongoMemoryServer | **PASS** |
+| **F: Multi-Room Teardown Isolation** | Active loaded room with empty queue still produces consistent final snapshot during shutdown. | `persistenceHardeningGaps.test.ts` | `active loaded room with empty queue still produces snapshot during shutdown` | In-memory active documents registry | **PASS** |
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
-[HEAD]  fix(sync): harden persistence retries and snapshot consistency
+[HEAD]  fix(sync): close persistence hardening verification gaps
+f2e5551 fix(sync): harden persistence retries and snapshot consistency
 754f407 fix(sync): precise failed-load cohort cleanup and loader deduplication
 829feba fix(sync): concurrent document-load waiter reservation cleanup
 eebfba8 fix(sync): awareness shutdown barrier and failed-load reservation cleanup

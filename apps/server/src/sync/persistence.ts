@@ -18,6 +18,7 @@ export const MAX_RETRY_BACKOFF_MS = 5000;
 export const RETRY_BACKOFF_FACTOR = 2;
 export const MAX_PENDING_UPDATES_PER_ROOM = 1000;
 export const MAX_PENDING_BYTES_PER_ROOM = 4 * 1024 * 1024; // 4 MB byte cap
+export const MAX_UPDATE_SIZE_BYTES = 1024 * 1024; // 1 MB single update limit
 export const RECOVERY_THRESHOLD_RATIO = 0.5;
 
 /**
@@ -89,6 +90,20 @@ const pendingQueues = new Map<string, PendingQueue>();
 const snapshotIntervals = new Map<string, NodeJS.Timeout>();
 const activeLoadedDocuments = new Map<string, Y.Doc>();
 
+// In-flight per-room capacity tracking
+const inFlightUpdatesByRoom = new Map<string, number>();
+const inFlightBytesByRoom = new Map<string, number>();
+
+// Synchronous document mutation tracking for exact snapshot consistency
+const roomAppliedUpdates = new Map<string, number>();
+const roomPersistedUpdates = new Map<string, number>();
+const trackedDocs = new WeakSet<Y.Doc>();
+
+export const snapshotTestingHooks = {
+  beforeCaptureBarrier: null as (() => Promise<void> | void) | null,
+  afterCaptureBarrier: null as (() => Promise<void> | void) | null,
+};
+
 let flushesCompleted = 0;
 let flushFailures = 0;
 let snapshotsSaved = 0;
@@ -99,6 +114,13 @@ const inFlightSnapshots = new Set<Promise<void>>();
 
 export function registerLoadedDocument(roomId: string, document: Y.Doc): void {
   activeLoadedDocuments.set(roomId, document);
+  if (!trackedDocs.has(document)) {
+    trackedDocs.add(document);
+    document.on("update", () => {
+      const count = roomAppliedUpdates.get(roomId) || 0;
+      roomAppliedUpdates.set(roomId, count + 1);
+    });
+  }
 }
 
 export function unregisterLoadedDocument(roomId: string): void {
@@ -158,7 +180,14 @@ async function loadDocumentLocked(
     lastSeq = updates[updates.length - 1]!.seq;
   }
 
-  registerLoadedDocument(roomId, targetDoc);
+  trackedDocs.add(targetDoc);
+  activeLoadedDocuments.set(roomId, targetDoc);
+  targetDoc.on("update", () => {
+    const count = roomAppliedUpdates.get(roomId) || 0;
+    roomAppliedUpdates.set(roomId, count + 1);
+  });
+  roomAppliedUpdates.set(roomId, 0);
+  roomPersistedUpdates.set(roomId, 0);
 
   return {
     lastSeq,
@@ -206,21 +235,34 @@ export function queueUpdate(
   });
   queue.totalBytes += update.byteLength;
 
-  // Check protective backpressure thresholds before accepting unbounded memory
+  // Ensure roomAppliedUpdates reflects at least all queued + in-flight edits
+  const inFlightCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
+  const inFlightBytes = inFlightBytesByRoom.get(roomId) ?? 0;
+  const currentApplied = roomAppliedUpdates.get(roomId) || 0;
+  const minRequiredApplied =
+    (roomPersistedUpdates.get(roomId) || 0) + inFlightCount + queue.updates.length;
+  if (currentApplied < minRequiredApplied) {
+    roomAppliedUpdates.set(roomId, minRequiredApplied);
+  }
+
+  // Combined pending + in-flight capacity check
+  const totalCount = queue.updates.length + inFlightCount;
+  const totalBytes = queue.totalBytes + inFlightBytes;
+
   if (
-    queue.updates.length >= MAX_PENDING_UPDATES_PER_ROOM ||
-    queue.totalBytes >= MAX_PENDING_BYTES_PER_ROOM
+    totalCount >= MAX_PENDING_UPDATES_PER_ROOM ||
+    totalBytes >= MAX_PENDING_BYTES_PER_ROOM
   ) {
     syncRegistry.setRoomBackpressure(roomId, true);
     rootLogger.warn(
       {
         roomId,
-        count: queue.updates.length,
-        bytes: queue.totalBytes,
+        count: totalCount,
+        bytes: totalBytes,
         capCount: MAX_PENDING_UPDATES_PER_ROOM,
         capBytes: MAX_PENDING_BYTES_PER_ROOM,
       },
-      "Room reached persistence queue capacity; synchronous write backpressure engaged"
+      "Room reached combined pending and in-flight persistence capacity; write backpressure engaged"
     );
   }
 
@@ -398,8 +440,18 @@ async function flushRoomLocked(
   const batch = queue.updates;
   const originalFirstUnflushedAt = queue.firstUnflushedAt;
   const document = queue.document;
+  const batchBytes = batch.reduce((acc, u) => acc + u.update.byteLength, 0);
 
+  // Transition batch from pending queue to in-flight tracking
   inFlightUpdatesCount += batch.length;
+  inFlightUpdatesByRoom.set(
+    roomId,
+    (inFlightUpdatesByRoom.get(roomId) ?? 0) + batch.length
+  );
+  inFlightBytesByRoom.set(
+    roomId,
+    (inFlightBytesByRoom.get(roomId) ?? 0) + batchBytes
+  );
 
   pendingQueues.set(roomId, {
     roomId,
@@ -464,18 +516,63 @@ async function flushRoomLocked(
 
     if (toInsert.length > 0) {
       for (const item of toInsert) {
-        await DocUpdateModel.create({
-          roomId,
-          seq: item.seq,
-          authorId: item.authorId,
-          update: item.update,
-          size: item.size,
-          ts: item.ts,
-        });
+        try {
+          await DocUpdateModel.create({
+            roomId,
+            seq: item.seq,
+            authorId: item.authorId,
+            update: item.update,
+            size: item.size,
+            ts: item.ts,
+          });
+        } catch (createErr: unknown) {
+          const isDupKey =
+            typeof createErr === "object" &&
+            createErr !== null &&
+            "code" in createErr &&
+            (createErr as { code?: number }).code === 11000;
+
+          if (isDupKey) {
+            const existingRec = await DocUpdateModel.findOne({
+              roomId,
+              seq: item.seq,
+            }).exec();
+            if (existingRec) {
+              const itemBuf = Buffer.from(item.update);
+              const isMatch =
+                existingRec.authorId === item.authorId &&
+                Buffer.compare(existingRec.update, itemBuf) === 0;
+              if (!isMatch) {
+                throw new Error(
+                  `Consistency failure: conflicting record in roomId=${roomId} at seq=${item.seq}`
+                );
+              }
+              // Matching duplicate: reconciled successfully
+              continue;
+            }
+          }
+          throw createErr;
+        }
       }
     }
 
-    // Reset failure counter on successful database confirmation
+    // Success path: release in-flight and track persisted updates
+    inFlightUpdatesCount -= batch.length;
+    inFlightUpdatesByRoom.set(
+      roomId,
+      Math.max(0, (inFlightUpdatesByRoom.get(roomId) ?? 0) - batch.length)
+    );
+    inFlightBytesByRoom.set(
+      roomId,
+      Math.max(0, (inFlightBytesByRoom.get(roomId) ?? 0) - batchBytes)
+    );
+    flushesCompleted++;
+    roomPersistedUpdates.set(
+      roomId,
+      (roomPersistedUpdates.get(roomId) || 0) + batch.length
+    );
+
+    // Reset failure counter ONLY upon complete logical flush confirmation
     const currentQ = pendingQueues.get(roomId);
     if (currentQ) {
       currentQ.failureCount = 0;
@@ -494,13 +591,18 @@ async function flushRoomLocked(
       }
     }
 
-    // Release backpressure if queue fell below recovery threshold
+    // Release backpressure if queue fell below recovery threshold (accounting for in-flight)
     if (syncRegistry.isRoomBackpressured(roomId)) {
       const activeQ = pendingQueues.get(roomId);
-      const remainingCount = activeQ?.updates.length ?? 0;
-      const remainingBytes = activeQ?.totalBytes ?? 0;
+      const inFlightRemainingCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
+      const inFlightRemainingBytes = inFlightBytesByRoom.get(roomId) ?? 0;
+      const remainingCount =
+        (activeQ?.updates.length ?? 0) + inFlightRemainingCount;
+      const remainingBytes =
+        (activeQ?.totalBytes ?? 0) + inFlightRemainingBytes;
       if (
-        remainingCount <= MAX_PENDING_UPDATES_PER_ROOM * RECOVERY_THRESHOLD_RATIO &&
+        remainingCount <=
+          MAX_PENDING_UPDATES_PER_ROOM * RECOVERY_THRESHOLD_RATIO &&
         remainingBytes <= MAX_PENDING_BYTES_PER_ROOM * RECOVERY_THRESHOLD_RATIO
       ) {
         syncRegistry.setRoomBackpressure(roomId, false);
@@ -510,9 +612,6 @@ async function flushRoomLocked(
     if (forceSnapshot && docToEncode) {
       await takeSnapshotLocked(roomId, docToEncode, true);
     }
-
-    inFlightUpdatesCount -= batch.length;
-    flushesCompleted++;
 
     // Clean up empty queue if no new updates arrived during DB write and not backpressured
     const remainingQueue = pendingQueues.get(roomId);
@@ -525,6 +624,14 @@ async function flushRoomLocked(
     }
   } catch (err) {
     inFlightUpdatesCount -= batch.length;
+    inFlightUpdatesByRoom.set(
+      roomId,
+      Math.max(0, (inFlightUpdatesByRoom.get(roomId) ?? 0) - batch.length)
+    );
+    inFlightBytesByRoom.set(
+      roomId,
+      Math.max(0, (inFlightBytesByRoom.get(roomId) ?? 0) - batchBytes)
+    );
     flushFailures++;
     rootLogger.error({ err, roomId }, "Failed to flush updates to MongoDB");
     requeueUpdates(roomId, batch, originalFirstUnflushedAt, document);
@@ -568,18 +675,73 @@ async function takeSnapshotLocked(
   document: Y.Doc,
   force = false
 ): Promise<void> {
-  // 1. Flush any pending updates first under mutex so sequence advances
-  if (pendingQueues.get(roomId)?.updates.length) {
-    await flushRoomLocked(roomId, false);
+  let currentSeq = 0;
+  let fullDocState: Uint8Array;
+
+  while (true) {
+    // 1. Flush any queued updates first
+    while ((pendingQueues.get(roomId)?.updates.length ?? 0) > 0) {
+      await flushRoomLocked(roomId, false);
+    }
+
+    // 2. If updates were applied to document whose onChange microtask has not queued yet,
+    // yield to allow microtasks and setImmediate to process
+    const applied = roomAppliedUpdates.get(roomId) || 0;
+    const persisted = roomPersistedUpdates.get(roomId) || 0;
+    if (applied > persisted) {
+      await new Promise((r) => setImmediate(r));
+      if ((pendingQueues.get(roomId)?.updates.length ?? 0) > 0) {
+        continue;
+      }
+    }
+
+    // 3. Testing barrier before capture
+    if (snapshotTestingHooks.beforeCaptureBarrier) {
+      await snapshotTestingHooks.beforeCaptureBarrier();
+      if (
+        (pendingQueues.get(roomId)?.updates.length ?? 0) > 0 ||
+        (roomAppliedUpdates.get(roomId) || 0) >
+          (roomPersistedUpdates.get(roomId) || 0)
+      ) {
+        continue;
+      }
+    }
+
+    // 4. Fetch the latest sequence in MongoDB
+    const lastDoc = await DocUpdateModel.findOne({ roomId })
+      .sort({ seq: -1, ts: -1, _id: -1 })
+      .exec();
+    currentSeq = lastDoc?.seq ?? 0;
+
+    // 5. If new updates arrived while awaiting findOne, loop back
+    if (
+      (pendingQueues.get(roomId)?.updates.length ?? 0) > 0 ||
+      (roomAppliedUpdates.get(roomId) || 0) >
+        (roomPersistedUpdates.get(roomId) || 0)
+    ) {
+      continue;
+    }
+
+    // 6. ZERO ASYNC GAP: Synchronously encode document state at this exact sequence watermark
+    fullDocState = Y.encodeStateAsUpdate(document);
+
+    // 7. Verify immediately that no new update arrived
+    if (
+      (pendingQueues.get(roomId)?.updates.length ?? 0) > 0 ||
+      (roomAppliedUpdates.get(roomId) || 0) >
+        (roomPersistedUpdates.get(roomId) || 0)
+    ) {
+      continue;
+    }
+
+    if (snapshotTestingHooks.afterCaptureBarrier) {
+      await snapshotTestingHooks.afterCaptureBarrier();
+    }
+
+    break;
   }
 
-  // 2. Fetch the latest sequence in MongoDB
-  const lastDoc = await DocUpdateModel.findOne({ roomId })
-    .sort({ seq: -1, ts: -1, _id: -1 })
-    .exec();
-  const currentSeq = lastDoc?.seq ?? 0;
-
-  // 3. Deduplicate: skip if an equal or newer snapshot is already saved
+  // Deduplicate: skip if an equal or newer snapshot is already saved
   const lastSnapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
   if (!force && lastSnapshot && lastSnapshot.seq >= currentSeq) {
     return;
@@ -588,8 +750,6 @@ async function takeSnapshotLocked(
     return;
   }
 
-  // 4. Capture state at exact sequence watermark
-  const fullDocState = Y.encodeStateAsUpdate(document);
   await saveSnapshot(roomId, currentSeq, fullDocState, document);
 }
 
@@ -751,35 +911,47 @@ export async function drainPersistenceAndSnapshot(
   }
 
   // 4. Capture all rooms: union of pendingQueues and active loaded documents
-  const allRoomIds = new Set<string>([
-    ...pendingQueues.keys(),
-    ...activeLoadedDocuments.keys(),
-  ]);
+  const allRoomIds = Array.from(
+    new Set<string>([
+      ...pendingQueues.keys(),
+      ...activeLoadedDocuments.keys(),
+    ])
+  );
 
-  const drainErrors: unknown[] = [];
+  const failedRooms = new Set<string>();
+  const roomDrainErrors = new Map<string, unknown>();
 
-  // 5. Drain pending updates for all rooms
-  for (const roomId of allRoomIds) {
-    try {
-      await flushRoom(roomId, false);
-    } catch (err) {
-      drainErrors.push(err);
-    }
-  }
-
-  // 6. Take final snapshots if requested and document exists
-  if (takeFinalSnapshots) {
-    for (const roomId of allRoomIds) {
-      const doc =
-        activeLoadedDocuments.get(roomId) ?? pendingQueues.get(roomId)?.document;
-      if (doc) {
-        try {
-          await takeSnapshot(roomId, doc, true);
-        } catch (err) {
-          drainErrors.push(err);
-        }
+  // 5. Drain pending updates for all rooms independently (isolated failure)
+  await Promise.allSettled(
+    allRoomIds.map(async (roomId) => {
+      try {
+        await flushRoom(roomId, false);
+      } catch (err) {
+        failedRooms.add(roomId);
+        roomDrainErrors.set(roomId, err);
       }
-    }
+    })
+  );
+
+  // 6. Take final snapshots ONLY for rooms whose flush succeeded
+  if (takeFinalSnapshots) {
+    await Promise.allSettled(
+      allRoomIds
+        .filter((roomId) => !failedRooms.has(roomId))
+        .map(async (roomId) => {
+          const doc =
+            activeLoadedDocuments.get(roomId) ??
+            pendingQueues.get(roomId)?.document;
+          if (doc) {
+            try {
+              await takeSnapshot(roomId, doc, true);
+            } catch (err) {
+              failedRooms.add(roomId);
+              roomDrainErrors.set(roomId, err);
+            }
+          }
+        })
+    );
   }
 
   // 7. Await any newly spawned in-flight operations
@@ -796,11 +968,33 @@ export async function drainPersistenceAndSnapshot(
     }
   }
 
-  // 8. Verify no pending queues remain and surface any failures honestly
+  // 8. Verify no unconfirmed updates and surface errors honestly
   const stats = getPendingPersistenceStats();
-  const totalErrors = [...inFlightErrors, ...drainErrors];
+  const totalErrors = [
+    ...inFlightErrors,
+    ...Array.from(roomDrainErrors.values()),
+  ];
   if (totalErrors.length > 0) {
-    throw totalErrors[0];
+    const primaryError =
+      totalErrors[0] instanceof Error
+        ? totalErrors[0].message
+        : String(totalErrors[0]);
+    const aggregate = new Error(
+      `Persistence drain encountered failures in ${failedRooms.size} room(s): ${Array.from(failedRooms).join(", ")}. Primary error: ${primaryError}`
+    );
+    (
+      aggregate as unknown as {
+        roomErrors: Map<string, unknown>;
+        failedRooms: string[];
+      }
+    ).roomErrors = roomDrainErrors;
+    (
+      aggregate as unknown as {
+        roomErrors: Map<string, unknown>;
+        failedRooms: string[];
+      }
+    ).failedRooms = Array.from(failedRooms);
+    throw aggregate;
   }
   if (stats.pendingUpdates > 0) {
     throw new Error(
@@ -835,4 +1029,10 @@ export function resetPersistenceState(): void {
   inFlightUpdatesCount = 0;
   inFlightFlushes.clear();
   inFlightSnapshots.clear();
+  inFlightUpdatesByRoom.clear();
+  inFlightBytesByRoom.clear();
+  roomAppliedUpdates.clear();
+  roomPersistedUpdates.clear();
+  snapshotTestingHooks.beforeCaptureBarrier = null;
+  snapshotTestingHooks.afterCaptureBarrier = null;
 }

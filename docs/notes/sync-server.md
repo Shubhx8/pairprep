@@ -35,17 +35,21 @@ interface QueuedUpdate {
 ```
 Unlike systems that merge updates per-author or debounce across clients, updates are stored in strict arrival order to maintain exact replay fidelity and timestamp precision.
 
-### 2.2 Durability Deadline (2 Seconds) & Bounded Retry Backoff
+### 2.2 Durability Deadline (2 Seconds), Retry Backoff & Unique Index Idempotency
 - **Debounce**: Writes are scheduled with a 250 ms debounce (`FLUSH_DEBOUNCE_MS`).
 - **Hard Durability Bound**: The time between the first unflushed edit and database insertion never exceeds 2,000 ms (`MAX_UNFLUSHED_AGE_MS`).
 - **Requeue with Age & Sequence Preservation**: If a MongoDB write fails, `requeueUpdates` prepends the failed batch back into the room queue while preserving the original `firstUnflushedAt` timestamp and stable assigned sequence numbers (`seq`).
-- **Bounded Retry Backoff with Jitter**: Consecutive database flush failures back off exponentially (`MIN_RETRY_BACKOFF_MS = 250`, `MAX_RETRY_BACKOFF_MS = 5000`, factor 2 with random jitter) instead of spinning in a 0 ms unthrottled loop. Success immediately resets the failure counter to zero.
-- **Idempotent Retry Reconciliation**: Before retrying inserts, the flush worker queries existing records in the sequence range (`{ roomId, seq: { $gte: minSeq, $lte: maxSeq } }`). Records whose `authorId` and binary payload match are recognized as committed and skipped; conflicting records trigger an explicit consistency error.
+- **Bounded Retry Backoff with Jitter**: Consecutive database flush failures back off exponentially (`MIN_RETRY_BACKOFF_MS = 250`, `MAX_RETRY_BACKOFF_MS = 5000`, factor 2 with random jitter) instead of spinning in a 0 ms unthrottled loop. Success strictly resets the failure counter to zero only after complete logical batch confirmation.
+- **Compound Unique Index & Ambiguous Ack Reconciliation**:
+  - The `doc_updates` collection enforces a physical unique compound index on `{ roomId: 1, seq: 1 }` (`roomId_1_seq_1`).
+  - Before retrying inserts after an ambiguous write or network timeout, the flush worker queries existing records in the sequence range (`{ roomId, seq: { $gte: minSeq, $lte: maxSeq } }`). Records whose `authorId` and binary payload match are recognized as committed and skipped; conflicting records trigger an explicit consistency error (`Consistency failure: conflicting record in roomId=... at seq=...`).
+  - Concurrent insert races triggering MongoDB `E11000 duplicate key error` are intercepted: matching records reconcile cleanly without throwing, while conflicting records fail visibly.
 
-### 2.3 Queue Bounding & Synchronous Write Backpressure
-- **Per-Room Buffer Limits**: Each room's persistence queue is strictly bounded at 1,000 updates (`MAX_PENDING_UPDATES_PER_ROOM`) or 4 MB of pending binary payload (`MAX_PENDING_BYTES_PER_ROOM`).
+### 2.3 Queue Bounding, In-Flight Accounting & Synchronous Write Backpressure
+- **Combined Buffer Capacity Limits**: Each room's persistence queue evaluates combined pending and in-flight updates: strictly bounded at 1,000 updates (`MAX_PENDING_UPDATES_PER_ROOM`) or 4 MB of pending binary payload (`MAX_PENDING_BYTES_PER_ROOM`).
+- **No Double-Counting on Requeue**: Updates currently in-flight to MongoDB are tracked in `inFlightUpdatesByRoom` and `inFlightBytesByRoom`. If a flush fails, `requeueUpdates` decrements the in-flight accounting and transfers the batch back to the pending queue without double-counting room capacity.
 - **Synchronous Write Backpressure**: When queue bounds are breached, the server immediately marks the room backpressured in `syncRegistry.setRoomBackpressure(roomId, true)`. Late edits are rejected in `beforeHandleMessage` while preserving all already-accepted updates in the queue.
-- **Hysteresis Recovery**: Backpressure is released once the queue drains below 50% capacity (500 updates and 2 MB), restoring normal collaborative typing.
+- **Hysteresis Recovery & Invariant Preservation**: Backpressure is released once the combined queue drains below 50% capacity (500 updates and 2 MB). Crucially, releasing backpressure does not blindly mark sockets writable: `syncRegistry.calculateEffectiveReadOnly` re-evaluates all orthogonal constraints per connection, ensuring viewers, candidates outside the live window, and demoted members remain read-only.
 
 ### 2.4 Per-Room Promise Mutex (`RoomMutex`)
 To guarantee gapless sequence numbering and eliminate concurrent flush races, all database operations (`flushRoom`, `saveSnapshot`, `loadDocument`) execute under a FIFO promise mutex keyed by `roomId`. The mutex tracks tail promises to ensure completed queues are evicted from memory immediately without leakage.
@@ -54,9 +58,16 @@ To guarantee gapless sequence numbering and eliminate concurrent flush races, al
 
 ## 3. Snapshots, Recovery & Memory Management
 
-### 3.1 Snapshots & Deduplication
+### 3.1 Snapshots, Microtask Lockstep Barrier & Deduplication
 - **Frequency**: Every 5 minutes of active editing (`SNAPSHOT_INTERVAL_MS = 300,000`) and when the last client disconnects (`clientsCount === 0`).
-- **Watermark Lockstep Consistency**: `takeSnapshotLocked` flushes pending updates under the `RoomMutex` *before* encoding `Y.encodeStateAsUpdate(document)`. The snapshot watermark records the exact sequence number matching the document state with zero gap.
+- **Synchronous Revision Tracking**: The server attaches a synchronous `doc.on("update")` listener in `registerLoadedDocument`. This tracks `roomAppliedUpdates` immediately on the Yjs callstack, before Hocuspocus schedules its asynchronous `onChange` microtask.
+- **Watermark Lockstep Consistency**: `takeSnapshotLocked` executes under the `RoomMutex`:
+  1. Flushes all pending updates to MongoDB (`flushRoomLocked`).
+  2. Yields execution via microtask (`await new Promise((r) => setTimeout(r, 0))`) to allow any in-flight Hocuspocus `onChange` enqueuing to settle.
+  3. If new updates arrived during the yield, loops back to drain them before snapshotting.
+  4. Once `roomAppliedUpdates === roomPersistedUpdates`, reads the exact matching sequence number from MongoDB.
+  5. Captures the binary state via `Y.encodeStateAsUpdate(document)`.
+  This guarantees zero async gap between the stored snapshot watermark `seq` and the document binary state.
 - **Snapshot Deduplication**: If a room has experienced no new updates since its latest snapshot (`seq === lastSnapshot.seq`), redundant snapshot generation is skipped.
 - **Deterministic Pruning**: Pruning sorts snapshots deterministically by `{ seq: -1, ts: -1, _id: -1 }`, retaining the latest 3 snapshots (`MAX_SNAPSHOTS_TO_KEEP = 3`).
 
@@ -109,6 +120,20 @@ Room REST APIs directly coordinate with the in-memory `SyncRegistry`:
 - **Room End (`POST /api/v1/rooms/:slug/end`)**: Locks the room in `SyncRegistry.setRoomReadOnly(roomId)`, enforcing `readOnly: true` across all active and newly connected sockets.
 - **Room Deletion (`DELETE /api/v1/rooms/:slug`)**: Closes all active connections with close code `1000` (`room_deleted`), marks the room read-only, and cascades deletion of `client_map` entries.
 - **Interview Lifecycle (`ROOM-6`)**: In `interview` rooms, candidate connections start as `readOnly = true` while the room is `open`. When the interview starts (`live`), `syncRegistry.updateRoomLifecycle(roomId, "live")` dynamically enables editing on already-connected candidate sockets without requiring a reconnect.
+
+### 5.2 Authoritative Effective Read-Only Calculation
+To avoid race conditions and ensure no permission invariants are violated when room states transition or backpressure clears, `SyncRegistry` implements a centralized, multi-factor evaluation function: `calculateEffectiveReadOnly(active: ActiveConnection): boolean`.
+
+It combines seven orthogonal factors in precedence order:
+1. **Server Shutdown Barrier**: When `isShuttingDownState` is active, all connections are forced read-only.
+2. **Permanent Room Read-Only**: Sockets are read-only if the room is locked (e.g. 2 MB soft cap reached).
+3. **Queue Backpressure**: Sockets are temporarily read-only while `backpressuredRooms` contains `roomId`.
+4. **Room Lifecycle State**: Sockets are read-only if room `status === "ended"` or `status === "archived"`.
+5. **Member Role Assignment**: Sockets belonging to members with `role === "viewer"` are strictly read-only.
+6. **Interview Candidate Window**: Sockets belonging to `interview` candidates are read-only while `status !== "live"`.
+7. **Explicit Member Flag**: Sockets whose member ID is in `readOnlyMembers` are read-only.
+
+When backpressure clears (`setRoomBackpressure(roomId, false)`), the registry does not set `readOnly = false` indiscriminately. Instead, it recomputes `calculateEffectiveReadOnly` for every active connection in the room, guaranteeing that viewers, candidates in open rooms, and demoted members remain read-only.
 
 ---
 
@@ -222,9 +247,10 @@ When the process receives a termination signal (`SIGTERM`, `SIGINT`) or calls `d
 4. **Phase D (Persistence Drain & Consistent Final Snapshots)**:
    - Stops all recurring 5-minute snapshot intervals (`stopAllSnapshotIntervals()`).
    - Awaits in-flight snapshots and flushes.
-   - Flushes all pending room queues to MongoDB under room mutexes.
-   - Writes consistent final document snapshots to `doc_snapshots`.
-   - Asserts that zero unflushed updates remain (`stats.pendingUpdates === 0`).
+   - **Multi-Room Error Isolation**: Iterates over all active loaded documents and pending room queues concurrently using `Promise.allSettled`. If Room A encounters a persistence failure, Room B is not blocked from completing its flush and snapshot.
+   - Completed rooms persist final snapshots; failed rooms are recorded in an aggregate error. Shutdown refuses to mark global drain success if any unflushed updates remain in memory.
+   - Active open rooms with zero pending updates still produce a consistent final snapshot.
+   - Asserts that zero unflushed updates remain across healthy rooms (`stats.pendingUpdates === 0`).
 5. **Phase E (Server Teardown & State Reset)**:
    - Awaits Hocuspocus `server.destroy()`.
    - Clears all registry connections and reservations.
@@ -249,4 +275,15 @@ When the process receives a termination signal (`SIGTERM`, `SIGINT`) or calls `d
 | **`member_connection_limit_exceeded`** | Single member has 3 concurrent tabs/connections in one room. | Close duplicate browser tabs. |
 | **Room locked in read-only** | Document size exceeded 2 MB soft cap or owner ended session. | Check document size or room status; inspect `doc_updates` size. |
 | **Hocuspocus startup failure** | Mismatched Hocuspocus internal adapter version. | Verify `@hocuspocus/server` is locked to `4.7.1` and `crossws` is available. |
+
+---
+
+## 10. Operational Boundaries & System Limitations
+
+| Boundary / Limitation | System Behavior & Invariant |
+| :--- | :--- |
+| **Durability Bound (2 Seconds)** | Edits accepted in memory are committed to MongoDB within 2,000 ms (`MAX_UNFLUSHED_AGE_MS`). In the event of an ungraceful hardware failure or unintercepted `SIGKILL`, at most 2.0 seconds of recent edits are exposed to loss. |
+| **In-Flight Memory Bounds** | Memory growth under high write rates is strictly capped at 1,000 updates or 4 MB per room. Queue backpressure safely halts incoming client edits at the transport gate without crashing the process or corrupting historical document state. |
+| **Crash Recovery Mechanics** | Document recovery relies exclusively on deterministic replay of the append-only `doc_updates` sequence log on top of the latest deterministic `doc_snapshots` base state. |
+| **Single-Process Co-Hosting (`AD-1`)** | Sync is co-hosted with Express on a single Node.js process without Redis pub/sub. Horizontal scaling across multiple processes requires sticky routing to room instances or external pub/sub adapters. |
 

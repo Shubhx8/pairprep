@@ -68,6 +68,16 @@ export class SyncRegistry {
   private memberSockets = new Map<string, Set<string>>(); // `${roomId}:${memberId}` -> Set<socketId>
   private readOnlyRooms = new Set<string>(); // roomId
   private backpressuredRooms = new Set<string>(); // roomId in persistence backpressure
+  private readOnlyMembers = new Set<string>(); // `${roomId}:${memberId}`
+  private roomMetadata = new Map<
+    string,
+    {
+      status: "open" | "live" | "ended" | "archived";
+      type?: string;
+      startedAt?: Date | null;
+    }
+  >();
+  private isShuttingDownState = false;
 
   /**
    * Prunes reservations older than RESERVATION_TTL_MS.
@@ -283,9 +293,7 @@ export class SyncRegistry {
     }
     this.memberSockets.get(memberKey)!.add(socketId);
 
-    if (this.readOnlyRooms.has(roomId)) {
-      connection.readOnly = true;
-    }
+    activeConn.connection.readOnly = this.calculateEffectiveReadOnly(activeConn);
   }
 
   /**
@@ -388,6 +396,12 @@ export class SyncRegistry {
     newRole?: string
   ): number {
     const memberKey = `${roomId}:${memberId}`;
+    if (readOnly) {
+      this.readOnlyMembers.add(memberKey);
+    } else {
+      this.readOnlyMembers.delete(memberKey);
+    }
+
     const sockets = this.memberSockets.get(memberKey);
     if (!sockets || sockets.size === 0) return 0;
 
@@ -395,8 +409,8 @@ export class SyncRegistry {
     for (const socketId of sockets) {
       const active = this.activeConnections.get(socketId);
       if (active) {
-        active.connection.readOnly = readOnly;
         if (newRole) active.memberRole = newRole;
+        active.connection.readOnly = this.calculateEffectiveReadOnly(active);
         updated++;
       }
     }
@@ -446,6 +460,13 @@ export class SyncRegistry {
    * Updates interview candidate permissions based on room live status.
    */
   syncCandidatePermissions(roomId: string, isLive: boolean): number {
+    const existing = this.roomMetadata.get(roomId);
+    this.roomMetadata.set(roomId, {
+      ...existing,
+      status: isLive ? "live" : "open",
+      startedAt: isLive ? (existing?.startedAt ?? new Date()) : null,
+    });
+
     let updated = 0;
     const sockets = this.roomActiveSockets.get(roomId);
     if (!sockets) return 0;
@@ -453,11 +474,9 @@ export class SyncRegistry {
     for (const socketId of sockets) {
       const active = this.activeConnections.get(socketId);
       if (active) {
-        const role =
-          active.memberRole ??
-          (active.principal as { role?: string })?.role;
-        if (role === "candidate") {
-          active.connection.readOnly = !isLive;
+        const prev = active.connection.readOnly;
+        active.connection.readOnly = this.calculateEffectiveReadOnly(active);
+        if (active.connection.readOnly !== prev) {
           updated++;
         }
       }
@@ -470,14 +489,93 @@ export class SyncRegistry {
    */
   updateRoomLifecycle(
     roomId: string,
-    status: "open" | "live" | "ended" | "archived"
+    status: "open" | "live" | "ended" | "archived",
+    type?: string,
+    startedAt?: Date | null
   ): void {
+    const existing = this.roomMetadata.get(roomId);
+    this.roomMetadata.set(roomId, {
+      ...existing,
+      status,
+      type: type ?? existing?.type,
+      startedAt: startedAt !== undefined ? startedAt : existing?.startedAt,
+    });
+
     if (status === "ended" || status === "archived") {
       this.setRoomReadOnly(roomId);
-    } else if (status === "live") {
-      this.syncCandidatePermissions(roomId, true);
-    } else if (status === "open") {
-      this.syncCandidatePermissions(roomId, false);
+    } else {
+      const sockets = this.roomActiveSockets.get(roomId);
+      if (sockets) {
+        for (const socketId of sockets) {
+          const active = this.activeConnections.get(socketId);
+          if (active) {
+            active.connection.readOnly = this.calculateEffectiveReadOnly(active);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Authoritative effective permission calculation.
+   * A connection is read-only if ANY of the following apply:
+   * 1. Server is shutting down.
+   * 2. Room is permanently marked read-only (e.g. document > 2 MB cap).
+   * 3. Room is currently backpressured by persistence queue depth.
+   * 4. Room lifecycle status is 'ended' or 'archived'.
+   * 5. Member role is 'viewer'.
+   * 6. Interview candidate outside the active live window (not live or not started).
+   * 7. Member was explicitly muted via setMemberReadOnly.
+   */
+  calculateEffectiveReadOnly(active: ActiveConnection): boolean {
+    if (this.isShuttingDownState) {
+      return true;
+    }
+
+    const roomId = active.roomId;
+    if (this.readOnlyRooms.has(roomId)) {
+      return true;
+    }
+
+    if (this.backpressuredRooms.has(roomId)) {
+      return true;
+    }
+
+    const roomMeta = this.roomMetadata.get(roomId);
+    if (roomMeta) {
+      if (roomMeta.status === "ended" || roomMeta.status === "archived") {
+        return true;
+      }
+    }
+
+    const role =
+      active.memberRole ??
+      (active.principal as { role?: string })?.role;
+    if (role === "viewer") {
+      return true;
+    }
+
+    if (role === "candidate") {
+      if (!roomMeta || roomMeta.status !== "live") {
+        return true;
+      }
+    }
+
+    const memberKey = `${roomId}:${active.memberId}`;
+    if (this.readOnlyMembers.has(memberKey)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Sets server shutdown state and immediately forces all active connections to read-only.
+   */
+  setShutdown(isShuttingDown: boolean): void {
+    this.isShuttingDownState = isShuttingDown;
+    for (const active of this.activeConnections.values()) {
+      active.connection.readOnly = this.calculateEffectiveReadOnly(active);
     }
   }
 
@@ -491,7 +589,7 @@ export class SyncRegistry {
       for (const socketId of sockets) {
         const active = this.activeConnections.get(socketId);
         if (active) {
-          active.connection.readOnly = true;
+          active.connection.readOnly = this.calculateEffectiveReadOnly(active);
         }
       }
     }
@@ -502,37 +600,35 @@ export class SyncRegistry {
    */
   setRoomWritable(roomId: string): void {
     this.readOnlyRooms.delete(roomId);
+    const sockets = this.roomActiveSockets.get(roomId);
+    if (sockets) {
+      for (const socketId of sockets) {
+        const active = this.activeConnections.get(socketId);
+        if (active) {
+          active.connection.readOnly = this.calculateEffectiveReadOnly(active);
+        }
+      }
+    }
   }
 
   /**
    * Engages or releases persistence backpressure for a room.
-   * When engaged, active connections are marked readOnly = true to synchronously halt further writes.
-   * When released, writable connections are restored to readOnly = false (unless permanently read-only).
+   * When engaged or released, recalculates effective read-only state for every connection.
+   * Never blindly clears readOnly = false.
    */
   setRoomBackpressure(roomId: string, backpressured: boolean): void {
     if (backpressured) {
       this.backpressuredRooms.add(roomId);
-      const sockets = this.roomActiveSockets.get(roomId);
-      if (sockets) {
-        for (const socketId of sockets) {
-          const active = this.activeConnections.get(socketId);
-          if (active) {
-            active.connection.readOnly = true;
-          }
-        }
-      }
     } else {
       this.backpressuredRooms.delete(roomId);
-      // Restore writable status only if room is not permanently read-only
-      if (!this.readOnlyRooms.has(roomId)) {
-        const sockets = this.roomActiveSockets.get(roomId);
-        if (sockets) {
-          for (const socketId of sockets) {
-            const active = this.activeConnections.get(socketId);
-            if (active && active.memberRole !== "viewer") {
-              active.connection.readOnly = false;
-            }
-          }
+    }
+
+    const sockets = this.roomActiveSockets.get(roomId);
+    if (sockets) {
+      for (const socketId of sockets) {
+        const active = this.activeConnections.get(socketId);
+        if (active) {
+          active.connection.readOnly = this.calculateEffectiveReadOnly(active);
         }
       }
     }
@@ -704,6 +800,9 @@ export class SyncRegistry {
     this.memberSockets.clear();
     this.readOnlyRooms.clear();
     this.backpressuredRooms.clear();
+    this.readOnlyMembers.clear();
+    this.roomMetadata.clear();
+    this.isShuttingDownState = false;
   }
 }
 

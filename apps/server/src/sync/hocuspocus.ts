@@ -267,6 +267,12 @@ export function createSyncServer(
             (err as unknown as { reason: string }).reason = "room_not_found";
             throw err;
           }
+          syncRegistry.updateRoomLifecycle(
+            roomId,
+            room.status,
+            room.type,
+            room.startedAt
+          );
 
           // Verify member is part of the room
           const member = await roomMemberRepo.findMember(roomId, principal.id);
@@ -640,6 +646,7 @@ export function createSyncServer(
       // Phase A: Enter shutdown (synchronous state change)
       status = "shutting_down";
       isShuttingDown = true;
+      syncRegistry.setShutdown(true);
 
       // Phase B & C: Lock edits, stop snapshot timers, drain connections
       syncRegistry.setAllRoomsReadOnly();

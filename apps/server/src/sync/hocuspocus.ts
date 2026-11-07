@@ -323,7 +323,11 @@ export function createSyncServer(
       const connContext = (data.connection?.context ?? data.context) as SyncConnectionContext | undefined;
       // Always populate doc_updates.authorId strictly from the authenticated connection context,
       // never trusting client-supplied identifiers (PRD ATTR-1 / Non-negotiable security rule #2)
-      const authorId = connContext?.principal?.id ?? data.socketId ?? "anonymous";
+      const authorId =
+        connContext?.principal?.id ||
+        (typeof data.socketId === "string" && data.socketId.trim()
+          ? data.socketId
+          : "anonymous");
       queueUpdate(data.documentName, authorId, data.update, data.document);
 
       // Register Yjs clientIds from update metadata to authenticated actorId (first claim wins)
@@ -354,10 +358,23 @@ export function createSyncServer(
       }
 
       // Enforce per-connection message rate and byte throughput limits (flood defense)
-      const socketId =
-        data.socketId ||
-        (data.connection as unknown as { socketId?: string })?.socketId ||
-        "unknown";
+      const socketId = data.socketId;
+      if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
+        rootLogger.warn(
+          {
+            roomId: data.documentName,
+            socketId,
+          },
+          "Missing or invalid socket identity in beforeHandleMessage; terminating connection"
+        );
+        try {
+          data.connection?.webSocket?.close(4029, "invalid_socket_identity");
+        } catch {
+          // ignore already closed
+        }
+        throw new RateLimitError("invalid_socket_identity");
+      }
+
       const rateCheck = rateLimiter.consume(socketId, data.update.byteLength);
       if (!rateCheck.allowed) {
         rootLogger.warn(
@@ -370,14 +387,7 @@ export function createSyncServer(
           "WebSocket message rate/volume limit exceeded; terminating connection"
         );
         try {
-          const ws = (
-            data.connection as unknown as {
-              webSocket?: { close?: (code?: number, reason?: string) => void };
-            }
-          )?.webSocket;
-          if (ws && typeof ws.close === "function") {
-            ws.close(4029, rateCheck.reason);
-          }
+          data.connection?.webSocket?.close(4029, rateCheck.reason);
         } catch {
           // ignore already closed
         }

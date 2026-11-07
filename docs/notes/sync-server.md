@@ -113,6 +113,12 @@ To defend against malicious message flooding, denial-of-service, or runaway scri
   4. The close event is delivered to the client with application close code `4029` and reason `message_rate_limit_exceeded` or `byte_rate_limit_exceeded`.
 - State is cleared on disconnect (`onDisconnect`) and on handshake failure (`onAuthenticate` catch block).
 
+### 6.3 Capacity Saturation & Connection Churn Defense
+- The connection limiter tracks up to 10,000 active entries (`maxEntries`).
+- When capacity is reached, entries past TTL (60s) are pruned. If the table remains full, untracked connections are rejected immediately with `rate_limiter_capacity_exceeded` (code 4029).
+- Active connection entries are **never evicted** to accommodate new connections, preventing attackers from recycling token buckets or evading limits via rapid reconnection churn.
+- Incoming socket identifiers are strictly verified: any missing, non-string, empty, or whitespace `socketId` is rejected with `invalid_socket_identity` (code 4029) without allocating rate-limiter resources.
+
 ---
 
 ## 7. Operational Troubleshooting
@@ -121,7 +127,7 @@ To defend against malicious message flooding, denial-of-service, or runaway scri
 | :--- | :--- | :--- |
 | **HTTP 403 on `/sync`** | Invalid or missing `Origin` header. | Verify client sends an allowed origin matching `APP_URL` or localhost in development. |
 | **HTTP 429 on `/sync`** | More than 60 rejected upgrade attempts per minute from client IP. | Check for misconfigured authentication cookies causing rapid reconnection loops. |
-| **WebSocket Close Code 4029** | Connection exceeded message rate limit (50 msgs/s) or byte volume limit (1 MB/s). | Throttled client loop, excessive awareness updates, or large document paste. Back off transmission. |
+| **WebSocket Close Code 4029** | Connection exceeded message rate limit (50 msgs/s), byte volume limit (1 MB/s), capacity saturation (`rate_limiter_capacity_exceeded`), or malformed identity (`invalid_socket_identity`). | Throttled client loop, excessive awareness updates, or large document paste. Back off transmission or investigate socket connection hygiene. |
 | **`room_capacity_exceeded`** | Room already has 6 active connections or reservations. | Check for stale connections or multiple tabs from participants. |
 | **`member_connection_limit_exceeded`** | Single member has 3 concurrent tabs/connections in one room. | Close duplicate browser tabs. |
 | **Room locked in read-only** | Document size exceeded 2 MB soft cap or owner ended session. | Check document size or room status; inspect `doc_updates` size. |

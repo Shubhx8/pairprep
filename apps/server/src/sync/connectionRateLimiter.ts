@@ -15,7 +15,9 @@ export interface ConnectionRateLimiterOptions {
 
 export type RateLimitReason =
   | "message_rate_limit_exceeded"
-  | "byte_rate_limit_exceeded";
+  | "byte_rate_limit_exceeded"
+  | "rate_limiter_capacity_exceeded"
+  | "invalid_socket_identity";
 
 export type RateLimitResult =
   | { allowed: true }
@@ -64,17 +66,18 @@ export class ConnectionRateLimiter {
     byteLength: number,
     now = Date.now()
   ): RateLimitResult {
+    if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
+      return { allowed: false, reason: "invalid_socket_identity" };
+    }
+
     let state = this.entries.get(socketId);
 
     if (!state) {
       if (this.entries.size >= this.maxEntries) {
         this.prune(now);
         if (this.entries.size >= this.maxEntries) {
-          // Evict oldest entry (first key in map)
-          const oldestKey = this.entries.keys().next().value;
-          if (oldestKey !== undefined) {
-            this.entries.delete(oldestKey);
-          }
+          // Reject new untracked connection to preserve capacity and prevent active connection eviction
+          return { allowed: false, reason: "rate_limiter_capacity_exceeded" };
         }
       }
 
@@ -122,7 +125,9 @@ export class ConnectionRateLimiter {
    * Cleans up tracking state for a disconnected or failed socket.
    */
   cleanup(socketId: string): void {
-    this.entries.delete(socketId);
+    if (socketId) {
+      this.entries.delete(socketId);
+    }
   }
 
   /**
@@ -184,3 +189,4 @@ export class RateLimitError extends Error {
 }
 
 export const connectionRateLimiter = new ConnectionRateLimiter();
+

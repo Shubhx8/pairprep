@@ -123,6 +123,12 @@ Task T07 implements the real-time collaborative document synchronization engine 
   - When a connection exceeds its message or byte token budget, `RateLimitError` is raised with application close code `4029` and structured reason (`message_rate_limit_exceeded` or `byte_rate_limit_exceeded`).
   - The transport WebSocket is severed immediately (`data.connection.webSocket.close(4029, ...)`).
   - Hocuspocus message processing halts immediately and drains queued flood frames (`messageQueue.length = 0`), ensuring rejected updates never mutate the document or broadcast to other peers.
+- **Capacity Protection & Connection Churn Defense**:
+  - Limiter entries are capped at 10,000 max entries (`maxEntries = 10,000`).
+  - When capacity is reached, expired entries past TTL (60s) are pruned. If the table remains saturated, new untracked connections are strictly rejected with `rate_limiter_capacity_exceeded` (code 4029).
+  - Existing active connection buckets are **never evicted** to make room for new connections, preventing malicious attackers from resetting token buckets or bypassing rate limits via rapid connection churn.
+- **Strict Socket Identity Validation**:
+  - `socketId` must be a non-empty, non-whitespace string. Any message with a missing, empty, or whitespace socket identifier immediately fails closed with `invalid_socket_identity` (code 4029) and terminates the underlying transport without creating limiter entries.
 - **Lifecycle Cleanup**: Rate limiter state is cleaned up upon connection close (`onDisconnect`) and on failed authentication (`onAuthenticate` catch block). Idle connections are automatically pruned past 60s TTL, and total tracked connections are bounded to 10,000 to prevent memory exhaustion.
 
 ---
@@ -199,16 +205,17 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`concurrency.test.ts`** | 3 | 6 concurrent participants typing without conflict (`CONC-1`), idempotent duplicate updates (`CONC-2`), read-only enforcement in `beforeHandleMessage` (`ED-6`). | **PASS** |
 | **`attribution.test.ts`** | 7 | Client identity attribution (`ATTR-1`), first-claim-wins `$setOnInsert`, duplicate-key concurrency, identity hijacking prevention. | **PASS** |
 | **`livePermissions.test.ts`** | 6 | Live permission coordination (`ROOM-3`, `ROOM-6`, `ED-6`): demote to viewer (<1s revocation), promote to editor, kick termination (4003), room end read-only, room delete cascade (1000), interview candidate lifecycle. | **PASS** |
-| **`rateLimitFlood.test.ts`** | 10 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning. | **PASS** |
+| **`rateLimitFlood.test.ts`** | 15 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning, capacity saturation defense without active entry eviction, strict socket identity validation, distinct socket bucket isolation. | **PASS** |
 
-**Total T07 Tests:** 11 test files, 61 passing tests, 0 failures.  
-**Full Monorepo Suite:** 49 test files, 338 passing tests, 0 failures.
+**Total T07 Tests:** 11 test files, 66 passing tests, 0 failures.  
+**Full Monorepo Suite:** 49 test files, 343 passing tests, 0 failures.
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
+fcb0d03 feat(sync): per-connection websocket message rate limiting and flood defense
 ac3b973 feat(sync): live room permission and lifecycle coordination with rest api
 3423207 feat(sync): map yjs client ids to authenticated actors for attr-1
 e592a32 docs(sync): add comprehensive T07 document sync technical note

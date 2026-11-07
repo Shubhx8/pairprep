@@ -511,6 +511,171 @@ describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
     expect(rateLimiter.size).toBe(0);
   });
 
+  it("rejects new connection with code 4029 when limiter maxEntries capacity is saturated", async () => {
+    // Capacity of exactly 1 active socket
+    const rateLimiter = new ConnectionRateLimiter({
+      maxEntries: 1,
+      entryTtlMs: 60_000,
+    });
+
+    httpServer = createServer();
+    syncServer = attachSyncServer(
+      httpServer,
+      createSyncServer({ requireAuth: false, rateLimiter })
+    );
+
+    await new Promise<void>((resolve) => {
+      httpServer!.listen(0, () => resolve());
+    });
+    const addr = httpServer.address();
+    if (!addr || typeof addr === "string") throw new Error("Invalid address");
+    const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+    // Client A occupies slot 1
+    const wsProviderA = new HocuspocusProviderWebsocket({
+      url: wsUrl,
+      WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      maxAttempts: 1,
+    });
+    wsProviders.push(wsProviderA);
+    const docA = new Y.Doc();
+    const providerA = new HocuspocusProvider({
+      websocketProvider: wsProviderA,
+      name: roomId,
+      document: docA,
+    });
+    providers.push(providerA);
+    providerA.attach();
+
+    await new Promise<void>((resolve) => providerA.on("synced", () => resolve()));
+    expect(rateLimiter.size).toBe(1);
+
+    // Client B attempts to connect when limiter capacity is exhausted
+    const wsProviderB = new HocuspocusProviderWebsocket({
+      url: wsUrl,
+      WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      maxAttempts: 1,
+    });
+    wsProviders.push(wsProviderB);
+    const docB = new Y.Doc();
+    const providerB = new HocuspocusProvider({
+      websocketProvider: wsProviderB,
+      name: roomId,
+      document: docB,
+    });
+    providers.push(providerB);
+
+    const disconnectB = new Promise<{ code: number; reason: string }>((resolve) => {
+      wsProviderB.on(
+        "disconnect",
+        ({ event }: { event: { code: number; reason: string } }) => {
+          resolve({
+            code: event?.code,
+            reason: typeof event?.reason === "string" ? event.reason : "",
+          });
+        }
+      );
+    });
+
+    providerB.attach();
+
+    const closeResult = await disconnectB;
+    expect(closeResult.code).toBe(4029);
+    expect(closeResult.reason).toBe("rate_limiter_capacity_exceeded");
+
+    // Client A remains unaffected and tracked
+    expect(rateLimiter.size).toBe(1);
+    expect(syncRegistry.getRoomConnectionCount(roomId)).toBe(1);
+  });
+
+  it("rate-limits distinct connections independently without sharing fallback buckets", async () => {
+    // Low burst limit of 8 messages
+    const rateLimiter = new ConnectionRateLimiter({
+      maxMessageBurst: 8,
+      messageRefillPerSec: 0,
+    });
+
+    httpServer = createServer();
+    syncServer = attachSyncServer(
+      httpServer,
+      createSyncServer({ requireAuth: false, rateLimiter })
+    );
+
+    await new Promise<void>((resolve) => {
+      httpServer!.listen(0, () => resolve());
+    });
+    const addr = httpServer.address();
+    if (!addr || typeof addr === "string") throw new Error("Invalid address");
+    const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+    // Client A
+    const wsProviderA = new HocuspocusProviderWebsocket({
+      url: wsUrl,
+      WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      maxAttempts: 1,
+    });
+    wsProviders.push(wsProviderA);
+    const docA = new Y.Doc();
+    const providerA = new HocuspocusProvider({
+      websocketProvider: wsProviderA,
+      name: roomId,
+      document: docA,
+    });
+    providers.push(providerA);
+    providerA.attach();
+
+    // Client B
+    const wsProviderB = new HocuspocusProviderWebsocket({
+      url: wsUrl,
+      WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      maxAttempts: 1,
+    });
+    wsProviders.push(wsProviderB);
+    const docB = new Y.Doc();
+    const providerB = new HocuspocusProvider({
+      websocketProvider: wsProviderB,
+      name: roomId,
+      document: docB,
+    });
+    providers.push(providerB);
+    providerB.attach();
+
+    await Promise.all([
+      new Promise<void>((resolve) => providerA.on("synced", () => resolve())),
+      new Promise<void>((resolve) => providerB.on("synced", () => resolve())),
+    ]);
+
+    expect(rateLimiter.size).toBe(2);
+
+    const disconnectA = new Promise<{ code: number; reason: string }>((resolve) => {
+      wsProviderA.on(
+        "disconnect",
+        ({ event }: { event: { code: number; reason: string } }) => {
+          resolve({
+            code: event?.code,
+            reason: typeof event?.reason === "string" ? event.reason : "",
+          });
+        }
+      );
+    });
+
+    // Flood Client A only
+    for (let i = 0; i < 20; i++) {
+      docA.getText("monaco").insert(0, `A_${i}`);
+    }
+
+    const closeA = await disconnectA;
+    expect(closeA.code).toBe(4029);
+    expect(closeA.reason).toBe("message_rate_limit_exceeded");
+
+    // Client B is independently tracked and remains healthy
+    docB.getText("monaco").insert(0, "client_B_healthy_edit");
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(docB.getText("monaco").toString()).toContain("client_B_healthy_edit");
+    expect(syncRegistry.getRoomConnectionCount(roomId)).toBe(1);
+  });
+
   describe("ConnectionRateLimiter unit behavior", () => {
     it("refills message and byte tokens over time according to configured rates", () => {
       const limiter = new ConnectionRateLimiter({
@@ -559,22 +724,91 @@ describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
       expect(limiter.has("idle_sock")).toBe(false);
     });
 
-    it("enforces maxEntries bound to prevent memory exhaustion", () => {
+    it("strictly rejects new connections when maxEntries is saturated without evicting active connections", () => {
       const limiter = new ConnectionRateLimiter({
         maxEntries: 3,
         entryTtlMs: 100_000,
+        maxMessageBurst: 5,
+        messageRefillPerSec: 0,
       });
 
-      limiter.consume("sock_1", 10, 1000);
-      limiter.consume("sock_2", 10, 1001);
-      limiter.consume("sock_3", 10, 1002);
+      const now = 500_000;
+      // 1. Fill limiter with active connections up to maxEntries
+      limiter.consume("sock_1", 10, now);
+      limiter.consume("sock_2", 10, now);
+      limiter.consume("sock_3", 10, now);
       expect(limiter.size).toBe(3);
 
-      // 4th connection should evict oldest
-      limiter.consume("sock_4", 10, 1003);
+      // 2. Exhaust tokens for existing connection sock_1 (remaining tokens = 0)
+      for (let i = 0; i < 4; i++) {
+        limiter.consume("sock_1", 10, now);
+      }
+      expect(limiter.get("sock_1")!.messageTokens).toBe(0);
+
+      // 3. Attempt to register a new connection sock_4
+      const resSock4 = limiter.consume("sock_4", 10, now);
+
+      // 4. Verify new connection is rejected with rate_limiter_capacity_exceeded
+      expect(resSock4).toEqual({
+        allowed: false,
+        reason: "rate_limiter_capacity_exceeded",
+      });
+
+      // 5. Verify existing connection's bucket was NOT removed or reset
+      expect(limiter.has("sock_1")).toBe(true);
+      expect(limiter.get("sock_1")!.messageTokens).toBe(0);
+
+      // 6. Verify existing connection remains rate-limited
+      const resSock1Again = limiter.consume("sock_1", 10, now);
+      expect(resSock1Again).toEqual({
+        allowed: false,
+        reason: "message_rate_limit_exceeded",
+      });
+
+      // 7. Verify map never exceeds maxEntries
       expect(limiter.size).toBe(3);
-      expect(limiter.has("sock_1")).toBe(false);
-      expect(limiter.has("sock_4")).toBe(true);
+      expect(limiter.has("sock_4")).toBe(false);
+    });
+
+    it("rejects missing, empty, or whitespace socket IDs without creating limiter entries", () => {
+      const limiter = new ConnectionRateLimiter();
+
+      expect(limiter.consume("", 100)).toEqual({
+        allowed: false,
+        reason: "invalid_socket_identity",
+      });
+      expect(limiter.consume("   ", 100)).toEqual({
+        allowed: false,
+        reason: "invalid_socket_identity",
+      });
+      expect(limiter.consume(null as unknown as string, 100)).toEqual({
+        allowed: false,
+        reason: "invalid_socket_identity",
+      });
+      expect(limiter.consume(undefined as unknown as string, 100)).toEqual({
+        allowed: false,
+        reason: "invalid_socket_identity",
+      });
+
+      expect(limiter.size).toBe(0);
+    });
+
+    it("maintains isolated token buckets across distinct connections", () => {
+      const limiter = new ConnectionRateLimiter({
+        maxMessageBurst: 2,
+        messageRefillPerSec: 0,
+      });
+
+      const now = 1000;
+      // Consume 2 tokens for conn_A (depleted)
+      limiter.consume("conn_A", 10, now);
+      limiter.consume("conn_A", 10, now);
+      expect(limiter.consume("conn_A", 10, now).allowed).toBe(false);
+
+      // conn_B is independent and still has full burst capacity
+      const resB = limiter.consume("conn_B", 10, now);
+      expect(resB.allowed).toBe(true);
+      expect(limiter.get("conn_B")!.messageTokens).toBe(1);
     });
 
     it("creates RateLimitError with correct code and properties", () => {
@@ -583,6 +817,47 @@ describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
       expect(err.reason).toBe("message_rate_limit_exceeded");
       expect(err.name).toBe("RateLimitError");
       expect(err.message).toContain("message_rate_limit_exceeded");
+
+      const errCapacity = new RateLimitError("rate_limiter_capacity_exceeded");
+      expect(errCapacity.code).toBe(4029);
+      expect(errCapacity.reason).toBe("rate_limiter_capacity_exceeded");
+
+      const errIdentity = new RateLimitError("invalid_socket_identity");
+      expect(errIdentity.code).toBe(4029);
+      expect(errIdentity.reason).toBe("invalid_socket_identity");
+    });
+
+    it("fails closed in beforeHandleMessage when socketId is missing or empty", async () => {
+      const sync = createSyncServer({ requireAuth: false });
+      const beforeHandleMessage = sync.server.configuration.beforeHandleMessage;
+      expect(beforeHandleMessage).toBeDefined();
+      let closedWithCode: number | undefined;
+      let closedWithReason: string | undefined;
+
+      const mockPayload = {
+        socketId: "   ",
+        update: new Uint8Array([1, 2, 3]),
+        documentName: roomId,
+        connection: {
+          webSocket: {
+            close: (code?: number, reason?: string) => {
+              closedWithCode = code;
+              closedWithReason = reason;
+            },
+          },
+        },
+      };
+
+      await expect(
+        beforeHandleMessage!(
+          mockPayload as unknown as Parameters<NonNullable<typeof beforeHandleMessage>>[0]
+        )
+      ).rejects.toThrow("invalid_socket_identity");
+
+      expect(closedWithCode).toBe(4029);
+      expect(closedWithReason).toBe("invalid_socket_identity");
+
+      await sync.destroy();
     });
   });
 });

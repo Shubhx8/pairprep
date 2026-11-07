@@ -67,6 +67,7 @@ export class SyncRegistry {
   private roomActiveSockets = new Map<string, Set<string>>(); // roomId -> Set<socketId>
   private memberSockets = new Map<string, Set<string>>(); // `${roomId}:${memberId}` -> Set<socketId>
   private readOnlyRooms = new Set<string>(); // roomId
+  private backpressuredRooms = new Set<string>(); // roomId in persistence backpressure
 
   /**
    * Prunes reservations older than RESERVATION_TTL_MS.
@@ -504,10 +505,51 @@ export class SyncRegistry {
   }
 
   /**
-   * Checks if room is currently read-only.
+   * Engages or releases persistence backpressure for a room.
+   * When engaged, active connections are marked readOnly = true to synchronously halt further writes.
+   * When released, writable connections are restored to readOnly = false (unless permanently read-only).
+   */
+  setRoomBackpressure(roomId: string, backpressured: boolean): void {
+    if (backpressured) {
+      this.backpressuredRooms.add(roomId);
+      const sockets = this.roomActiveSockets.get(roomId);
+      if (sockets) {
+        for (const socketId of sockets) {
+          const active = this.activeConnections.get(socketId);
+          if (active) {
+            active.connection.readOnly = true;
+          }
+        }
+      }
+    } else {
+      this.backpressuredRooms.delete(roomId);
+      // Restore writable status only if room is not permanently read-only
+      if (!this.readOnlyRooms.has(roomId)) {
+        const sockets = this.roomActiveSockets.get(roomId);
+        if (sockets) {
+          for (const socketId of sockets) {
+            const active = this.activeConnections.get(socketId);
+            if (active && active.memberRole !== "viewer") {
+              active.connection.readOnly = false;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Checks if room is currently backpressured due to persistence queue depth.
+   */
+  isRoomBackpressured(roomId: string): boolean {
+    return this.backpressuredRooms.has(roomId);
+  }
+
+  /**
+   * Checks if room is currently read-only (either permanently or via backpressure).
    */
   isRoomReadOnly(roomId: string): boolean {
-    return this.readOnlyRooms.has(roomId);
+    return this.readOnlyRooms.has(roomId) || this.backpressuredRooms.has(roomId);
   }
 
   /**
@@ -661,6 +703,7 @@ export class SyncRegistry {
     this.roomActiveSockets.clear();
     this.memberSockets.clear();
     this.readOnlyRooms.clear();
+    this.backpressuredRooms.clear();
   }
 }
 

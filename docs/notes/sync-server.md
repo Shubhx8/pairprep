@@ -30,40 +30,54 @@ interface QueuedUpdate {
   authorId: string;
   update: Uint8Array;
   ts: Date;
+  seq?: number;
 }
 ```
 Unlike systems that merge updates per-author or debounce across clients, updates are stored in strict arrival order to maintain exact replay fidelity and timestamp precision.
 
-### 2.2 Durability Deadline (2 Seconds)
+### 2.2 Durability Deadline (2 Seconds) & Bounded Retry Backoff
 - **Debounce**: Writes are scheduled with a 250 ms debounce (`FLUSH_DEBOUNCE_MS`).
 - **Hard Durability Bound**: The time between the first unflushed edit and database insertion never exceeds 2,000 ms (`MAX_UNFLUSHED_AGE_MS`).
-- **Requeue with Age Preservation**: If a MongoDB write fails, `requeueUpdates` prepends the failed batch back into the room queue while preserving the original `firstUnflushedAt` timestamp. The timer fires for the remaining durability window rather than restarting the full 2 seconds.
+- **Requeue with Age & Sequence Preservation**: If a MongoDB write fails, `requeueUpdates` prepends the failed batch back into the room queue while preserving the original `firstUnflushedAt` timestamp and stable assigned sequence numbers (`seq`).
+- **Bounded Retry Backoff with Jitter**: Consecutive database flush failures back off exponentially (`MIN_RETRY_BACKOFF_MS = 250`, `MAX_RETRY_BACKOFF_MS = 5000`, factor 2 with random jitter) instead of spinning in a 0 ms unthrottled loop. Success immediately resets the failure counter to zero.
+- **Idempotent Retry Reconciliation**: Before retrying inserts, the flush worker queries existing records in the sequence range (`{ roomId, seq: { $gte: minSeq, $lte: maxSeq } }`). Records whose `authorId` and binary payload match are recognized as committed and skipped; conflicting records trigger an explicit consistency error.
 
-### 2.3 Per-Room Promise Mutex (`RoomMutex`)
-To guarantee gapless sequence numbering and eliminate concurrent flush races, all database operations (`flushRoom`, `saveSnapshot`, `loadDocument`) execute under a FIFO promise mutex keyed by `roomId`.
+### 2.3 Queue Bounding & Synchronous Write Backpressure
+- **Per-Room Buffer Limits**: Each room's persistence queue is strictly bounded at 1,000 updates (`MAX_PENDING_UPDATES_PER_ROOM`) or 4 MB of pending binary payload (`MAX_PENDING_BYTES_PER_ROOM`).
+- **Synchronous Write Backpressure**: When queue bounds are breached, the server immediately marks the room backpressured in `syncRegistry.setRoomBackpressure(roomId, true)`. Late edits are rejected in `beforeHandleMessage` while preserving all already-accepted updates in the queue.
+- **Hysteresis Recovery**: Backpressure is released once the queue drains below 50% capacity (500 updates and 2 MB), restoring normal collaborative typing.
+
+### 2.4 Per-Room Promise Mutex (`RoomMutex`)
+To guarantee gapless sequence numbering and eliminate concurrent flush races, all database operations (`flushRoom`, `saveSnapshot`, `loadDocument`) execute under a FIFO promise mutex keyed by `roomId`. The mutex tracks tail promises to ensure completed queues are evicted from memory immediately without leakage.
 
 ---
 
 ## 3. Snapshots, Recovery & Memory Management
 
-### 3.1 Snapshots
+### 3.1 Snapshots & Deduplication
 - **Frequency**: Every 5 minutes of active editing (`SNAPSHOT_INTERVAL_MS = 300,000`) and when the last client disconnects (`clientsCount === 0`).
-- **Watermark Consistency**: A snapshot records the exact sequence watermark `seq` corresponding to the state vector of the flushed document.
-- **Pruning**: Only the latest 3 snapshots are retained per room (`MAX_SNAPSHOTS_TO_KEEP = 3`).
+- **Watermark Lockstep Consistency**: `takeSnapshotLocked` flushes pending updates under the `RoomMutex` *before* encoding `Y.encodeStateAsUpdate(document)`. The snapshot watermark records the exact sequence number matching the document state with zero gap.
+- **Snapshot Deduplication**: If a room has experienced no new updates since its latest snapshot (`seq === lastSnapshot.seq`), redundant snapshot generation is skipped.
+- **Deterministic Pruning**: Pruning sorts snapshots deterministically by `{ seq: -1, ts: -1, _id: -1 }`, retaining the latest 3 snapshots (`MAX_SNAPSHOTS_TO_KEEP = 3`).
 
-### 3.2 Document Loading & Crash Recovery
+### 3.2 Document Loading & Availability
 - When a document is opened (`onLoadDocument`):
-  1. The server loads the latest snapshot from `doc_snapshots`.
-  2. If a snapshot exists, its binary state is applied to the Yjs document (`Y.applyUpdate(targetDoc, snapshot.state)`).
-  3. All incremental updates with `seq > snapshot.seq` are loaded from `doc_updates` and applied in order.
+  1. Checks database connectivity (`mongoose.connection.readyState === 1`). If disconnected, throws immediately rather than serving a blank document that could overwrite historical work.
+  2. Executes under `RoomMutex.runExclusive` to serialize concurrent room accesses.
+  3. Registers the document in `activeLoadedDocuments` map.
+  4. The server loads the latest snapshot from `doc_snapshots` using deterministic tie-breaking.
+  5. If a snapshot exists, its binary state is applied to the Yjs document (`Y.applyUpdate(targetDoc, snapshot.state)`).
+  6. All incremental updates with `seq > snapshot.seq` are loaded from `doc_updates` and applied in order.
 - **SIGKILL Crash Recovery**: In automated tests, an abrupt child process crash (`SIGKILL`) loses at most the last 2.0 seconds of edits, with complete document convergence upon restart.
 
-### 3.3 Memory Unload on Inactivity
-When all participants disconnect from a room (`clientsCount === 0`):
-1. Pending updates are flushed to MongoDB.
-2. A final snapshot is generated.
-3. The 5-minute recurring snapshot timer is cleared.
-4. The document is evicted from Hocuspocus memory (`hocuspocusInstance.unloadDocument(doc)`).
+### 3.3 Disconnect Lifecycle & Memory Unload
+- **Intermediate Disconnects**: When a participant leaves but other participants remain (`clientsCount > 0`), the room flushes pending updates (`flushRoom(roomId, false)`) without generating an intermediate snapshot.
+- **Final Disconnect**: When all participants disconnect from a room (`clientsCount === 0`):
+  1. Pending updates are flushed to MongoDB.
+  2. Exactly one final snapshot is generated.
+  3. The 5-minute recurring snapshot timer is cleared.
+  4. The document is unregistered from `activeLoadedDocuments`.
+  5. The document is evicted from Hocuspocus memory (`hocuspocusInstance.unloadDocument(doc)`).
 
 ### 3.4 Concurrent Document-Load Deduplication & Cohort Waiter Cleanup
 - **Hocuspocus 4.7.1 In-Flight Deduplication**: In Hocuspocus 4.7.1, `createDocument()` deduplicates in-flight loads by document name (`this.loadingDocuments.get(documentName)`). Multiple concurrent incoming connections for the same document share a single in-flight `loadDocument()` promise after each independently reserving a room slot in `onAuthenticate`.

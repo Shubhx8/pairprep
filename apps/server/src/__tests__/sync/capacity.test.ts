@@ -47,8 +47,18 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
     }
   }
 
-  beforeEach(() => {
+  let originalUri: string | undefined;
+
+  beforeEach(async () => {
     syncRegistry.resetAll();
+    originalUri = config.MONGODB_URI;
+    const testDb = `pairprep_cap_outer_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const testUri = `mongodb://127.0.0.1:27017/${testDb}`;
+    (config as { MONGODB_URI?: string }).MONGODB_URI = testUri;
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+    await mongoose.connect(testUri);
   });
 
   afterEach(async () => {
@@ -78,6 +88,15 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
       await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
       httpServer = null;
     }
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await mongoose.connection.db?.dropDatabase();
+      } catch {
+        // ignore
+      }
+      await mongoose.disconnect();
+    }
+    (config as { MONGODB_URI?: string }).MONGODB_URI = originalUri;
     syncRegistry.resetAll();
   });
 
@@ -136,6 +155,10 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
 
     // All 6 connections must succeed
     await Promise.all(connectionPromises);
+    for (let i = 0; i < 20; i++) {
+      if (syncRegistry.getRoomConnectionCount(roomId) === 6) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
     expect(syncRegistry.getRoomConnectionCount(roomId)).toBe(6);
 
     // Now attempt a 7th simultaneous connection to the same room

@@ -19,7 +19,7 @@ export class DocSnapshotRepo {
   }
 
   public async getLatestSnapshot(roomId: string): Promise<IDocSnapshot | null> {
-    return DocSnapshotModel.findOne({ roomId }).sort({ seq: -1 }).exec();
+    return DocSnapshotModel.findOne({ roomId }).sort({ seq: -1, ts: -1, _id: -1 }).exec();
   }
 
   public async deleteByRoom(roomId: string): Promise<number> {

@@ -25,12 +25,12 @@ import {
   loadDocument,
   queueUpdate,
   flushRoom,
-  takeSnapshot,
   startSnapshotInterval,
   stopSnapshotInterval,
   stopAllSnapshotIntervals,
   drainPersistenceAndSnapshot,
   getPendingPersistenceStats,
+  unregisterLoadedDocument,
   type PersistenceStats,
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
@@ -414,12 +414,14 @@ export function createSyncServer(
     },
     async onDisconnect(data) {
       const roomId = data.documentName;
+      const isRoomEmpty = !data.clientsCount || data.clientsCount === 0;
 
-      // 1. Flush pending updates and snapshot on disconnect
-      await flushRoom(roomId, true);
+      // 1. Flush pending updates. If room is now empty, take a consistent final snapshot.
+      // If other participants remain, only flush updates without taking a snapshot.
+      await flushRoom(roomId, isRoomEmpty);
 
       // 2. Stop snapshot interval when room is empty
-      if (!data.clientsCount || data.clientsCount === 0) {
+      if (isRoomEmpty) {
         stopSnapshotInterval(roomId);
       }
 
@@ -428,8 +430,8 @@ export function createSyncServer(
       rateLimiter.cleanup(data.socketId);
 
       // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
-      if (data.clientsCount === 0) {
-        await takeSnapshot(roomId, data.document, true);
+      if (isRoomEmpty) {
+        unregisterLoadedDocument(roomId);
 
         const hocuspocusInstance =
           (data.instance as
@@ -456,6 +458,7 @@ export function createSyncServer(
       documentLoadWaiters.addWaiter(roomId, socketId);
 
       const cleanupFailedLoad = () => {
+        unregisterLoadedDocument(roomId);
         // Retrieve and clear exact socket IDs tracked as waiting for this document load
         const waiters = documentLoadWaiters.clearWaiters(roomId);
         const affectedSockets = new Set<string>([socketId, ...waiters]);
@@ -488,6 +491,9 @@ export function createSyncServer(
       }
     },
     async onAwarenessUpdate(data) {
+      if (isShuttingDown) {
+        return;
+      }
       const roomId = data.documentName;
       let actorId: string | undefined;
 
@@ -501,20 +507,24 @@ export function createSyncServer(
       }
 
       if (actorId && mongoose.connection.readyState === 1) {
-        const clientIds = new Set<number>();
-        if (Array.isArray(data.added)) {
-          for (const id of data.added) {
-            if (typeof id === "number") clientIds.add(id);
+        try {
+          const clientIds = new Set<number>();
+          if (Array.isArray(data.added)) {
+            for (const id of data.added) {
+              if (typeof id === "number") clientIds.add(id);
+            }
           }
-        }
-        if (Array.isArray(data.states)) {
-          for (const s of data.states) {
-            if (typeof s?.clientId === "number") clientIds.add(s.clientId);
+          if (Array.isArray(data.states)) {
+            for (const s of data.states) {
+              if (typeof s?.clientId === "number") clientIds.add(s.clientId);
+            }
           }
-        }
 
-        for (const clientId of clientIds) {
-          await clientMapRepo.registerClient(roomId, clientId, actorId);
+          for (const clientId of clientIds) {
+            await clientMapRepo.registerClient(roomId, clientId, actorId);
+          }
+        } catch {
+          // Ignore registration errors during socket closure or db disconnection
         }
       }
     },

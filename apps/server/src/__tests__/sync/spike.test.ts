@@ -1,5 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createServer, type Server as HttpServer } from "node:http";
+import mongoose from "mongoose";
+import { config } from "../../config.js";
 import {
   attachSyncServer,
   createSyncServer,
@@ -15,6 +17,7 @@ import * as Y from "yjs";
 describe("T07 Spike: Minimal Hocuspocus Attach", () => {
   let httpServer: HttpServer | undefined;
   let syncServer: SyncServerInstance | undefined;
+  let originalUri: string | undefined;
   const providers: HocuspocusProvider[] = [];
   const wsProviders: HocuspocusProviderWebsocket[] = [];
 
@@ -27,6 +30,17 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
       });
     }
   }
+
+  beforeEach(async () => {
+    originalUri = config.MONGODB_URI;
+    const testDb = `pairprep_spike_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const testUri = `mongodb://127.0.0.1:27017/${testDb}`;
+    (config as { MONGODB_URI?: string }).MONGODB_URI = testUri;
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+    await mongoose.connect(testUri);
+  });
 
   afterEach(async () => {
     for (const provider of providers) {
@@ -50,6 +64,16 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
       });
       httpServer = undefined;
     }
+
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await mongoose.connection.db?.dropDatabase();
+      } catch {
+        // ignore
+      }
+      await mongoose.disconnect();
+    }
+    (config as { MONGODB_URI?: string }).MONGODB_URI = originalUri;
   });
 
   it("attaches to HTTP server at /sync with allowed origin and syncs updates", async () => {

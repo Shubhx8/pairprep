@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createServer, type Server as HttpServer } from "node:http";
+import mongoose from "mongoose";
+import { config } from "../../config.js";
 import * as Y from "yjs";
 import WebSocket from "ws";
 import {
@@ -16,6 +18,7 @@ import {
 describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () => {
   let httpServer: HttpServer | null = null;
   let syncServer: SyncServerInstance | null = null;
+  let originalUri: string | undefined;
   const providers: HocuspocusProvider[] = [];
   const wsProviders: HocuspocusProviderWebsocket[] = [];
   const roomId = "507f1f77bcf86cd799439011";
@@ -32,8 +35,16 @@ describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () =>
     }
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     syncRegistry.resetAll();
+    originalUri = config.MONGODB_URI;
+    const testDb = `pairprep_conc_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const testUri = `mongodb://127.0.0.1:27017/${testDb}`;
+    (config as { MONGODB_URI?: string }).MONGODB_URI = testUri;
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+    await mongoose.connect(testUri);
   });
 
   afterEach(async () => {
@@ -63,6 +74,15 @@ describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () =>
       await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
       httpServer = null;
     }
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await mongoose.connection.db?.dropDatabase();
+      } catch {
+        // ignore
+      }
+      await mongoose.disconnect();
+    }
+    (config as { MONGODB_URI?: string }).MONGODB_URI = originalUri;
     syncRegistry.resetAll();
   });
 

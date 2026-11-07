@@ -219,6 +219,15 @@ Task T07 implements the real-time collaborative document synchronization engine 
   - Concurrency prevents Node.js HTTP server socket drain deadlock: `server.close()` hangs indefinitely waiting for open WebSocket TCP sockets unless they are severed concurrently by `drainAndShutdown()`.
   - MongoDB disconnect is strictly deferred until *after* `syncServer.drainAndShutdown()` successfully flushes all pending updates to MongoDB, preventing `MongoNotConnectedError` during shutdown flushes.
 
+### 3.8 `apps/server/src/sync/persistence.ts` Retry & Snapshot Consistency Hardening
+- **Stable Assigned Sequences**: `QueuedUpdate.seq` is allocated once when a batch is first prepared for database insertion. When a write fails, `requeueUpdates` preserves these exact sequence numbers across retries rather than re-allocating new sequences, completely eliminating duplicate or out-of-order sequence holes.
+- **Idempotent Pre-Insert Reconciliation**: Upon retrying a batch, the flush worker queries existing records in the target sequence range (`{ roomId, seq: { $gte: minSeq, $lte: maxSeq } }`). Records matching both `authorId` and binary payload buffer are recognized as already committed and skipped; conflicting records throw an immediate consistency failure.
+- **Bounded Retry Backoff with Jitter**: Exponential backoff (`MIN_RETRY_BACKOFF_MS = 250`, `MAX_RETRY_BACKOFF_MS = 5000`, factor 2 with random jitter) eliminates zero-delay spin loops on consecutive database failures. Resets upon successful write.
+- **Bounded Persistence Queue & Synchronous Backpressure**: Strict capacity limits (`MAX_PENDING_UPDATES_PER_ROOM = 1000`, `MAX_PENDING_BYTES_PER_ROOM = 4 MB`) engage room backpressure via `syncRegistry.setRoomBackpressure(roomId, true)`. Incoming edit frames are rejected in `beforeHandleMessage` while preserving all already-accepted updates. Recovers automatically once the queue drains below 50% capacity.
+- **Watermark Lockstep Consistency**: `takeSnapshotLocked` flushes all pending updates under the `RoomMutex` *before* encoding `Y.encodeStateAsUpdate(document)`, ensuring zero gap between document state and stored watermark. Redundant snapshots (`seq === lastSnapshot.seq`) are deduplicated.
+- **Active Loaded Document Registry**: Tracks active open documents so that graceful shutdown snapshots all open rooms (even with zero unflushed updates), final disconnects take exactly one snapshot, and intermediate disconnects flush without creating unnecessary snapshots.
+- **Strict Database Availability Guard**: `loadDocument` strictly checks `mongoose.connection.readyState === 1` and throws immediately if MongoDB is disconnected, preventing serving blank documents on database outages.
+
 ---
 
 ## 4. Verification Evidence & Test Suite Summary
@@ -239,16 +248,18 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`livePermissions.test.ts`** | 6 | Live permission coordination (`ROOM-3`, `ROOM-6`, `ED-6`): demote to viewer (<1s revocation), promote to editor, kick termination (4003), room end read-only, room delete cascade (1000), interview candidate lifecycle. | **PASS** |
 | **`rateLimitFlood.test.ts`** | 15 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning, capacity saturation defense without active entry eviction, strict socket identity validation, distinct socket bucket isolation. | **PASS** |
 | **`shutdownStats.test.ts`** | 30 | Sync statistics & graceful shutdown drain: schema baseline, monotonic counters, connection counts, pending updates/snapshots, capacity utilization, rate limiter stats, admission barrier (503), close frame 1001 with reason `server_shutting_down`, hard drain barrier, persistence flush before DB disconnect, idempotency, Node.js deadlock prevention, in-flight auth/load race barriers (Test A & B), forced-drain transport termination (Test C), persistence failure rejection (Test D), inbound awareness shutdown barrier, failed document-load reservation cleanup, concurrent document-load cohort waiter cleanup, and multi-document physical socket sharing preservation. | **PASS** |
+| **`persistenceHardening.test.ts`** | 19 | Persistence retry & snapshot consistency hardening (Commit 5): RoomMutex tail-promise cleanup, stable assigned sequence numbers across retries, hash-verified reconciliation, bounded backoff with exponential backoff and jitter, backpressure bounds (count & byte caps) and recovery hysteresis, exact snapshot watermarks, snapshot deduplication, deterministic pruning ({ seq: -1, ts: -1, _id: -1 }), disconnect snapshot lifecycle, active loaded document shutdown drain. | **PASS** |
 
-**Total T07 Tests:** 12 test files, 96 passing tests, 0 failures.  
-**Full Monorepo Suite:** 50 test files, 373 passing tests, 0 failures.
+**Total T07 Tests:** 13 test files, 115 passing tests, 0 failures.  
+**Full Monorepo Suite:** 51 test files, 392 passing tests, 0 failures.
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
-[HEAD]  fix(sync): precise failed-load cohort cleanup and loader deduplication
+[HEAD]  fix(sync): harden persistence retries and snapshot consistency
+754f407 fix(sync): precise failed-load cohort cleanup and loader deduplication
 829feba fix(sync): concurrent document-load waiter reservation cleanup
 eebfba8 fix(sync): awareness shutdown barrier and failed-load reservation cleanup
 c1ccdcd fix(sync): shutdown admission races, read-only barrier, and forced-drain verification

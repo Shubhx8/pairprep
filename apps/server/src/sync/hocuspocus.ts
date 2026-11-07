@@ -20,6 +20,7 @@ import {
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { clientMapRepo } from "../repos/clientMapRepo.js";
+import { rootLogger } from "../middleware/logger.js";
 import type { IRoom } from "../models/rooms.js";
 import type { IRoomMember } from "../models/room_members.js";
 
@@ -227,12 +228,14 @@ export function createSyncServer(
           role: "user",
         } as unknown as import("../models/users.js").IUser,
       };
+      const memberRole = context.member?.role;
       syncRegistry.promoteReservation(
         data.socketId,
         data.documentName,
         memberId,
         principal,
-        data.connection
+        data.connection,
+        memberRole
       );
     },
     async onDisconnect(data) {
@@ -308,14 +311,14 @@ export function createSyncServer(
       }
     },
     async onChange(data) {
-      const context = data.context as SyncConnectionContext;
+      const connContext = (data.connection?.context ?? data.context) as SyncConnectionContext | undefined;
       // Always populate doc_updates.authorId strictly from the authenticated connection context,
       // never trusting client-supplied identifiers (PRD ATTR-1 / Non-negotiable security rule #2)
-      const authorId = context?.principal?.id ?? data.socketId ?? "anonymous";
+      const authorId = connContext?.principal?.id ?? data.socketId ?? "anonymous";
       queueUpdate(data.documentName, authorId, data.update, data.document);
 
       // Register Yjs clientIds from update metadata to authenticated actorId (first claim wins)
-      if (context?.principal?.id && mongoose.connection.readyState === 1) {
+      if (connContext?.principal?.id && mongoose.connection.readyState === 1) {
         try {
           const meta = Y.parseUpdateMeta(data.update);
           for (const clientId of meta.from.keys()) {
@@ -323,12 +326,16 @@ export function createSyncServer(
               await clientMapRepo.registerClient(
                 data.documentName,
                 clientId,
-                context.principal.id
+                connContext.principal.id
               );
             }
           }
-        } catch {
-          // Non-blocking: corrupt metadata or non-parseable updates should not fail ingestion
+        } catch (err) {
+          // Asynchronous client_map failures should be logged so they are observable
+          rootLogger.warn(
+            { err, roomId: data.documentName, authorId },
+            "Failed to register client_map attribution from onChange update"
+          );
         }
       }
     },
@@ -336,11 +343,8 @@ export function createSyncServer(
       if (data.update.byteLength > 1048576) {
         throw new Error("Update frame size exceeds 1 MB limit");
       }
-      if (
-        data.connection.readOnly ||
-        syncRegistry.isRoomReadOnly(data.documentName)
-      ) {
-        throw new Error("Cannot edit in read-only mode");
+      if (syncRegistry.isRoomReadOnly(data.documentName)) {
+        data.connection.readOnly = true;
       }
     },
   });

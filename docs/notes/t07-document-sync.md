@@ -16,7 +16,9 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | Requirement ID | PRD Specification | Implementation Detail | Status |
 | :--- | :--- | :--- | :--- |
 | **`ED-2`** | Conflict-free live editing (server convergence). | Hocuspocus Yjs WebSocket server at `/sync` synchronizes CRDT state vectors and document updates with immediate in-memory convergence. | **Verified** |
-| **`ED-6`** | Server-enforced read-only for viewers & candidates. | `onAuthenticate` sets `connectionConfig.readOnly = true` for viewers and pre-interview candidates; `beforeHandleMessage` drops edits from read-only sockets. | **Verified** |
+| **`ED-6`** | Server-enforced read-only for viewers & candidates. | `onAuthenticate` sets `connectionConfig.readOnly = true` for viewers and pre-interview candidates; `beforeHandleMessage` sets `connection.readOnly = true` when room is locked; updates are natively dropped without dropping the connection. | **Verified** |
+| **`ROOM-3`** | Live permission coordination with REST API. | Room REST mutations coordinate with `syncRegistry` within 1s: member demotion sets `readOnly: true`, kick terminates WebSocket (4003), end locks room, delete terminates all (1000) and cleans `client_map`. | **Verified** |
+| **`ROOM-6`** | Interview lifecycle candidate permissions. | Candidate is restricted to read-only while room is `open`; transitioning to `live` activates editing dynamically on already-connected sockets without requiring reconnect. | **Verified** |
 | **`PER-1`** | Document persistence & crash recovery within 2s. | `queueUpdate` uses a fixed 2,000 ms durability deadline with flat arrival-order writes to `doc_updates`; abrupt `SIGKILL` child process crash tests verify state recovery. | **Verified** |
 | **`ROOM-4`** | Strict room capacity: max 6 members & 6 connections. | `SyncRegistry` synchronously reserves slots in `onAuthenticate`; enforces $\le 6$ distinct members, $\le 6$ total connections, and $\le 3$ connections per member. | **Verified** |
 | **`CONC-1`** | Up to 6 participants typing concurrently. | Non-blocking in-memory CRDT processing allows all 6 participants to type simultaneously without locking or race conditions. | **Verified** |
@@ -177,9 +179,10 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`disconnect.test.ts`** | 1 | Disconnect lifecycle: immediate flush on disconnect, unregister connection, snapshot on exit, and document memory unload. | **PASS** |
 | **`concurrency.test.ts`** | 3 | 6 concurrent participants typing without conflict (`CONC-1`), idempotent duplicate updates (`CONC-2`), read-only enforcement in `beforeHandleMessage` (`ED-6`). | **PASS** |
 | **`attribution.test.ts`** | 7 | Client identity attribution (`ATTR-1`), first-claim-wins `$setOnInsert`, duplicate-key concurrency, identity hijacking prevention. | **PASS** |
+| **`livePermissions.test.ts`** | 6 | Live permission coordination (`ROOM-3`, `ROOM-6`, `ED-6`): demote to viewer (<1s revocation), promote to editor, kick termination (4003), room end read-only, room delete cascade (1000), interview candidate lifecycle. | **PASS** |
 
-**Total T07 Tests:** 9 test files, 45 passing tests, 0 failures.  
-**Full Monorepo Suite:** 47 test files, 322 passing tests, 0 failures.
+**Total T07 Tests:** 10 test files, 51 passing tests, 0 failures.  
+**Full Monorepo Suite:** 48 test files, 328 passing tests, 0 failures.
 
 ---
 

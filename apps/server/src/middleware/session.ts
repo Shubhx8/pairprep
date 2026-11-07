@@ -8,6 +8,16 @@ import { rootLogger } from "./logger.js";
 export const SESSION_COOKIE_NAME = "pairprep.sid";
 
 let memoizedStore: MongoStore | null = null;
+let lastClient: unknown = null;
+
+/**
+ * Explicitly invalidates the memoized MongoStore and client reference.
+ * Useful during database reconnection or in multi-tenant test suites.
+ */
+export function resetSessionStore(): void {
+  memoizedStore = null;
+  lastClient = null;
+}
 
 /**
  * Returns the lazily initialized, memoized MongoStore instance.
@@ -17,28 +27,33 @@ let memoizedStore: MongoStore | null = null;
 export function getSessionStore(): MongoStore | null {
   if (mongoose.connection.readyState !== 1) {
     memoizedStore = null;
+    lastClient = null;
     return null;
   }
-  if (!memoizedStore) {
-    memoizedStore = MongoStore.create({
-      clientPromise: Promise.resolve(mongoose.connection.getClient()),
-      collectionName: "sessions",
-      ttl: 7 * 24 * 60 * 60, // 7 days in seconds
-      autoRemove: "native",
-      touchAfter: 24 * 3600,
-    });
-    memoizedStore.on("error", (err) => {
-      const errorName =
-        err && typeof err === "object" && "name" in err
-          ? String((err as { name: unknown }).name)
-          : "Error";
-      rootLogger.error(
-        { errorName },
-        "MongoStore error; invalidating memoized store"
-      );
-      memoizedStore = null;
-    });
+  const currentClient = mongoose.connection.getClient();
+  if (memoizedStore && lastClient === currentClient) {
+    return memoizedStore;
   }
+  memoizedStore = MongoStore.create({
+    clientPromise: Promise.resolve(currentClient),
+    collectionName: "sessions",
+    ttl: 7 * 24 * 60 * 60, // 7 days in seconds
+    autoRemove: "native",
+    touchAfter: 24 * 3600,
+  });
+  lastClient = currentClient;
+  memoizedStore.on("error", (err) => {
+    const errorName =
+      err && typeof err === "object" && "name" in err
+        ? String((err as { name: unknown }).name)
+        : "Error";
+    rootLogger.error(
+      { errorName },
+      "MongoStore error; invalidating memoized store"
+    );
+    memoizedStore = null;
+    lastClient = null;
+  });
   return memoizedStore;
 }
 
@@ -82,6 +97,7 @@ export function createSessionMiddleware(): RequestHandler {
   }
 
   let sessionHandler: RequestHandler | null = null;
+  let handlerStore: MongoStore | null = null;
 
   function getSessionHandler(): RequestHandler {
     const store = getSessionStore();
@@ -90,7 +106,8 @@ export function createSessionMiddleware(): RequestHandler {
         "Cannot initialize session middleware without active database connection"
       );
     }
-    if (!sessionHandler) {
+    if (!sessionHandler || handlerStore !== store) {
+      handlerStore = store;
       sessionHandler = session({
         name: SESSION_COOKIE_NAME,
         secret: config.SESSION_SECRET!,
@@ -114,7 +131,9 @@ export function createSessionMiddleware(): RequestHandler {
     // Fast 503 without hang if MONGODB_URI is unset or DB is not connected / disconnected
     if (!config.MONGODB_URI || mongoose.connection.readyState !== 1) {
       sessionHandler = null;
+      handlerStore = null;
       memoizedStore = null;
+      lastClient = null;
       const requestId =
         (res.getHeader("X-Request-Id") as string) ||
         (req.headers["x-request-id"] as string) ||

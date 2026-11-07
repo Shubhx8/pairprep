@@ -81,7 +81,19 @@ When all participants disconnect from a room (`clientsCount === 0`):
 
 ---
 
-## 5. Operational Troubleshooting
+## 5. Live Permission Coordination & Room Lifecycle (`ROOM-3`, `ROOM-6`, `ED-6`)
+
+### 5.1 Sub-Second Permission Revocation
+Room REST APIs directly coordinate with the in-memory `SyncRegistry`:
+- **Role Demotion (`PATCH /api/v1/rooms/:slug/members/:id`)**: When demoted to `viewer`, the member's active connections are set to `readOnly = true` immediately in memory without disconnecting the client. Hocuspocus natively drops edit frames (`writeSyncStatus(false)`) without terminating the socket. When promoted back to `editor`, connections are restored to `readOnly = false` instantly.
+- **Member Removal (`DELETE /api/v1/rooms/:slug/members/:id`)**: Immediately terminates all active WebSocket connections for the removed member with WebSocket close code `4003` (`removed`).
+- **Room End (`POST /api/v1/rooms/:slug/end`)**: Locks the room in `SyncRegistry.setRoomReadOnly(roomId)`, enforcing `readOnly: true` across all active and newly connected sockets.
+- **Room Deletion (`DELETE /api/v1/rooms/:slug`)**: Closes all active connections with close code `1000` (`room_deleted`), marks the room read-only, and cascades deletion of `client_map` entries.
+- **Interview Lifecycle (`ROOM-6`)**: In `interview` rooms, candidate connections start as `readOnly = true` while the room is `open`. When the interview starts (`live`), `syncRegistry.updateRoomLifecycle(roomId, "live")` dynamically enables editing on already-connected candidate sockets without requiring a reconnect.
+
+---
+
+## 6. Operational Troubleshooting
 
 | Symptom | Probable Cause | Remediation |
 | :--- | :--- | :--- |
@@ -91,3 +103,4 @@ When all participants disconnect from a room (`clientsCount === 0`):
 | **`member_connection_limit_exceeded`** | Single member has 3 concurrent tabs/connections in one room. | Close duplicate browser tabs. |
 | **Room locked in read-only** | Document size exceeded 2 MB soft cap or owner ended session. | Check document size or room status; inspect `doc_updates` size. |
 | **Hocuspocus startup failure** | Mismatched Hocuspocus internal adapter version. | Verify `@hocuspocus/server` is locked to `4.7.1` and `crossws` is available. |
+

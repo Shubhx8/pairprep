@@ -85,6 +85,13 @@ export class ClientMapRepo {
     return ClientMapModel.findOne({ roomId, clientId }).exec();
   }
 
+  public async findByRoom(roomId: string): Promise<IClientMap[]> {
+    if (mongoose.connection.readyState !== 1) {
+      return [];
+    }
+    return ClientMapModel.find({ roomId }).exec();
+  }
+
   public async deleteByRoom(roomId: string): Promise<number> {
     if (mongoose.connection.readyState !== 1) {
       return 0;

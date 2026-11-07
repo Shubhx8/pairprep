@@ -10,6 +10,7 @@ export interface SyncConnectionLike {
   webSocket?: {
     close: (code?: number, reason?: string) => void;
   };
+  close?: (options?: unknown) => void;
   socketId?: string;
 }
 
@@ -29,6 +30,7 @@ export interface ActiveConnection {
     | { type: string; id: string; displayName: string; [key: string]: unknown };
   connection: SyncConnectionLike;
   connectedAt: number;
+  memberRole?: string;
 }
 
 /**
@@ -206,7 +208,8 @@ export class SyncRegistry {
     principal:
       | Principal
       | { type: string; id: string; displayName: string; [key: string]: unknown },
-    connection: SyncConnectionLike
+    connection: SyncConnectionLike,
+    memberRole?: string
   ): void {
     this.reservations.delete(socketId);
 
@@ -216,6 +219,7 @@ export class SyncRegistry {
       memberId,
       principal,
       connection,
+      memberRole,
       connectedAt: Date.now(),
     };
 
@@ -291,7 +295,18 @@ export class SyncRegistry {
       const active = this.activeConnections.get(socketId);
       if (active) {
         try {
-          active.connection.webSocket?.close(code, reason);
+          const conn = active.connection as {
+            close?: (opts?: { code?: number; reason?: string }) => void;
+            webSocket?: { close?: (code?: number, reason?: string) => void };
+          };
+          if (typeof conn.close === "function") {
+            conn.close({ code, reason });
+          } else if (
+            conn.webSocket &&
+            typeof conn.webSocket.close === "function"
+          ) {
+            conn.webSocket.close(code, reason);
+          }
         } catch {
           // ignore already closed
         }
@@ -300,6 +315,123 @@ export class SyncRegistry {
       }
     }
     return closed;
+  }
+
+  /**
+   * Returns active connections for a given room.
+   */
+  getActiveConnectionsForRoom(roomId: string): ActiveConnection[] {
+    const sockets = this.roomActiveSockets.get(roomId);
+    if (!sockets) return [];
+    const conns: ActiveConnection[] = [];
+    for (const socketId of sockets) {
+      const active = this.activeConnections.get(socketId);
+      if (active) conns.push(active);
+    }
+    return conns;
+  }
+
+  /**
+   * Sets member's active connections in a room to read-only or writable.
+   */
+  setMemberReadOnly(
+    roomId: string,
+    memberId: string,
+    readOnly = true,
+    newRole?: string
+  ): number {
+    const memberKey = `${roomId}:${memberId}`;
+    const sockets = this.memberSockets.get(memberKey);
+    if (!sockets || sockets.size === 0) return 0;
+
+    let updated = 0;
+    for (const socketId of sockets) {
+      const active = this.activeConnections.get(socketId);
+      if (active) {
+        active.connection.readOnly = readOnly;
+        if (newRole) active.memberRole = newRole;
+        updated++;
+      }
+    }
+    return updated;
+  }
+
+  /**
+   * Closes all active connections in a room with a specific WebSocket close code and reason.
+   */
+  closeAllConnectionsForRoom(
+    roomId: string,
+    code = 1000,
+    reason = "room_closed"
+  ): number {
+    const sockets = this.roomActiveSockets.get(roomId);
+    if (!sockets || sockets.size === 0) return 0;
+
+    let closed = 0;
+    const socketIds = Array.from(sockets);
+    for (const socketId of socketIds) {
+      const active = this.activeConnections.get(socketId);
+      if (active) {
+        try {
+          const conn = active.connection as {
+            close?: (opts?: { code?: number; reason?: string }) => void;
+            webSocket?: { close?: (code?: number, reason?: string) => void };
+          };
+          if (typeof conn.close === "function") {
+            conn.close({ code, reason });
+          } else if (
+            conn.webSocket &&
+            typeof conn.webSocket.close === "function"
+          ) {
+            conn.webSocket.close(code, reason);
+          }
+        } catch {
+          // ignore already closed
+        }
+        this.unregisterConnection(roomId, socketId);
+        closed++;
+      }
+    }
+    return closed;
+  }
+
+  /**
+   * Updates interview candidate permissions based on room live status.
+   */
+  syncCandidatePermissions(roomId: string, isLive: boolean): number {
+    let updated = 0;
+    const sockets = this.roomActiveSockets.get(roomId);
+    if (!sockets) return 0;
+
+    for (const socketId of sockets) {
+      const active = this.activeConnections.get(socketId);
+      if (active) {
+        const role =
+          active.memberRole ??
+          (active.principal as { role?: string })?.role;
+        if (role === "candidate") {
+          active.connection.readOnly = !isLive;
+          updated++;
+        }
+      }
+    }
+    return updated;
+  }
+
+  /**
+   * Coordinates in-memory room permissions when room lifecycle changes.
+   */
+  updateRoomLifecycle(
+    roomId: string,
+    status: "open" | "live" | "ended" | "archived"
+  ): void {
+    if (status === "ended" || status === "archived") {
+      this.setRoomReadOnly(roomId);
+    } else if (status === "live") {
+      this.syncCandidatePermissions(roomId, true);
+    } else if (status === "open") {
+      this.syncCandidatePermissions(roomId, false);
+    }
   }
 
   /**

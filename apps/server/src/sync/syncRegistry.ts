@@ -211,10 +211,23 @@ export class SyncRegistry {
   }
 
   /**
-   * Cancels a pending reservation on auth failure, permission denial, or socket error.
+   * Cancels a pending reservation on auth failure, permission denial, failed document load, or socket error.
+   * If roomId is specified, only deletes if the reservation matches that room.
    */
-  cancelReservation(socketId: string): void {
-    this.reservations.delete(socketId);
+  cancelReservation(socketId: string, roomId?: string): void {
+    const res = this.reservations.get(socketId);
+    if (res) {
+      if (!roomId || res.roomId === roomId) {
+        this.reservations.delete(socketId);
+      }
+    }
+  }
+
+  /**
+   * Returns a pending reservation by its socket ID, if present.
+   */
+  getReservation(socketId: string): ConnectionReservation | undefined {
+    return this.reservations.get(socketId);
   }
 
   /**

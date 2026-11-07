@@ -356,15 +356,25 @@ export function createSyncServer(
       } catch (err) {
         authenticationFailures++;
         // Guarantee slot reservation and rate-limiter state are released on every error/failure path
-        syncRegistry.cancelReservation(data.socketId);
-        rateLimiter.cleanup(data.socketId);
+        syncRegistry.cancelReservation(data.socketId, data.documentName);
+        const hasActiveConn = !!syncRegistry.getConnection(data.socketId);
+        const hasOtherReservation =
+          syncRegistry.getReservation(data.socketId) !== undefined;
+        if (!hasActiveConn && !hasOtherReservation) {
+          rateLimiter.cleanup(data.socketId);
+        }
         throw err;
       }
     },
     async connected(data) {
       if (isShuttingDown) {
-        syncRegistry.cancelReservation(data.socketId);
-        rateLimiter.cleanup(data.socketId);
+        syncRegistry.cancelReservation(data.socketId, data.documentName);
+        const hasActiveConn = !!syncRegistry.getConnection(data.socketId);
+        const hasOtherReservation =
+          syncRegistry.getReservation(data.socketId) !== undefined;
+        if (!hasActiveConn && !hasOtherReservation) {
+          rateLimiter.cleanup(data.socketId);
+        }
         try {
           data.connection?.webSocket?.close(1001, "server_shutting_down");
         } catch {
@@ -434,15 +444,36 @@ export function createSyncServer(
       }
     },
     async onLoadDocument(data) {
-      if (isShuttingDown) {
-        throw new Error("Server is shutting down");
+      const roomId = data.documentName;
+      const socketId = data.socketId;
+
+      const cleanupFailedLoad = () => {
+        // Release pending reservation for this room
+        syncRegistry.cancelReservation(socketId, roomId);
+
+        // Only clean up rate limiter if this socket is not actively used by another document
+        const hasActiveConn = !!syncRegistry.getConnection(socketId);
+        const hasOtherReservation =
+          syncRegistry.getReservation(socketId) !== undefined;
+        if (!hasActiveConn && !hasOtherReservation) {
+          rateLimiter.cleanup(socketId);
+        }
+      };
+
+      try {
+        if (isShuttingDown) {
+          throw new Error("Server is shutting down");
+        }
+        await loadDocument(roomId, data.document);
+        if (isShuttingDown) {
+          throw new Error("Server is shutting down");
+        }
+        startSnapshotInterval(roomId, data.document);
+        return data.document;
+      } catch (err) {
+        cleanupFailedLoad();
+        throw err;
       }
-      await loadDocument(data.documentName, data.document);
-      if (isShuttingDown) {
-        throw new Error("Server is shutting down");
-      }
-      startSnapshotInterval(data.documentName, data.document);
-      return data.document;
     },
     async onAwarenessUpdate(data) {
       const roomId = data.documentName;
@@ -560,6 +591,17 @@ export function createSyncServer(
 
       if (syncRegistry.isRoomReadOnly(data.documentName)) {
         data.connection.readOnly = true;
+      }
+    },
+    async beforeHandleAwareness(data) {
+      if (isShuttingDown) {
+        if (data.states && typeof data.states.clear === "function") {
+          data.states.clear();
+        }
+        if (data.removedClients && typeof data.removedClients.clear === "function") {
+          data.removedClients.clear();
+        }
+        return;
       }
     },
   });

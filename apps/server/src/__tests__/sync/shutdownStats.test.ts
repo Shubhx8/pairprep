@@ -1052,5 +1052,293 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
       createSpy.mockRestore();
     });
+
+    it("proves awareness updates sent after shutdown starts do not change server awareness state or reach another participant", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(
+        httpServer,
+        createSyncServer({ requireAuth: false })
+      );
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      // 1. Connect Alice
+      const aliceDoc = new Y.Doc();
+      const aliceWs = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+        maxAttempts: 1,
+      });
+      wsProviders.push(aliceWs);
+      const aliceProvider = new HocuspocusProvider({
+        websocketProvider: aliceWs,
+        name: roomId,
+        document: aliceDoc,
+      });
+      providers.push(aliceProvider);
+
+      // 2. Connect Bob
+      const bobDoc = new Y.Doc();
+      const bobWs = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+        maxAttempts: 1,
+      });
+      wsProviders.push(bobWs);
+      const bobProvider = new HocuspocusProvider({
+        websocketProvider: bobWs,
+        name: roomId,
+        document: bobDoc,
+      });
+      providers.push(bobProvider);
+
+      aliceProvider.attach();
+      bobProvider.attach();
+
+      await Promise.all([
+        new Promise<void>((r) => aliceProvider.on("synced", () => r())),
+        new Promise<void>((r) => bobProvider.on("synced", () => r())),
+      ]);
+
+      // 3. Set normal awareness while server is running
+      aliceProvider.setAwarenessField("user", { name: "Alice" });
+      bobProvider.setAwarenessField("user", { name: "Bob" });
+
+      // Verify mutual awareness exchange while server is running
+      await vi.waitFor(() => {
+        const bobSeesAlice = bobProvider.awareness!.getStates().get(aliceDoc.clientID);
+        expect(bobSeesAlice?.user?.name).toBe("Alice");
+      });
+      await vi.waitFor(() => {
+        const aliceSeesBob = aliceProvider.awareness!.getStates().get(bobDoc.clientID);
+        expect(aliceSeesBob?.user?.name).toBe("Bob");
+      });
+
+      // Verify server document awareness state has both clients
+      const hocuspocusInstance = (syncServer.server as unknown as {
+        hocuspocus: { documents: Map<string, { awareness: import("y-protocols/awareness").Awareness }> };
+      }).hocuspocus;
+      const serverDoc = hocuspocusInstance.documents.get(roomId);
+      expect(serverDoc).toBeDefined();
+      expect(serverDoc!.awareness.getStates().get(aliceDoc.clientID)?.user?.name).toBe("Alice");
+      expect(serverDoc!.awareness.getStates().get(bobDoc.clientID)?.user?.name).toBe("Bob");
+
+      // Track updates received by Bob during/after shutdown
+      const bobLateAwarenessUpdates: Array<{
+        user?: { name?: string };
+        cursor?: { line?: number };
+      }> = [];
+      expect(bobProvider.awareness).not.toBeNull();
+      bobProvider.awareness!.on("update", () => {
+        const aliceStateOnBob = bobProvider.awareness?.getStates().get(aliceDoc.clientID);
+        if (aliceStateOnBob) {
+          bobLateAwarenessUpdates.push(JSON.parse(JSON.stringify(aliceStateOnBob)));
+        }
+      });
+
+      // Spy on closeAllConnections: when called, shutdown has entered Phase A (isShuttingDown = true),
+      // and sockets are still open. Alice emits awareness updates after shutdown barrier!
+      const origCloseAll = syncRegistry.closeAllConnections.bind(syncRegistry);
+      const closeSpy = vi.spyOn(syncRegistry, "closeAllConnections").mockImplementation((code, reason) => {
+        // Alice attempts awareness modification after shutdown started
+        aliceProvider.setAwarenessField("user", { name: "Alice_PostShutdown" });
+        aliceProvider.setAwarenessField("cursor", { line: 99 });
+        return origCloseAll(code, reason);
+      });
+
+      // Also directly invoke beforeHandleAwareness to simulate an inbound frame processed during shutdown
+      const beforeHandleAwareness = syncServer.server.configuration.beforeHandleAwareness;
+      expect(beforeHandleAwareness).toBeDefined();
+
+      const testStates = new Map<number, Record<string, unknown>>([
+        [99999, { user: { name: "Attacker_Late" } }],
+      ]);
+      const testRemoved = new Set<number>([aliceDoc.clientID]);
+
+      await syncServer.drainAndShutdown({ drainTimeoutMs: 2000 });
+
+      // Directly verify beforeHandleAwareness drops incoming additions, updates, and removals during shutdown
+      await beforeHandleAwareness!({
+        documentName: roomId,
+        document: serverDoc as unknown as import("@hocuspocus/server").Document,
+        states: testStates,
+        removedClients: testRemoved,
+      } as unknown as Parameters<NonNullable<typeof beforeHandleAwareness>>[0]);
+
+      // States and removedClients must have been cleared
+      expect(testStates.size).toBe(0);
+      expect(testRemoved.size).toBe(0);
+
+      // 4. Bob must NEVER have received Alice_PostShutdown or cursor line 99
+      for (const update of bobLateAwarenessUpdates) {
+        expect(update?.user?.name).not.toBe("Alice_PostShutdown");
+        expect(update?.cursor?.line).not.toBe(99);
+      }
+      expect(bobProvider.awareness!.getStates().get(aliceDoc.clientID)?.user?.name).not.toBe("Alice_PostShutdown");
+
+      // 5. Server awareness must not contain the modified state or the late addition
+      expect(serverDoc!.awareness.getStates().get(99999)).toBeUndefined();
+
+      closeSpy.mockRestore();
+    });
+
+    it("releases reservation and cleans up limiter when document loading fails or is aborted during shutdown", async () => {
+      syncServer = createSyncServer({ requireAuth: false });
+      const socketId = "sock_doc_load_fail_cleanup";
+      const testRoomId = "507f1f77bcf86cd799439088";
+
+      // 1. Authenticate and reserve a slot
+      const onAuth = syncServer.server.configuration.onAuthenticate;
+      expect(onAuth).toBeDefined();
+
+      await onAuth!({
+        documentName: testRoomId,
+        socketId,
+        connectionConfig: { readOnly: false },
+        context: {},
+        instance: syncServer.server,
+        requestHeaders: {},
+        requestParameters: new URLSearchParams(),
+      } as unknown as Parameters<NonNullable<typeof onAuth>>[0]);
+
+      // Slot reservation must exist and be registered for socketId in testRoomId
+      expect(syncRegistry.getPendingReservationCount()).toBe(1);
+      const initialReservation = syncRegistry.getReservation(socketId);
+      expect(initialReservation).toBeDefined();
+      expect(initialReservation?.roomId).toBe(testRoomId);
+
+      // 2. Pause document loading
+      let pauseDeferredResolve!: () => void;
+      const pausePromise = new Promise<void>((r) => {
+        pauseDeferredResolve = r;
+      });
+
+      let reachedLoadResolve!: () => void;
+      const reachedLoadPromise = new Promise<void>((r) => {
+        reachedLoadResolve = r;
+      });
+
+      const snapSpy = vi
+        .spyOn(DocSnapshotModel, "findOne")
+        .mockImplementation(() => {
+          reachedLoadResolve();
+          return {
+            sort: () => ({
+              exec: async () => {
+                await pausePromise;
+                return null;
+              },
+            }),
+          } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
+        });
+
+      const doc = new Y.Doc();
+      const onLoadDoc = syncServer.server.configuration.onLoadDocument;
+      expect(onLoadDoc).toBeDefined();
+
+      const loadDocPromise = onLoadDoc!({
+        documentName: testRoomId,
+        document: doc,
+        instance: syncServer.server,
+        requestHeaders: {},
+        requestParameters: new URLSearchParams(),
+        socketId,
+      } as unknown as Parameters<NonNullable<typeof onLoadDoc>>[0]);
+
+      // Wait until document loading is paused in-flight
+      await reachedLoadPromise;
+      expect(syncRegistry.getPendingReservationCount()).toBe(1);
+
+      // 3. Start shutdown
+      const shutdownPromise = syncServer.drainAndShutdown();
+
+      // 4. Complete the failed load
+      pauseDeferredResolve();
+
+      // Document loading must reject because shutdown occurred while in flight
+      await expect(loadDocPromise).rejects.toThrow("Server is shutting down");
+      await shutdownPromise;
+
+      // 5. Verify that the reservation is released
+      expect(syncRegistry.getPendingReservationCount()).toBe(0);
+      expect(syncRegistry.getReservation(socketId)).toBeUndefined();
+
+      // 6. Verify that registry, limiter, and document state are consistent
+      expect(syncRegistry.getActiveConnectionCount()).toBe(0);
+      expect(syncRegistry.getConnection(socketId)).toBeUndefined();
+      expect(syncRegistry.getRoomConnectionCount(testRoomId)).toBe(0);
+      expect(
+        (
+          syncServer.server as unknown as {
+            hocuspocus?: { documents?: Map<string, unknown> };
+          }
+        ).hocuspocus?.documents?.has(testRoomId)
+      ).toBeFalsy();
+      expect(syncServer.getStats().status).toBe("destroyed");
+
+      // Verify physical socket sharing: if another document is active, its connection and limiter state remain intact
+      const sharedSocketId = "sock_shared_multi_doc";
+      const roomA = "507f1f77bcf86cd799439077";
+      const roomB = "507f1f77bcf86cd799439066";
+
+      // Register active connection for roomA
+      syncRegistry.reserveSlot(roomA, sharedSocketId);
+      syncRegistry.promoteReservation(
+        sharedSocketId,
+        roomA,
+        "user_shared",
+        { id: "user_shared", type: "user", displayName: "Shared", role: "user" },
+        { readOnly: false } as unknown as import("../../sync/syncRegistry.js").SyncConnectionLike
+      );
+      expect(syncRegistry.getConnection(sharedSocketId)).toBeDefined();
+
+      // Reserve slot for roomB on same physical socket
+      syncRegistry.reserveSlot(roomB, sharedSocketId);
+      expect(syncRegistry.getPendingReservationCount()).toBe(1);
+
+      // Failing document load for roomB releases roomB's reservation but does NOT unregister roomA or drop limiter state
+      const server2 = createSyncServer({ requireAuth: false });
+      const onLoadDoc2 = server2.server.configuration.onLoadDocument;
+      const snapSpy2 = vi
+        .spyOn(DocSnapshotModel, "findOne")
+        .mockImplementationOnce(() => ({
+          sort: () => ({
+            exec: async () => {
+              throw new Error("Simulated load failure for roomB");
+            },
+          }),
+        } as unknown as ReturnType<typeof DocSnapshotModel.findOne>));
+
+      await expect(
+        onLoadDoc2!({
+          documentName: roomB,
+          document: new Y.Doc(),
+          instance: server2.server,
+          requestHeaders: {},
+          requestParameters: new URLSearchParams(),
+          socketId: sharedSocketId,
+        } as unknown as Parameters<NonNullable<typeof onLoadDoc2>>[0])
+      ).rejects.toThrow("Simulated load failure for roomB");
+
+      // roomB reservation released, but roomA active connection preserved!
+      expect(syncRegistry.getReservation(sharedSocketId)).toBeUndefined();
+      expect(syncRegistry.getConnection(sharedSocketId)?.roomId).toBe(roomA);
+
+      // 7. Verify that no late persistence operation occurs
+      const persistenceStats = getPendingPersistenceStats();
+      expect(persistenceStats.pendingUpdates).toBe(0);
+      expect(persistenceStats.queuedUpdates).toBe(0);
+      expect(persistenceStats.inFlightUpdates).toBe(0);
+      expect(persistenceStats.roomsWithPendingUpdates).toBe(0);
+
+      snapSpy.mockRestore();
+      snapSpy2.mockRestore();
+      await server2.destroy();
+    });
   });
 });

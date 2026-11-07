@@ -589,7 +589,6 @@ export class SyncRegistry {
         } catch {
           // ignore already closed
         }
-        this.unregisterConnection(active.roomId, socketId);
         closed++;
       }
     }

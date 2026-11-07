@@ -16,7 +16,7 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | Requirement ID | PRD Specification | Implementation Detail | Status |
 | :--- | :--- | :--- | :--- |
 | **`ED-2`** | Conflict-free live editing (server convergence). | Hocuspocus Yjs WebSocket server at `/sync` synchronizes CRDT state vectors and document updates with immediate in-memory convergence. | **Verified** |
-| **`ED-6`** | Server-enforced read-only for viewers & candidates. | `onAuthenticate` sets `connectionConfig.readOnly = true` for viewers and pre-interview candidates; `beforeHandleMessage` sets `connection.readOnly = true` when room is locked; updates are natively dropped without dropping the connection. | **Verified** |
+| **`ED-6`** | Server-enforced read-only for viewers & candidates. | `onAuthenticate` sets `connectionConfig.readOnly = true` for viewers and pre-interview candidates; `beforeHandleMessage` sets `connection.readOnly = true` when room is locked or server is shutting down; updates are natively dropped without dropping the connection. | **Verified** |
 | **`ROOM-3`** | Live permission coordination with REST API. | Room REST mutations coordinate with `syncRegistry` within 1s: member demotion sets `readOnly: true`, kick terminates WebSocket (4003), end locks room, delete terminates all (1000) and cleans `client_map`. | **Verified** |
 | **`ROOM-6`** | Interview lifecycle candidate permissions. | Candidate is restricted to read-only while room is `open`; transitioning to `live` activates editing dynamically on already-connected sockets without requiring reconnect. | **Verified** |
 | **`PER-1`** | Document persistence & crash recovery within 2s. | `queueUpdate` uses a fixed 2,000 ms durability deadline with flat arrival-order writes to `doc_updates`; abrupt `SIGKILL` child process crash tests verify state recovery. | **Verified** |
@@ -136,10 +136,21 @@ Task T07 implements the real-time collaborative document synchronization engine 
   - Exposes an operational snapshot covering server lifecycle status (`running`, `draining`, `drained`, `destroyed`), monotonic uptime, physical connection counts, active rooms vs active documents, pending reservations, room capacity utilization, pending persistence updates (queued vs in-flight), oldest unflushed update age, monotonic database flush/snapshot counters, rate-limiter capacity and bucket metrics, and rejection counters.
   - Safe for diagnostic emission: strictly omits raw tokens, cookies, slugs, or document contents.
 - **5-Phase Bounded Graceful Shutdown (`drainAndShutdown`)**:
-  - **Phase A (Admission Barrier)**: Rejects all incoming HTTP `/sync` upgrades with `503 Service Unavailable` (`Retry-After: 30`), fails `onAuthenticate` and `onLoadDocument` immediately, drops late update messages in `beforeHandleMessage`, and marks all existing rooms as read-only.
-  - **Phase B (Orderly WebSocket Drain)**: Iterates over all active connections and delivers RFC 6455 close frame `1001` with reason `server_shutting_down`. Clients detect clean disconnect and back off.
-  - **Phase C (Hard Drain Barrier)**: Enforces a configurable drain timeout (default 5,000 ms). If active sockets remain open after the drain window, forces transport destruction via `crossws.closeAll(1001, ..., true)` and socket termination.
-  - **Phase D (Persistence Drain & Final Snapshots)**: Cancels all recurring 5-minute snapshot timers (`stopAllSnapshotIntervals`), awaits in-flight snapshot and flush operations, flushes all pending queues to MongoDB under room mutexes, generates consistent final snapshots, and verifies zero unflushed updates remain in memory before allowing shutdown to continue.
+  - **Phase A (Admission Barrier & Race Prevention)**:
+    - Rejects all incoming HTTP `/sync` upgrades with `503 Service Unavailable` (`Retry-After: 30`).
+    - **Multi-Step Handshake Guard**: Checks `isShuttingDown` at hook entry and rechecks after every asynchronous boundary in `onAuthenticate` (`resolvePrincipalFromCookies`, `roomRepo.findById`, `roomMemberRepo.findMember`). Handshakes paused during shutdown reject with `503` / `"Server is shutting down"`, cancelling pending reservations and clearing limiter state without leaving orphaned resources.
+    - **Connected Hook Guard**: If a handshake completed right as shutdown started, `connected(data)` detects `isShuttingDown`, immediately severs the socket with RFC 6455 code 1001 `server_shutting_down`, cancels the reservation, cleans up rate limiter state, and aborts promotion to active connection.
+    - **Document Loading Barrier**: `onLoadDocument` checks `isShuttingDown` upon entry and rechecks after `await loadDocument()`. If shutdown starts during document retrieval, an error is thrown, prompting Hocuspocus to close connections and destroy the document from memory.
+    - **Inbound Message Read-Only Barrier**: In `beforeHandleMessage`, late inbound messages during shutdown set `data.connection.readOnly = true`, causing Hocuspocus `MessageReceiver.apply` to reject edit frames with `writeSyncStatus(false)` without mutating the CRDT document or broadcasting to peers.
+    - Marks all existing rooms as read-only (`syncRegistry.setAllRoomsReadOnly()`).
+  - **Phase B (Orderly WebSocket Drain)**:
+    - Iterates over all active connections and delivers RFC 6455 close frame `1001` with reason `server_shutting_down`.
+    - Does not prematurely unregister connections from `activeConnections`, allowing normal `onDisconnect` events to clean them up while keeping the drain loop informed of remaining open sockets.
+  - **Phase C (Hard Drain Barrier & Forced Termination)**:
+    - Enforces a configurable drain timeout (default 5,000 ms).
+    - If unresponsive active sockets remain open after the drain window, forces transport destruction via `crossws.closeAll(1001, ..., true)` and socket termination (`ws.terminate()`).
+    - Sets status to `"drained"`.
+  - **Phase D (Persistence Drain & Final Snapshots)**: Cancels all recurring 5-minute snapshot timers (`stopAllSnapshotIntervals`), awaits in-flight snapshot and flush operations, flushes all pending queues to MongoDB under room mutexes, generates consistent final snapshots, and verifies zero unflushed updates remain in memory before allowing shutdown to continue. If persistence fails during shutdown, the promise rejects and the server status is not marked `"destroyed"`.
   - **Phase E (Server Teardown & Resource Reset)**: Awaits underlying Hocuspocus `server.destroy()`, clears all `syncRegistry` active sockets and reservations, resets `connectionRateLimiter` tables, and marks status as `destroyed`.
 - **Idempotency & Deadlock Prevention**:
   - Concurrent invocations of `drainAndShutdown()` return the exact same in-flight `Promise<void>`, guaranteeing idempotent execution.
@@ -227,17 +238,18 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **`attribution.test.ts`** | 7 | Client identity attribution (`ATTR-1`), first-claim-wins `$setOnInsert`, duplicate-key concurrency, identity hijacking prevention. | **PASS** |
 | **`livePermissions.test.ts`** | 6 | Live permission coordination (`ROOM-3`, `ROOM-6`, `ED-6`): demote to viewer (<1s revocation), promote to editor, kick termination (4003), room end read-only, room delete cascade (1000), interview candidate lifecycle. | **PASS** |
 | **`rateLimitFlood.test.ts`** | 15 | WebSocket rate limiting & flood defense (`SEC-3`): normal typing & sync allowed, message flood rejected (4029), awareness flood rejected (4029), byte burst flood rejected (4029), rejected frames do not mutate/broadcast, disconnect cleanup, token refill & pruning, capacity saturation defense without active entry eviction, strict socket identity validation, distinct socket bucket isolation. | **PASS** |
-| **`shutdownStats.test.ts`** | 22 | Sync statistics & graceful shutdown drain: schema baseline, monotonic counters, connection counts, pending updates/snapshots, capacity utilization, rate limiter stats, admission barrier (503), close frame 1001 with reason `server_shutting_down`, hard drain barrier, persistence flush before DB disconnect, idempotency, and Node.js deadlock prevention. | **PASS** |
+| **`shutdownStats.test.ts`** | 26 | Sync statistics & graceful shutdown drain: schema baseline, monotonic counters, connection counts, pending updates/snapshots, capacity utilization, rate limiter stats, admission barrier (503), close frame 1001 with reason `server_shutting_down`, hard drain barrier, persistence flush before DB disconnect, idempotency, Node.js deadlock prevention, in-flight auth/load race barriers (Test A & B), forced-drain transport termination (Test C), and persistence failure rejection (Test D). | **PASS** |
 
-**Total T07 Tests:** 12 test files, 88 passing tests, 0 failures.  
-**Full Monorepo Suite:** 50 test files, 365 passing tests, 0 failures.
+**Total T07 Tests:** 12 test files, 92 passing tests, 0 failures.  
+**Full Monorepo Suite:** 50 test files, 369 passing tests, 0 failures.
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
-[HEAD]  feat(sync): server statistics and graceful shutdown connection drain
+[HEAD]  fix(sync): shutdown admission races, read-only barrier, and forced-drain verification
+02b8c23 feat(sync): server statistics and graceful shutdown connection drain
 0928682 fix(sync): rate limiter capacity protection and strict socket identity
 fcb0d03 feat(sync): per-connection websocket message rate limiting and flood defense
 ac3b973 feat(sync): live room permission and lifecycle coordination with rest api
@@ -248,7 +260,5 @@ e592a32 docs(sync): add comprehensive T07 document sync technical note
 c30f5a2 feat(sync): persistence, durability bound, document snapshots and crash recovery
 05d9e9f feat(sync): connection guard, sync registry, and room capacity enforcement
 633a498 feat(sync): handshake auth, session principal, allowed origins and ip rate limiting
-5a0238a spike(sync): minimal hocuspocus attach with provider test
-```
 5a0238a spike(sync): minimal hocuspocus attach with provider test
 ```

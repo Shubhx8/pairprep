@@ -240,6 +240,10 @@ export function createSyncServer(
             roomId
           );
 
+          if (isShuttingDown) {
+            throw new Error("Server is shutting down");
+          }
+
           if (!authResult.success) {
             const err = new Error(
               `Authentication failed: ${authResult.reason}`
@@ -252,6 +256,9 @@ export function createSyncServer(
 
           // Verify room exists in database
           const room = await roomRepo.findById(roomId);
+          if (isShuttingDown) {
+            throw new Error("Server is shutting down");
+          }
           if (!room) {
             const err = new Error("Room not found");
             (err as unknown as { reason: string }).reason = "room_not_found";
@@ -260,15 +267,13 @@ export function createSyncServer(
 
           // Verify member is part of the room
           const member = await roomMemberRepo.findMember(roomId, principal.id);
+          if (isShuttingDown) {
+            throw new Error("Server is shutting down");
+          }
           if (!member) {
             const err = new Error("Forbidden: not a member of this room");
             (err as unknown as { reason: string }).reason = "not_room_member";
             throw err;
-          }
-
-          // Re-check shutdown status after asynchronous lookups
-          if (isShuttingDown) {
-            throw new Error("Server is shutting down");
           }
 
           // 3a. Distinct member limit (ROOM-4: max 6 distinct members)
@@ -314,12 +319,20 @@ export function createSyncServer(
             data.connectionConfig.readOnly = true;
           }
 
+          if (isShuttingDown) {
+            throw new Error("Server is shutting down");
+          }
+
           const context = data.context as SyncConnectionContext;
           context.principal = principal;
           context.member = member;
           context.room = room;
           context.readOnly = isReadOnly;
         } else {
+          if (isShuttingDown) {
+            throw new Error("Server is shutting down");
+          }
+
           // If auth is disabled (e.g. mock/spike/test), assign mock principal
           const mockMemberId = `anon_${data.socketId}`;
           syncRegistry.assignMemberToReservation(data.socketId, mockMemberId);
@@ -349,6 +362,17 @@ export function createSyncServer(
       }
     },
     async connected(data) {
+      if (isShuttingDown) {
+        syncRegistry.cancelReservation(data.socketId);
+        rateLimiter.cleanup(data.socketId);
+        try {
+          data.connection?.webSocket?.close(1001, "server_shutting_down");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
       const context = data.context as SyncConnectionContext;
       const memberId = context.principal?.id ?? `anon_${data.socketId}`;
       const principal = context.principal ?? {
@@ -414,6 +438,9 @@ export function createSyncServer(
         throw new Error("Server is shutting down");
       }
       await loadDocument(data.documentName, data.document);
+      if (isShuttingDown) {
+        throw new Error("Server is shutting down");
+      }
       startSnapshotInterval(data.documentName, data.document);
       return data.document;
     },
@@ -483,6 +510,7 @@ export function createSyncServer(
     },
     async beforeHandleMessage(data) {
       if (isShuttingDown) {
+        data.connection.readOnly = true;
         // Drop any inbound message frames during server shutdown
         return;
       }

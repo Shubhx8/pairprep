@@ -185,18 +185,20 @@ interface SyncServerStats {
 
 ### 8.1 Shutdown Lifecycle & Phases
 When the process receives a termination signal (`SIGTERM`, `SIGINT`) or calls `drainAndShutdown()`, the server executes a bounded 5-phase shutdown sequence:
-1. **Phase A (Admission Barrier)**:
+1. **Phase A (Admission Barrier & Race Defenses)**:
    - Sets internal status to `"draining"`.
    - Rejects all subsequent HTTP `/sync` upgrades with `503 Service Unavailable` and `Retry-After: 30`.
-   - Fails ongoing `onAuthenticate` and `onLoadDocument` hooks with 503 errors.
-   - Drops late updates in `beforeHandleMessage`.
+   - **Multi-Step Handshake Guard**: Checks `isShuttingDown` at the beginning of `onAuthenticate` and rechecks after every awaited boundary (`resolvePrincipalFromCookies`, `roomRepo.findById`, `roomMemberRepo.findMember`). Handshakes paused in-flight during shutdown fail with `"Server is shutting down"`, cancelling pending slot reservations and clearing rate limiter entries immediately.
+   - **Connected Hook Guard**: If an accepted handshake triggers `connected(data)` while shutting down, it immediately severs the socket with code 1001 `server_shutting_down`, cancels the slot reservation, cleans up rate limiter state, and aborts promotion to active connection.
+   - **Document Loading Barrier**: `onLoadDocument` checks `isShuttingDown` upon entry and rechecks after `await loadDocument()`. If shutdown commences while loading, an error is thrown, triggering Hocuspocus to close connections and destroy the document.
+   - **Inbound Message Read-Only Barrier**: In `beforeHandleMessage`, late inbound messages during shutdown set `data.connection.readOnly = true`, causing Hocuspocus `MessageReceiver.apply` to reject edit frames without mutating the CRDT document or broadcasting to peers.
    - Marks all active rooms read-only (`syncRegistry.setAllRoomsReadOnly()`).
 2. **Phase B (Orderly WebSocket Drain)**:
    - Delivers WebSocket close code `1001` (`Going Away`) with reason `server_shutting_down` to all active connections.
-   - Cleanly closes Hocuspocus connection instances.
-3. **Phase C (Hard Drain Barrier)**:
+   - Sockets remain tracked in `activeConnections` throughout the drain window so normal `onDisconnect` cleans them up while keeping the drain loop informed of remaining open sockets.
+3. **Phase C (Hard Drain Barrier & Forced Termination)**:
    - Enforces a configurable drain timeout (default 5,000 ms).
-   - Any surviving connections are forcefully closed via `crossws.closeAll(1001, ..., true)` and socket termination.
+   - Any surviving or unresponsive connections after `drainTimeoutMs` are forcefully terminated via `crossws.closeAll(1001, ..., true)` and socket termination (`ws.terminate()`).
    - Sets status to `"drained"`.
 4. **Phase D (Persistence Drain & Consistent Final Snapshots)**:
    - Stops all recurring 5-minute snapshot intervals (`stopAllSnapshotIntervals()`).

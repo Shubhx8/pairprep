@@ -22,6 +22,9 @@ import { ConnectionRateLimiter } from "../../sync/connectionRateLimiter.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
 import { DocUpdateModel } from "../../models/doc_updates.js";
 import { DocSnapshotModel } from "../../models/doc_snapshots.js";
+import { roomRepo } from "../../repos/roomRepo.js";
+import { roomMemberRepo } from "../../repos/roomMemberRepo.js";
+import * as sessionPrincipal from "../../auth/sessionPrincipal.js";
 import {
   HocuspocusProvider,
   HocuspocusProviderWebsocket,
@@ -805,6 +808,249 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       expect(exitSpy).toHaveBeenCalledWith(0);
 
       exitSpy.mockRestore();
+    });
+
+    it("Test A: rejects and cleans up connection when shutdown occurs while authentication is paused in-flight", async () => {
+      const testRoomId = "507f1f77bcf86cd799439011";
+      const testUserId = "user_auth_race_1";
+      const socketId = "sock_auth_race_1";
+
+      let pauseDeferredResolve!: () => void;
+      const pausePromise = new Promise<void>((r) => {
+        pauseDeferredResolve = r;
+      });
+
+      let reachedLookupResolve!: () => void;
+      const reachedLookupPromise = new Promise<void>((r) => {
+        reachedLookupResolve = r;
+      });
+
+      // Spy on sessionPrincipal.resolvePrincipalFromCookies to pause in-flight after initial isShuttingDown check
+      const resolveSpy = vi
+        .spyOn(sessionPrincipal, "resolvePrincipalFromCookies")
+        .mockImplementation(async () => {
+          reachedLookupResolve();
+          await pausePromise;
+          return {
+            success: true,
+            principal: {
+              id: testUserId,
+              type: "user",
+              displayName: "Test User",
+              role: "user",
+              user: {
+                id: testUserId,
+                displayName: "Test User",
+                role: "user",
+              } as unknown as import("../../models/users.js").IUser,
+            },
+          };
+        });
+
+      const findByIdSpy = vi
+        .spyOn(roomRepo, "findById")
+        .mockResolvedValue({
+          _id: testRoomId,
+          slug: "test-slug",
+          status: "open",
+          type: "collaboration",
+        } as unknown as import("../../models/rooms.js").IRoom);
+
+      const findMemberSpy = vi
+        .spyOn(roomMemberRepo, "findMember")
+        .mockResolvedValue({
+          _id: "member_1",
+          roomId: testRoomId,
+          userId: testUserId,
+          role: "editor",
+        } as unknown as import("../../models/room_members.js").IRoomMember);
+
+      syncServer = createSyncServer({ requireAuth: true });
+      const onAuth = syncServer.server.configuration.onAuthenticate;
+
+      // 1. Start onAuthenticate (passes initial check, reserves slot, then pauses at room lookup)
+      const authPromise = onAuth!({
+        documentName: testRoomId,
+        socketId,
+        connectionConfig: { readOnly: false },
+        context: {},
+        instance: syncServer.server,
+        requestHeaders: { cookie: "pairprep.sid=s%3Amock-session-id" },
+        requestParameters: new URLSearchParams(),
+      } as unknown as Parameters<NonNullable<typeof onAuth>>[0]);
+
+      // 2. Wait until authentication is paused in-flight
+      await reachedLookupPromise;
+
+      // Slot reservation must exist while in flight
+      expect(syncRegistry.getPendingReservationCount()).toBe(1);
+
+      // 3. Initiate server shutdown
+      const shutdownPromise = syncServer.drainAndShutdown();
+
+      // 4. Resume the paused authentication lookup
+      pauseDeferredResolve();
+
+      // 5. Authentication must fail with "Server is shutting down"
+      await expect(authPromise).rejects.toThrow("Server is shutting down");
+
+      // 6. Assert connection is not registered, reservation is cancelled, and rate-limiter is clean
+      expect(syncRegistry.getActiveConnectionCount()).toBe(0);
+      expect(syncRegistry.getPendingReservationCount()).toBe(0);
+      expect(syncRegistry.getConnection(socketId)).toBeUndefined();
+
+      await shutdownPromise;
+      expect(syncServer.getStats().status).toBe("destroyed");
+
+      resolveSpy.mockRestore();
+      findByIdSpy.mockRestore();
+      findMemberSpy.mockRestore();
+    });
+
+    it("Test B: rejects connection and unloads document when shutdown occurs while onLoadDocument is paused in-flight", async () => {
+      const testRoomId = "507f1f77bcf86cd799439022";
+      const doc = new Y.Doc();
+
+      let pauseDeferredResolve!: () => void;
+      const pausePromise = new Promise<void>((r) => {
+        pauseDeferredResolve = r;
+      });
+
+      let reachedLoadResolve!: () => void;
+      const reachedLoadPromise = new Promise<void>((r) => {
+        reachedLoadResolve = r;
+      });
+
+      // Spy on DocSnapshotModel.findOne to pause during loadDocument
+      const snapSpy = vi
+        .spyOn(DocSnapshotModel, "findOne")
+        .mockImplementation(() => {
+          reachedLoadResolve();
+          return {
+            sort: () => ({
+              exec: async () => {
+                await pausePromise;
+                return null;
+              },
+            }),
+          } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
+        });
+
+      syncServer = createSyncServer({ requireAuth: false });
+      const onLoadDoc = syncServer.server.configuration.onLoadDocument;
+
+      // 1. Start onLoadDocument
+      const loadDocPromise = onLoadDoc!({
+        documentName: testRoomId,
+        document: doc,
+        instance: syncServer.server,
+        requestHeaders: {},
+        requestParameters: new URLSearchParams(),
+        socketId: "sock_load_race",
+      } as unknown as Parameters<NonNullable<typeof onLoadDoc>>[0]);
+
+      // 2. Wait until loadDocument is paused in-flight
+      await reachedLoadPromise;
+
+      // 3. Initiate server shutdown
+      const shutdownPromise = syncServer.drainAndShutdown();
+
+      // 4. Resume the paused document load
+      pauseDeferredResolve();
+
+      // 5. onLoadDocument must reject with "Server is shutting down"
+      await expect(loadDocPromise).rejects.toThrow("Server is shutting down");
+
+      await shutdownPromise;
+
+      // 6. Assert no connection admitted, no active document, and state is clean
+      const stats = syncServer.getStats();
+      expect(stats.status).toBe("destroyed");
+      expect(stats.connections.activeConnections).toBe(0);
+      expect(stats.connections.activeDocuments).toBe(0);
+      expect(syncRegistry.getRoomConnectionCount(testRoomId)).toBe(0);
+
+      snapSpy.mockRestore();
+    });
+
+    it("Test C: forces termination of unresponsive sockets when drainTimeoutMs expires and cleans up all state", async () => {
+      syncServer = createSyncServer({ requireAuth: false });
+
+      let gracefulCloseCalled = false;
+      let forceTerminateCalled = false;
+      let closeCodeReceived: number | undefined;
+      let closeReasonReceived: string | undefined;
+
+      const mockUnresponsiveSocket = {
+        close: vi.fn((code?: number, reason?: string) => {
+          gracefulCloseCalled = true;
+          closeCodeReceived = code;
+          closeReasonReceived = reason;
+          // Unresponsive socket: deliberately does NOT trigger disconnect or unregister
+        }),
+        terminate: vi.fn(() => {
+          forceTerminateCalled = true;
+          // Forced termination severs the transport
+          syncRegistry.unregisterConnection(roomId, "sock_unresponsive_1");
+        }),
+      };
+
+      // Register connection directly in syncRegistry
+      syncRegistry.reserveSlot(roomId, "sock_unresponsive_1");
+      syncRegistry.promoteReservation(
+        "sock_unresponsive_1",
+        roomId,
+        "user_unresponsive",
+        {
+          id: "user_unresponsive",
+          type: "user",
+          displayName: "Unresponsive",
+          role: "user",
+        },
+        {
+          readOnly: false,
+          webSocket: mockUnresponsiveSocket,
+        } as unknown as import("../../sync/syncRegistry.js").SyncConnectionLike
+      );
+
+      expect(syncRegistry.getActiveConnectionCount()).toBe(1);
+
+      // Perform shutdown with small drain timeout (50ms)
+      await syncServer.drainAndShutdown({ drainTimeoutMs: 50 });
+
+      // 1. Graceful close was called with 1001 and server_shutting_down
+      expect(gracefulCloseCalled).toBe(true);
+      expect(closeCodeReceived).toBe(1001);
+      expect(closeReasonReceived).toBe("server_shutting_down");
+
+      // 2. Forced terminate was invoked after drainTimeoutMs
+      expect(forceTerminateCalled).toBe(true);
+
+      // 3. Registry and transport cleanup complete
+      expect(syncRegistry.getActiveConnectionCount()).toBe(0);
+      expect(syncRegistry.getConnection("sock_unresponsive_1")).toBeUndefined();
+      expect(syncServer.getStats().status).toBe("destroyed");
+    });
+
+    it("Test D: persistence failure prevents successful shutdown and server is not marked destroyed", async () => {
+      syncServer = createSyncServer({ requireAuth: false });
+
+      const doc = new Y.Doc();
+      queueUpdate(roomId, "author_error", new Uint8Array([4, 5, 6]), doc);
+
+      // Simulate MongoDB failure during shutdown persistence flush
+      const createSpy = vi
+        .spyOn(DocUpdateModel, "create")
+        .mockRejectedValue(new Error("Database write error during shutdown"));
+
+      await expect(
+        syncServer.drainAndShutdown({ drainTimeoutMs: 50 })
+      ).rejects.toThrow("Database write error during shutdown");
+
+      // Server must NOT be marked destroyed if persistence failed
+      expect(syncServer.getStats().status).not.toBe("destroyed");
+
+      createSpy.mockRestore();
     });
   });
 });

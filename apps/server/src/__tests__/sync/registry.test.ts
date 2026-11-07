@@ -26,6 +26,25 @@ describe("T07 Sync Registry Unit Tests", () => {
   });
 
   describe("Room Capacity Reservation (ROOM-4)", () => {
+    it("allows up to 6 distinct members and rejects a 7th member", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+
+      for (let i = 1; i <= 6; i++) {
+        const memberId = `member_${i}`;
+        expect(registry.checkDistinctMemberLimit(roomId, memberId)).toBe(true);
+        registry.reserveSlot(roomId, `sock_${i}`);
+        registry.assignMemberToReservation(`sock_${i}`, memberId);
+      }
+
+      expect(registry.getDistinctMemberCount(roomId)).toBe(6);
+
+      // Existing member connecting again is allowed by distinct member limit
+      expect(registry.checkDistinctMemberLimit(roomId, "member_1")).toBe(true);
+
+      // 7th distinct member is rejected
+      expect(registry.checkDistinctMemberLimit(roomId, "member_7")).toBe(false);
+    });
+
     it("allows up to 6 reservations in a room and rejects the 7th", () => {
       const roomId = "507f1f77bcf86cd799439011";
 

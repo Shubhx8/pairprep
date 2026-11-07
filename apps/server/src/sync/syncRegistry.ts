@@ -1,5 +1,6 @@
 import type { Principal } from "../middleware/identity.js";
 
+export const MAX_ROOM_MEMBERS = 6;
 export const MAX_ROOM_CONNECTIONS = 6;
 export const MAX_MEMBER_CONNECTIONS = 3;
 export const RESERVATION_TTL_MS = 10_000;
@@ -114,6 +115,55 @@ export class SyncRegistry {
       reservedAt: now,
     });
     return { success: true };
+  }
+
+  /**
+   * Returns all distinct member IDs currently connected or holding active reservations in the room.
+   */
+  getDistinctMembers(roomId: string, now = Date.now()): Set<string> {
+    this.pruneExpiredReservations(now);
+    const members = new Set<string>();
+    // 1. Members with active connections
+    for (const [memberKey, sockets] of this.memberSockets.entries()) {
+      if (memberKey.startsWith(`${roomId}:`) && sockets.size > 0) {
+        const memberId = memberKey.slice(roomId.length + 1);
+        members.add(memberId);
+      }
+    }
+    // 2. Members with pending reservations
+    for (const res of this.reservations.values()) {
+      if (
+        res.roomId === roomId &&
+        res.memberId &&
+        now - res.reservedAt <= RESERVATION_TTL_MS
+      ) {
+        members.add(res.memberId);
+      }
+    }
+    return members;
+  }
+
+  /**
+   * Returns the count of distinct members in the room.
+   */
+  getDistinctMemberCount(roomId: string, now = Date.now()): number {
+    return this.getDistinctMembers(roomId, now).size;
+  }
+
+  /**
+   * Verifies that adding a connection for memberId does not exceed the maximum of 6 distinct members.
+   * If the member is already present in the room, it does not add a new distinct member.
+   */
+  checkDistinctMemberLimit(
+    roomId: string,
+    memberId: string,
+    now = Date.now()
+  ): boolean {
+    const distinct = this.getDistinctMembers(roomId, now);
+    if (distinct.has(memberId)) {
+      return true;
+    }
+    return distinct.size < MAX_ROOM_MEMBERS;
   }
 
   /**

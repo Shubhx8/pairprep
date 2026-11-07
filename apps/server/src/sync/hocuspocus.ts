@@ -6,6 +6,11 @@ import { getClientIp, syncUpgradeRateLimiter } from "./rateLimiter.js";
 import { resolvePrincipalFromCookies } from "../auth/sessionPrincipal.js";
 import type { Principal } from "../middleware/identity.js";
 import { syncRegistry } from "./syncRegistry.js";
+import {
+  loadDocument,
+  queueUpdate,
+  flushAllPending,
+} from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import type { IRoom } from "../models/rooms.js";
@@ -125,7 +130,17 @@ export function createSyncServer(
             throw err;
           }
 
-          // 3. Per-member connection limit (max 3 connections per member in this room)
+          // 3a. Distinct member limit (ROOM-4: max 6 distinct members)
+          if (!syncRegistry.checkDistinctMemberLimit(roomId, principal.id)) {
+            const err = new Error(
+              "Room member limit exceeded: maximum 6 distinct members"
+            );
+            (err as unknown as { reason: string }).reason =
+              "room_member_limit_exceeded";
+            throw err;
+          }
+
+          // 3b. Per-member connection limit (max 3 connections per member in this room)
           if (!syncRegistry.checkMemberLimit(roomId, principal.id)) {
             const err = new Error(
               "Member connection limit exceeded: maximum 3 connections per member"
@@ -215,6 +230,15 @@ export function createSyncServer(
     async onDisconnect(data) {
       syncRegistry.unregisterConnection(data.documentName, data.socketId);
     },
+    async onLoadDocument(data) {
+      await loadDocument(data.documentName, data.document);
+      return data.document;
+    },
+    async onChange(data) {
+      const context = data.context as SyncConnectionContext;
+      const authorId = context?.principal?.id ?? data.socketId ?? "anonymous";
+      queueUpdate(data.documentName, authorId, data.update, data.document);
+    },
     async beforeHandleMessage(data) {
       if (data.update.byteLength > 1048576) {
         throw new Error("Update frame size exceeds 1 MB limit");
@@ -231,6 +255,7 @@ export function createSyncServer(
   return {
     server,
     destroy: async () => {
+      await flushAllPending();
       await server.destroy();
     },
   };

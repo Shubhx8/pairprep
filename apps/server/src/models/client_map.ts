@@ -17,8 +17,9 @@ const ClientMapSchema = new Schema<IClientMap>(
   { collection: "client_map" }
 );
 
-// PRD Section 12: Index on roomId plus clientId for author attribution mapping
-ClientMapSchema.index({ roomId: 1, clientId: 1 });
+// PRD Section 12 & ATTR-1: Unique compound index on roomId plus clientId
+// Guarantees first-claim-wins and prevents duplicate key mappings per room
+ClientMapSchema.index({ roomId: 1, clientId: 1 }, { unique: true });
 
 export const ClientMapModel: Model<IClientMap> =
   (mongoose.models.ClientMap as Model<IClientMap>) ||

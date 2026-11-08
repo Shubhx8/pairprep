@@ -2,8 +2,9 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
-import { Server } from "node:http";
+import { Server, createServer } from "node:http";
 import { config } from "./config.js";
+import { getTrustProxyFn } from "./config/proxyTrust.js";
 import { requestLogger, rootLogger } from "./middleware/logger.js";
 import { createSessionMiddleware } from "./middleware/session.js";
 import passport from "passport";
@@ -18,11 +19,13 @@ import { identify } from "./middleware/identity.js";
 import { startArchiveJob, stopArchiveJob } from "./services/archiveJob.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
+import { attachSyncServer, SyncServerInstance } from "./sync/hocuspocus.js";
 import { roomsRouter } from "./routes/rooms.js";
 import {
   getDatabaseStatus,
   connectDatabase,
   disconnectDatabase,
+  verifyRequiredDatabaseIndexes,
 } from "./db/connection.js";
 import {
   PingResponse,
@@ -34,8 +37,8 @@ import {
 const app = express();
 const PORT = config.PORT;
 
-// Trust proxy set to 1 for reverse proxy (Caddy on Azure VM per AD-1)
-app.set("trust proxy", 1);
+// Trust proxy compiled using centralized reverse proxy configuration (Caddy on Azure VM per AD-1)
+app.set("trust proxy", getTrustProxyFn());
 
 // Structured JSON request logging & X-Request-Id tagging mounted FIRST
 // Ensures all requests (including rate-limited, rejected CORS, and oversized bodies) are tagged and logged
@@ -167,16 +170,17 @@ app.use(errorHandler);
 export function setupGracefulShutdown(
   server: Server,
   onShutdown?: () => Promise<void> | void
-): { handleShutdown: (signal: string) => void } {
+): { handleShutdown: (signal: string) => Promise<void> } {
   let isShuttingDown = false;
+  let shutdownPromise: Promise<void> | null = null;
 
-  const handleShutdown = (signal: string) => {
+  const handleShutdown = (signal: string): Promise<void> => {
     if (isShuttingDown) {
       rootLogger.warn(
         { signal },
         "Shutdown already in progress. Ignoring duplicate signal."
       );
-      return;
+      return shutdownPromise ?? Promise.resolve();
     }
     isShuttingDown = true;
 
@@ -203,57 +207,143 @@ export function setupGracefulShutdown(
 
     stopArchiveJob();
 
-    // Stop accepting new connections while letting active requests finish
-    server.close(async () => {
-      clearInterval(idleInterval);
+    shutdownPromise = (async () => {
+      // 1. Initiate onShutdown (sync server drain & persistence flush) concurrently
+      // with server.close() so active WebSockets close and do not deadlock server.close()
+      const syncShutdownPromise = onShutdown
+        ? Promise.resolve(onShutdown())
+        : Promise.resolve();
+
+      // 2. Initiate HTTP server closure to stop accepting new HTTP requests
+      const serverClosePromise = new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      // Force close after 10 seconds max if requests or flush are hanging
+      const timeout = setTimeout(() => {
+        rootLogger.error("Shutdown timed out after 10s. Forcing exit.");
+        process.exit(1);
+      }, 10000);
+      timeout.unref();
+
       try {
+        await Promise.all([syncShutdownPromise, serverClosePromise]);
+        clearTimeout(timeout);
+        clearInterval(idleInterval);
+
+        // 3. Disconnect MongoDB only after all sync persistence writes and in-flight HTTP requests complete
         await disconnectDatabase();
-        if (onShutdown) {
-          await onShutdown();
-        }
-        rootLogger.info("All in-flight requests completed. Exiting cleanly.");
+        rootLogger.info(
+          "All in-flight requests and sync updates completed. Exiting cleanly."
+        );
         process.exit(0);
       } catch (err) {
+        clearTimeout(timeout);
+        clearInterval(idleInterval);
         rootLogger.error({ err }, "Error during cleanup shutdown tasks");
         process.exit(1);
       }
-    });
+    })();
 
-    // Force close after 10 seconds max if requests are hanging
-    const timeout = setTimeout(() => {
-      rootLogger.error("Shutdown timed out after 10s. Forcing exit.");
-      process.exit(1);
-    }, 10000);
-    timeout.unref();
+    return shutdownPromise;
   };
 
-  process.once("SIGTERM", () => handleShutdown("SIGTERM"));
-  process.once("SIGINT", () => handleShutdown("SIGINT"));
+  process.once("SIGTERM", () => {
+    void handleShutdown("SIGTERM");
+  });
+  process.once("SIGINT", () => {
+    void handleShutdown("SIGINT");
+  });
 
   return { handleShutdown };
+}
+
+export interface BootstrapResult {
+  server: Server;
+  syncServer: SyncServerInstance;
+  handleShutdown: (signal: string) => Promise<void>;
+}
+
+/**
+ * Executes the authoritative 10-step server bootstrap lifecycle:
+ * 1. Initialize configuration (loaded via config.js)
+ * 2. Connect to MongoDB
+ * 3. Initialize/provision required database indexes (via Mongoose model init)
+ * 4. Verify physical MongoDB indexes directly via driver catalog
+ * 5. Initialize application jobs requiring database (startArchiveJob)
+ * 6. Construct HTTP server without listening
+ * 7. Attach sync server and WebSocket upgrade handler
+ * 8. Register graceful shutdown handlers
+ * 9. Start listening for HTTP traffic
+ * 10. Report application readiness
+ * Fails fast with descriptive error if database connection or index verification fails.
+ */
+export async function bootstrapServer(
+  port = PORT,
+  mongoUri = config.MONGODB_URI,
+  dbOptions?: {
+    maxRetries?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+  }
+): Promise<BootstrapResult> {
+  // 1. Initialize configuration (already loaded via config import)
+
+  // 2. Connect to MongoDB
+  if (mongoUri) {
+    await connectDatabase(mongoUri, dbOptions);
+
+    // 3 & 4. Initialize and physically verify required MongoDB indexes
+    await verifyRequiredDatabaseIndexes();
+
+    // 5. Initialize application jobs that require the database
+    startArchiveJob();
+  }
+
+  // 6. Construct the HTTP server without listening
+  const httpServer = createServer(app);
+
+  // 7. Attach the sync server and upgrade handler
+  const syncServer = attachSyncServer(httpServer);
+
+  // 8. Register graceful shutdown handlers
+  const { handleShutdown } = setupGracefulShutdown(httpServer, async () => {
+    await syncServer.drainAndShutdown();
+  });
+
+  // 9. Start listening for HTTP traffic
+  await new Promise<void>((resolve, reject) => {
+    httpServer.listen(port, () => resolve());
+    httpServer.once("error", reject);
+  });
+
+  // 10. Report application readiness
+  rootLogger.info(
+    { port, env: config.NODE_ENV },
+    `[PairPrep Server] running on http://localhost:${port}`
+  );
+
+  return { server: httpServer, syncServer, handleShutdown };
 }
 
 let server: Server | undefined;
 
 if (process.env["NODE_ENV"] !== "test") {
-  server = app.listen(PORT, async () => {
-    rootLogger.info(
-      { port: PORT, env: config.NODE_ENV },
-      `[PairPrep Server] running on http://localhost:${PORT}`
-    );
-    if (config.MONGODB_URI) {
-      try {
-        await connectDatabase(config.MONGODB_URI);
-        startArchiveJob();
-      } catch (err) {
-        rootLogger.error(
-          { err },
-          "Initial MongoDB connection failed; server will continue running (healthz will report db: down)"
-        );
-      }
+  bootstrapServer().then(
+    (res) => {
+      server = res.server;
+    },
+    (err) => {
+      rootLogger.fatal(
+        { err },
+        "Fatal error during server bootstrap; terminating process"
+      );
+      process.exit(1);
     }
-  });
-  setupGracefulShutdown(server);
+  );
 }
 
 export { server };

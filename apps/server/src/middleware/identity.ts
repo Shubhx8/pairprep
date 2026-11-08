@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { config } from "../config.js";
 import { IUser } from "../models/users.js";
 import { IGuest } from "../models/guests.js";
-import { guestRepo } from "../repos/guestRepo.js";
+import { resolvePrincipalFromCookies } from "../auth/sessionPrincipal.js";
 
 export const GUEST_COOKIE_NAME = "pairprep.guest";
 
@@ -123,9 +123,10 @@ export function clearGuestCookie(res: Response): void {
 /**
  * Identity middleware: Mounted after passport session.
  * 1. A signed-in user session (req.user) strictly takes precedence over any guest cookie.
- * 2. If no user session, verifies the pairprep.guest cookie.
+ * 2. If no user session, verifies cookies via shared resolvePrincipalFromCookies.
  * 3. If cookie is tampered or guest is expired/non-existent, clears the cookie and sets anonymous.
- * 4. Populates req.principal, req.userId, and req.isGuest.
+ * 4. Rejects disabled users.
+ * 5. Populates req.principal, req.userId, and req.isGuest.
  */
 export async function identify(
   req: Request,
@@ -134,7 +135,11 @@ export async function identify(
 ): Promise<void> {
   const passportUser = req.user as IUser | undefined;
 
-  if (passportUser && !passportUser.disabled) {
+  if (passportUser) {
+    if (passportUser.disabled) {
+      req.principal = undefined;
+      return next();
+    }
     req.principal = {
       type: "user",
       id: passportUser.id,
@@ -146,35 +151,17 @@ export async function identify(
     return next();
   }
 
-  const rawGuestCookie = req.cookies?.[GUEST_COOKIE_NAME] as string | undefined;
-
-  if (!rawGuestCookie) {
-    req.principal = undefined;
-    return next();
-  }
-
   try {
-    const verifiedGuestId = verifyGuestCookie(rawGuestCookie);
-    if (!verifiedGuestId) {
-      clearGuestCookie(res);
-      req.principal = undefined;
+    const result = await resolvePrincipalFromCookies(req.headers.cookie);
+    if (result.success) {
+      req.principal = result.principal;
       return next();
     }
 
-    const guestDoc = await guestRepo.findById(verifiedGuestId);
-    if (!guestDoc || guestDoc.expiresAt.getTime() <= Date.now()) {
+    if (req.cookies?.[GUEST_COOKIE_NAME]) {
       clearGuestCookie(res);
-      req.principal = undefined;
-      return next();
     }
-
-    req.principal = {
-      type: "guest",
-      id: guestDoc.id,
-      displayName: guestDoc.displayName,
-      roomId: guestDoc.roomId,
-      guest: guestDoc,
-    };
+    req.principal = undefined;
     return next();
   } catch (err) {
     return next(err);

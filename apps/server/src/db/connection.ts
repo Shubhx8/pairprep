@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 import { rootLogger } from "../middleware/logger.js";
+import { DocUpdateModel } from "../models/doc_updates.js";
+import { DocSnapshotModel } from "../models/doc_snapshots.js";
 
 interface RetryOptions {
   maxRetries?: number;
@@ -104,4 +106,48 @@ export async function disconnectDatabase(): Promise<void> {
     await mongoose.disconnect();
     rootLogger.info("MongoDB disconnected cleanly.");
   }
+}
+
+/**
+ * Verifies that the required physical unique compound index on doc_updates exists
+ * and matches the exact specification { roomId: 1, seq: 1 } with unique === true.
+ * Non-destructive: awaits model index building and directly inspects native driver indexes,
+ * never dropping unrelated external or DBA-created indexes.
+ */
+export async function verifyRequiredDatabaseIndexes(): Promise<void> {
+  if (mongoose.connection.readyState !== 1) {
+    throw new Error(
+      `Cannot verify database indexes: MongoDB is not connected (readyState: ${mongoose.connection.readyState})`
+    );
+  }
+
+  // 1. Await model index initialization (creates declared schema indexes if not already built)
+  await DocUpdateModel.init();
+  await DocSnapshotModel.init();
+
+  // 2. Query MongoDB's physical index catalog directly via the collection driver
+  const indexes = await DocUpdateModel.collection.listIndexes().toArray();
+
+  // 3. Locate the index matching key pattern { roomId: 1, seq: 1 }
+  const matchingIndex = indexes.find((idx) => {
+    const keys = Object.keys(idx.key || {});
+    return keys.length === 2 && idx.key.roomId === 1 && idx.key.seq === 1;
+  });
+
+  if (!matchingIndex) {
+    throw new Error(
+      "Database readiness check failed: missing required unique compound index { roomId: 1, seq: 1 } on doc_updates"
+    );
+  }
+
+  if (matchingIndex.unique !== true) {
+    throw new Error(
+      `Database readiness check failed: index { roomId: 1, seq: 1 } on doc_updates is not unique (found: unique=${matchingIndex.unique})`
+    );
+  }
+
+  rootLogger.info(
+    { index: matchingIndex.name },
+    "Verified required unique compound index on doc_updates successfully."
+  );
 }

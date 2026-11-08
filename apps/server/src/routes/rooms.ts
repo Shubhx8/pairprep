@@ -32,6 +32,8 @@ import { AppError } from "../errors/AppError.js";
 import { IRoom } from "../models/rooms.js";
 import { IRoomMember } from "../models/room_members.js";
 import { rootLogger } from "../middleware/logger.js";
+import { syncRegistry } from "../sync/syncRegistry.js";
+import { clientMapRepo } from "../repos/clientMapRepo.js";
 
 export const roomsRouter = Router();
 
@@ -388,6 +390,18 @@ roomsRouter.patch(
         parseResult.data.role
       );
 
+      // Coordinate live sync permissions with syncRegistry (< 1s revocation)
+      if (parseResult.data.role === "viewer") {
+        syncRegistry.setMemberReadOnly(room.id, targetMember.memberId, true, "viewer");
+      } else if (room.status !== "ended" && room.status !== "archived") {
+        syncRegistry.setMemberReadOnly(
+          room.id,
+          targetMember.memberId,
+          false,
+          parseResult.data.role
+        );
+      }
+
       await roomRepo.touchActivity(room.id);
       const updatedRoom = await roomRepo.findById(room.id);
 
@@ -427,6 +441,14 @@ roomsRouter.delete(
       await roomMemberRepo.removeMember(room.id, targetMember.id);
       await roomRepo.touchActivity(room.id);
 
+      // Immediately terminate active WebSocket connections for removed member (< 1s revocation)
+      syncRegistry.closeConnectionsForMember(
+        room.id,
+        targetMember.memberId,
+        4003,
+        "removed"
+      );
+
       res.json({ status: "ok" });
     } catch (err) {
       handleRouteError(err, req, res, next);
@@ -463,6 +485,8 @@ roomsRouter.post(
       }
 
       const endedRoom = await roomRepo.updateStatus(room.slug, "ended");
+      // Immediately enforce read-only across all active sync connections in the room
+      syncRegistry.updateRoomLifecycle(room.id, "ended");
       res.json({ room: toRoomDto(endedRoom || room) });
     } catch (err) {
       handleRouteError(err, req, res, next);
@@ -483,6 +507,11 @@ roomsRouter.delete(
     try {
       const room = req.room!;
       await roomRepo.deleteRoom(room.id);
+      // Immediately terminate all sync connections, mark room deleted, and cascade client mappings
+      syncRegistry.markRoomDeleted(room.id);
+      syncRegistry.closeAllConnectionsForRoom(room.id, 1000, "room_deleted");
+      syncRegistry.setRoomReadOnly(room.id);
+      await clientMapRepo.deleteByRoom(room.id);
       res.status(204).end();
     } catch (err) {
       handleRouteError(err, req, res, next);

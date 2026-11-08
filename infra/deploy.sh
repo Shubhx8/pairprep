@@ -16,7 +16,7 @@ echo "Target Image: $NEW_IMAGE"
 echo "=================================================="
 
 # 1. Capture current running image for rollback
-CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' infra-server-1 2>/dev/null || echo "")
+CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' infra-api-1 2>/dev/null || docker inspect --format='{{.Config.Image}}' infra-server-1 2>/dev/null || echo "")
 if [ -n "$CURRENT_IMAGE" ]; then
     echo "$CURRENT_IMAGE" > "$PREV_IMAGE_FILE"
     echo "Saved current image for rollback: $CURRENT_IMAGE"
@@ -32,7 +32,7 @@ fi
 # 3. Update stack with new image
 echo "Deploying container..."
 export SERVER_IMAGE="$NEW_IMAGE"
-docker compose -f infra/docker-compose.prod.yml up -d server
+docker compose -f infra/docker-compose.prod.yml up -d api
 
 # 4. Perform health check with retries
 echo "Running health checks on /healthz..."
@@ -57,12 +57,12 @@ if [ "$HEALTHY" = false ]; then
         if [ -n "$ROLLBACK_IMAGE" ]; then
             echo "Rolling back to previous stable image: $ROLLBACK_IMAGE..."
             export SERVER_IMAGE="$ROLLBACK_IMAGE"
-            docker compose -f infra/docker-compose.prod.yml up -d server
+            docker compose -f infra/docker-compose.prod.yml up -d api
             echo "Rollback completed."
         fi
     fi
     echo "Container logs:"
-    docker compose -f infra/docker-compose.prod.yml logs --tail=30 server
+    docker compose -f infra/docker-compose.prod.yml logs --tail=30 api
     exit 1
 fi
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
+import { validateProductionProxyCidrs } from "./config/proxyTrust.js";
 
 /**
  * Loads .env file into process.env if available (Node 20.6+ native loadEnvFile).
@@ -52,6 +53,7 @@ export const ConfigSchema = z.object({
     .optional(),
   SITE_ORIGIN: z.string().default("http://localhost:3000"),
   CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
+  TRUSTED_PROXY_CIDRS: z.string().default("loopback"),
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(30),
   GOOGLE_CLIENT_ID: z.string().optional(),
@@ -120,6 +122,21 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
     if (!origin || !origin.trim() || (!isHttps && !isHttpLocalhost)) {
       if (!missingOrInvalid.includes("SITE_ORIGIN")) {
         missingOrInvalid.push("SITE_ORIGIN");
+      }
+    }
+
+    const proxyCidrs =
+      rawEnv["TRUSTED_PROXY_CIDRS"] ??
+      (result.success ? result.data.TRUSTED_PROXY_CIDRS : undefined);
+    if (
+      !rawEnv["TRUSTED_PROXY_CIDRS"] ||
+      !proxyCidrs ||
+      !proxyCidrs.trim() ||
+      proxyCidrs === "loopback" ||
+      !validateProductionProxyCidrs(proxyCidrs)
+    ) {
+      if (!missingOrInvalid.includes("TRUSTED_PROXY_CIDRS")) {
+        missingOrInvalid.push("TRUSTED_PROXY_CIDRS");
       }
     }
   }

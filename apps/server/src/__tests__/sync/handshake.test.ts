@@ -13,6 +13,7 @@ import {
   createSyncServer,
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
+import { syncRegistry } from "../../sync/syncRegistry.js";
 import {
   isAllowedOrigin,
   getAllowedOrigins,
@@ -415,6 +416,39 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
       expect(failureReason).toBe("permission-denied");
 
       wsProvider.destroy();
+    });
+
+    it("immediately cancels reservation and stops heartbeat when real WebSocket disconnects during handshake", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(
+        httpServer,
+        createSyncServer({ requireAuth: true })
+      );
+      await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
+      const port = (httpServer.address() as { port: number }).port;
+
+      const roomId = "507f1f77bcf86cd799439011";
+
+      // Connect via raw WebSocket
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/sync`, {
+        headers: { origin: "http://localhost:3000" },
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", (err) => reject(err));
+      });
+
+      // Physically terminate the raw WebSocket connection
+      ws.terminate();
+
+      // Wait a tick for TCP close event to propagate
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Assert that any pending reservation or timer is 0
+      expect(syncRegistry.getTotalRoomCount(roomId)).toBe(0);
+      expect(syncRegistry.getHeartbeatTimerCount()).toBe(0);
+      expect(syncRegistry.getTransportCloseListenerCount()).toBe(0);
     });
   });
 });

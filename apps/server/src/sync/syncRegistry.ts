@@ -93,6 +93,7 @@ export type PromotionResult =
 export class SyncRegistry {
   private reservations = new Map<string, ConnectionReservation>(); // `${roomId}:${socketId}` -> ConnectionReservation
   private heartbeatTimers = new Map<string, NodeJS.Timeout>(); // `${roomId}:${socketId}` -> Timeout
+  private transportCleanupFns = new Map<string, () => void>(); // `${roomId}:${socketId}` -> cleanup callback
   private activeConnections = new Map<string, ActiveConnection>(); // `${roomId}:${socketId}` -> ActiveConnection
   private roomActiveSockets = new Map<string, Set<string>>(); // roomId -> Set<socketId>
   private memberSockets = new Map<string, Set<string>>(); // `${roomId}:${memberId}` -> Set<socketId>
@@ -180,6 +181,127 @@ export class SyncRegistry {
       clearInterval(timer);
     }
     this.heartbeatTimers.clear();
+  }
+
+  /**
+   * Checks whether an active heartbeat timer exists for the reservation.
+   */
+  hasHeartbeat(roomId: string, socketId: string): boolean {
+    return this.heartbeatTimers.has(this.makeKey(roomId, socketId));
+  }
+
+  /**
+   * Returns count of all active heartbeat timers.
+   */
+  getHeartbeatTimerCount(): number {
+    return this.heartbeatTimers.size;
+  }
+
+  /**
+   * Registers an early transport-level closure listener on the incoming socket or WebSocket.
+   * When the physical transport terminates prior to reservation promotion, this cancels
+   * the reservation and halts heartbeat renewal immediately (0 ms delay).
+   */
+  registerTransportCloseListener(
+    roomId: string,
+    socketId: string,
+    token: string,
+    target: {
+      on?: (event: string, fn: (...args: unknown[]) => void) => unknown;
+      removeListener?: (event: string, fn: (...args: unknown[]) => void) => unknown;
+      off?: (event: string, fn: (...args: unknown[]) => void) => unknown;
+      destroyed?: boolean;
+      readyState?: number;
+    },
+    onAborted?: (reason: string) => void
+  ): boolean {
+    const key = this.makeKey(roomId, socketId);
+    this.removeTransportCloseListener(roomId, socketId);
+
+    const res = this.reservations.get(key);
+    if (!res || res.cancelled || res.token !== token) {
+      return false;
+    }
+
+    // If the socket is already destroyed or in closing/closed readyState, cancel immediately
+    if (target.destroyed || target.readyState === 2 || target.readyState === 3) {
+      this.cancelReservation(socketId, roomId, "socket_closed");
+      onAborted?.("socket_already_closed");
+      return false;
+    }
+
+    if (typeof target.on !== "function") {
+      return false;
+    }
+
+    const onClose = () => {
+      const current = this.reservations.get(key);
+      if (current && !current.cancelled && current.token === token) {
+        this.cancelReservation(socketId, roomId, "socket_closed");
+        onAborted?.("socket_closed");
+      }
+      this.removeTransportCloseListener(roomId, socketId);
+    };
+
+    target.on("close", onClose);
+    target.on("end", onClose);
+    target.on("error", onClose);
+
+    const cleanup = () => {
+      target.removeListener?.("close", onClose);
+      target.removeListener?.("end", onClose);
+      target.removeListener?.("error", onClose);
+      target.off?.("close", onClose);
+      target.off?.("end", onClose);
+      target.off?.("error", onClose);
+    };
+
+    this.transportCleanupFns.set(key, cleanup);
+    return true;
+  }
+
+  /**
+   * Removes and cleans up the transport close listener for a given room and socket.
+   */
+  removeTransportCloseListener(roomId: string, socketId: string): void {
+    const key = this.makeKey(roomId, socketId);
+    const cleanup = this.transportCleanupFns.get(key);
+    if (cleanup) {
+      try {
+        cleanup();
+      } catch {
+        // ignore
+      }
+      this.transportCleanupFns.delete(key);
+    }
+  }
+
+  /**
+   * Cleans up and clears all transport closure listeners.
+   */
+  clearAllTransportCloseListeners(): void {
+    for (const cleanup of this.transportCleanupFns.values()) {
+      try {
+        cleanup();
+      } catch {
+        // ignore
+      }
+    }
+    this.transportCleanupFns.clear();
+  }
+
+  /**
+   * Returns whether a transport closure listener is currently registered.
+   */
+  hasTransportCloseListener(roomId: string, socketId: string): boolean {
+    return this.transportCleanupFns.has(this.makeKey(roomId, socketId));
+  }
+
+  /**
+   * Returns the count of active transport closure listeners across all reservations.
+   */
+  getTransportCloseListenerCount(): number {
+    return this.transportCleanupFns.size;
   }
 
   /**
@@ -437,6 +559,7 @@ export class SyncRegistry {
         res.cancelled = true;
         res.cancellationReason = reason;
         this.stopHeartbeat(roomId, socketId);
+        this.removeTransportCloseListener(roomId, socketId);
         this.reservations.delete(key);
       }
       return;
@@ -446,6 +569,7 @@ export class SyncRegistry {
         res.cancelled = true;
         res.cancellationReason = reason;
         this.stopHeartbeat(res.roomId, socketId);
+        this.removeTransportCloseListener(res.roomId, socketId);
         this.reservations.delete(key);
       }
     }
@@ -578,6 +702,7 @@ export class SyncRegistry {
 
     // Atomic promotion success: transition from reservation to active connection
     this.stopHeartbeat(roomId, socketId);
+    this.removeTransportCloseListener(roomId, socketId);
     this.reservations.delete(key);
 
     const activeConn: ActiveConnection = {
@@ -673,6 +798,7 @@ export class SyncRegistry {
         res.cancelled = true;
         res.cancellationReason = reason;
         this.stopHeartbeat(roomId, res.socketId);
+        this.removeTransportCloseListener(roomId, res.socketId);
         this.reservations.delete(key);
       }
     }
@@ -768,6 +894,7 @@ export class SyncRegistry {
         res.cancelled = true;
         res.cancellationReason = reason;
         this.stopHeartbeat(roomId, res.socketId);
+        this.removeTransportCloseListener(roomId, res.socketId);
         this.reservations.delete(key);
       }
     }
@@ -936,6 +1063,7 @@ export class SyncRegistry {
         this.stopHeartbeat(res.roomId, res.socketId);
       }
       this.reservations.clear();
+      this.clearAllTransportCloseListeners();
     }
     for (const active of this.activeConnections.values()) {
       active.connection.readOnly = this.calculateEffectiveReadOnly(active);
@@ -1176,6 +1304,7 @@ export class SyncRegistry {
    */
   resetAll(): void {
     this.stopAllHeartbeats();
+    this.clearAllTransportCloseListeners();
     this.reservations.clear();
     this.activeConnections.clear();
     this.roomActiveSockets.clear();

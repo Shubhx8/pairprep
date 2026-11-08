@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import {
   SyncRegistry,
   RESERVATION_LEASE_TTL_MS,
@@ -379,6 +380,281 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
       expect(newRes.success).toBe(false);
       if (!newRes.success) {
         expect(newRes.reason).toBe("server_shutting_down");
+      }
+    });
+  });
+
+  describe("Immediate Abandoned Authentication Handshake Cleanup (Commit 6a)", () => {
+    // Required Test 1 — Disconnect During Authentication
+    it("releases reservation and halts heartbeat immediately when socket disconnects during async auth", async () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_auth_disconnect";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(true);
+      expect(registry.getTotalRoomCount(roomId)).toBe(1);
+
+      const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+      let abortedReason = "";
+      const registered = registry.registerTransportCloseListener(
+        roomId,
+        socketId,
+        token,
+        mockTransport,
+        (reason) => {
+          abortedReason = reason;
+        }
+      );
+      expect(registered).toBe(true);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(true);
+
+      // Simulate long-running asynchronous DB operation:
+      // While auth is in flight, client drops transport
+      mockTransport.emit("close");
+
+      // Verify reservation and heartbeat cancelled immediately without waiting for 30s deadline
+      expect(registry.getReservation(socketId, roomId)).toBeUndefined();
+      expect(registry.hasReservationForSocket(socketId, roomId)).toBe(false);
+      expect(registry.isReservationValid(roomId, socketId, token)).toBe(false);
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+      expect(abortedReason).toBe("socket_closed");
+      expect(registry.getTotalRoomCount(roomId)).toBe(0);
+
+      // Prove another client can immediately acquire the released slot
+      const res2 = registry.reserveSlot(roomId, "sock_replacement");
+      expect(res2.success).toBe(true);
+      expect(registry.getTotalRoomCount(roomId)).toBe(1);
+
+      // When delayed async database operation finishes, late promotion must fail
+      const mockConn: SyncConnectionLike = { socketId, readOnly: false };
+      const promoResult = registry.promoteReservation(
+        socketId,
+        roomId,
+        "member_late_auth",
+        { id: "member_late_auth", type: "user", displayName: "Late User" },
+        mockConn,
+        "editor",
+        token
+      );
+      expect(promoResult.success).toBe(false);
+      if (!promoResult.success) {
+        expect(promoResult.reason).toBe("reservation_missing");
+      }
+      expect(registry.hasActiveConnection(socketId, roomId)).toBe(false);
+    });
+
+    // Required Test 2 — Disconnect During Document Loading
+    it("cleans up reservation and halts heartbeat when socket disconnects during document loading", async () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_docload_disconnect";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      registry.assignMemberToReservation(socketId, "member_docload", roomId, token);
+
+      const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+      registry.registerTransportCloseListener(roomId, socketId, token, mockTransport);
+      expect(registry.isReservationValid(roomId, socketId, token)).toBe(true);
+
+      // Simulate client disconnect during document load
+      mockTransport.emit("close");
+
+      expect(registry.isReservationValid(roomId, socketId, token)).toBe(false);
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+
+      // Resume document loading: late promotion fails
+      const mockConn: SyncConnectionLike = { socketId, readOnly: false };
+      const promoResult = registry.promoteReservation(
+        socketId,
+        roomId,
+        "member_docload",
+        { id: "member_docload", type: "user", displayName: "Docload User" },
+        mockConn,
+        "editor",
+        token
+      );
+      expect(promoResult.success).toBe(false);
+      expect(registry.hasActiveConnection(socketId, roomId)).toBe(false);
+    });
+
+    // Required Test 3 — Late Heartbeat Race
+    it("prevents cancelled reservation from being recreated or renewed by stale heartbeat", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_heartbeat_race";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(true);
+
+      // Cancel reservation
+      registry.cancelReservation(socketId, roomId, "explicit_cancellation");
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+      expect(registry.getReservation(socketId, roomId)).toBeUndefined();
+
+      // Trigger stale touch / heartbeat renewal
+      const touchResult = registry.touchReservation(roomId, socketId, token);
+      expect(touchResult).toBe(false);
+      expect(registry.getReservation(socketId, roomId)).toBeUndefined();
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+
+      // Verify token cannot be promoted
+      const mockConn: SyncConnectionLike = { socketId, readOnly: false };
+      const promoResult = registry.promoteReservation(
+        socketId,
+        roomId,
+        "member_race",
+        { id: "member_race", type: "user", displayName: "Race User" },
+        mockConn,
+        "editor",
+        token
+      );
+      expect(promoResult.success).toBe(false);
+      if (!promoResult.success) {
+        expect(promoResult.reason).toBe("reservation_missing");
+      }
+    });
+
+    // Required Test 4 — Successful Promotion Listener Cleanup
+    it("cleans up transport listener upon successful promotion so normal disconnect lifecycle applies", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_promo_cleanup";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+      registry.registerTransportCloseListener(roomId, socketId, token, mockTransport);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(true);
+
+      const mockConn: SyncConnectionLike = {
+        socketId,
+        readOnly: false,
+        webSocket: { close: vi.fn() },
+      };
+
+      const promoResult = registry.promoteReservation(
+        socketId,
+        roomId,
+        "member_promoted",
+        { id: "member_promoted", type: "user", displayName: "Promoted User" },
+        mockConn,
+        "editor",
+        token
+      );
+      expect(promoResult.success).toBe(true);
+      // Transport close listener MUST be cleaned up on promotion
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+      expect(registry.hasActiveConnection(socketId, roomId)).toBe(true);
+
+      // Emitting 'close' now should NOT trigger pending reservation cancellation logic
+      mockTransport.emit("close");
+      expect(registry.hasActiveConnection(socketId, roomId)).toBe(true);
+
+      // Normal unregisterConnection handles established connection disconnect
+      registry.unregisterConnection(roomId, socketId);
+      expect(registry.hasActiveConnection(socketId, roomId)).toBe(false);
+    });
+
+    // Required Test 5 — Multi-Room Shared Socket
+    it("preserves Room B reservation and heartbeat when Room A transport lifecycle is cancelled", () => {
+      const roomA = "507f1f77bcf86cd799439011";
+      const roomB = "507f1f77bcf86cd799439022";
+      const socketId = "sock_multi_isolated";
+
+      const resA = registry.reserveSlot(roomA, socketId);
+      const resB = registry.reserveSlot(roomB, socketId);
+      expect(resA.success && resB.success).toBe(true);
+      if (!resA.success || !resB.success) return;
+
+      const mockTransportA = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+      const mockTransportB = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+
+      registry.registerTransportCloseListener(roomA, socketId, resA.token, mockTransportA);
+      registry.registerTransportCloseListener(roomB, socketId, resB.token, mockTransportB);
+
+      expect(registry.hasTransportCloseListener(roomA, socketId)).toBe(true);
+      expect(registry.hasTransportCloseListener(roomB, socketId)).toBe(true);
+
+      // Cancel Room A only
+      registry.cancelReservation(socketId, roomA, "room_a_cancelled");
+
+      expect(registry.hasTransportCloseListener(roomA, socketId)).toBe(false);
+      expect(registry.getReservation(socketId, roomA)).toBeUndefined();
+      expect(registry.hasHeartbeat(roomA, socketId)).toBe(false);
+
+      // Room B must remain completely intact
+      expect(registry.hasTransportCloseListener(roomB, socketId)).toBe(true);
+      expect(registry.getReservation(socketId, roomB)?.token).toBe(resB.token);
+      expect(registry.hasHeartbeat(roomB, socketId)).toBe(true);
+      expect(registry.getTotalRoomCount(roomB)).toBe(1);
+
+      // Room B promotion succeeds
+      const mockConnB: SyncConnectionLike = { socketId, readOnly: false };
+      const promoB = registry.promoteReservation(
+        socketId,
+        roomB,
+        "member_b",
+        { id: "member_b", type: "user", displayName: "User B" },
+        mockConnB,
+        "editor",
+        resB.token
+      );
+      expect(promoB.success).toBe(true);
+      expect(registry.hasActiveConnection(socketId, roomB)).toBe(true);
+    });
+
+    // Required Test 6 — Shutdown
+    it("cancels pending reservations, heartbeats, and transport listeners on shutdown and blocks late promotion", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_shutdown_immediate";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+      registry.registerTransportCloseListener(roomId, socketId, token, mockTransport);
+
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(true);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(true);
+
+      // Server initiates shutdown
+      registry.setShutdown(true);
+
+      expect(registry.getPendingReservationCount()).toBe(0);
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+      expect(registry.isReservationValid(roomId, socketId, token)).toBe(false);
+
+      // Late async DB resolution attempts promotion
+      const mockConn: SyncConnectionLike = { socketId, readOnly: false };
+      const promoResult = registry.promoteReservation(
+        socketId,
+        roomId,
+        "member_shutdown",
+        { id: "member_shutdown", type: "user", displayName: "Shutdown User" },
+        mockConn,
+        "editor",
+        token
+      );
+      expect(promoResult.success).toBe(false);
+      if (!promoResult.success) {
+        expect(promoResult.reason).toBe("server_shutting_down");
       }
     });
   });

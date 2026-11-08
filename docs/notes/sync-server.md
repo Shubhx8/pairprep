@@ -10,6 +10,11 @@ The PairPrep Document Sync Server is built on **Hocuspocus 4.7.1** and **Yjs 13.
 3. **Exact Reverse-Proxy Trust & Client IP Extraction**:
    - Upstream reverse proxies are configured via `TRUSTED_PROXY_CIDRS` (`config.ts`, `apps/server/src/config/proxyTrust.ts`).
    - In production mode, `TRUSTED_PROXY_CIDRS` must be explicitly configured with exact CIDRs/IPs; bare `"loopback"` and broad private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `0.0.0.0/0`, `::/0`, `uniquelocal`, `linklocal`) are strictly prohibited and fail startup validation.
+   - **Production Docker Network Pinning (`docker-compose.prod.yml`)**:
+     - Caddy and the API service share a dedicated bridge network `pairprep_net` with an operator-configurable, non-overlapping subnet (`PAIRPREP_PROXY_SUBNET`, illustrative default `172.28.0.0/24`).
+     - Caddy receives a pinned static IPv4 address (`CADDY_PROXY_IPV4`, illustrative default `172.28.0.2`).
+     - The API's `TRUSTED_PROXY_CIDRS` is interpolated directly as `${CADDY_PROXY_IPV4}/32` (`172.28.0.2/32`), ensuring that only the actual Caddy source address is trusted and that container recreation cannot cause IP trust drift.
+     - Production deployment script `infra/deploy.sh` correctly targets the `api` service (`docker compose up -d api`).
    - Express (`app.set("trust proxy", getTrustProxyFn())`) and WebSocket handshake (`getClientIp`) use the exact same compiled `proxy-addr` trust function, guaranteeing byte-for-byte identical client-IP resolution across both transport layers.
    - Dual-stack IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) are stripped to canonical IPv4 via `normalizeIp`. Direct connections cannot forge client IP via `X-Forwarded-For`, and malformed headers fail safe to direct socket `remoteAddress`.
 4. **IP Rate Limiting**: Bounded sliding window tracking rejected handshake attempts (max 60 rejections/minute/IP). Excess rejections receive `429 Too Many Requests`.
@@ -37,6 +42,26 @@ The PairPrep Document Sync Server is built on **Hocuspocus 4.7.1** and **Yjs 13.
   - Kicking a member (`closeConnectionsForMember`) cancels any pending reservations for that member in that room and stops their heartbeat timers.
   - Deleting a room (`markRoomDeleted`, `closeAllConnectionsForRoom`) cancels all in-flight reservations, stops all heartbeats, and rejects future reservations and promotions with `room_unavailable`.
   - Graceful shutdown (`setShutdown(true)`) cancels all pending reservations, stops all heartbeats, and rejects new handshakes with `server_shutting_down`.
+
+### 1.3 Immediate Transport Closure Detection & Abandoned Handshake Reclamation
+- **Early Transport Closure Detection (`registerTransportCloseListener`)**:
+  - Because Hocuspocus 4.7.1 only attaches `onDisconnect` upon document connection establishment (`setUpNewConnection`), a physical WebSocket/TCP disconnection during `onAuthenticate` does not trigger `onDisconnect`.
+  - To eliminate the delay of waiting for the 30-second absolute deadline, `onAuthenticate` registers a transport-level closure listener directly on the underlying socket (`data.request.socket` or `connection.webSocket`).
+  - When a client disconnects before promotion, the listener fires immediately (0 ms):
+    1. Cancels the exact reservation token (`cancelReservation`).
+    2. Stops its heartbeat renewal timer immediately (`stopHeartbeat`).
+    3. Reclaims the room connection slot (`getTotalRoomCount(roomId)` decrements instantly).
+    4. Cleans up waiter state and rate-limiter entries if no other active connection shares that physical socket.
+- **Controlled Listener Lifecycle & Zero Accumulation**:
+  - The listener is registered once per pending reservation generation.
+  - It is removed immediately upon successful promotion in `connected(data)`.
+  - It is removed upon auth failure, document load failure, member kick, room deletion, or server shutdown.
+  - Normal disconnects of established connections continue through the standard `onDisconnect` hook without interference.
+- **Post-Await Async Continuation Barriers**:
+  - Every asynchronous operation in `onAuthenticate` and `onLoadDocument` checks `syncRegistry.isReservationValid(roomId, socketId, token)`.
+  - If a socket disconnects while database queries are in flight, the late database response is rejected immediately, preventing cancelled reservations from receiving identities, renewing leases, or promoting.
+- **30-Second Hard Deadline Fallback**:
+  - The 30,000 ms absolute deadline (`MAX_HANDSHAKE_DURATION_MS`) is preserved as a permanent safety net for edge cases where transport closure cannot be observed.
 
 ---
 

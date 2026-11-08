@@ -210,6 +210,35 @@ export function createSyncServer(
         context.reservationToken = reservationToken;
         documentLoadWaiters.addWaiter(roomId, data.socketId);
 
+        // 2b. Register early transport closure detection to immediately reclaim reservations if the physical socket closes
+        const rawRequest = data.request as unknown as { socket?: import("node:net").Socket } | undefined;
+        const rawWs = (data as unknown as { connection?: { webSocket?: import("node:events").EventEmitter } }).connection?.webSocket;
+        const transportTarget = rawRequest?.socket ?? rawWs;
+
+        if (transportTarget) {
+          const registered = syncRegistry.registerTransportCloseListener(
+            roomId,
+            data.socketId,
+            reservationToken,
+            transportTarget,
+            () => {
+              documentLoadWaiters.removeWaiter(roomId, data.socketId);
+              const hasActiveConn = !!syncRegistry.getConnection(data.socketId);
+              const hasOtherReservation =
+                syncRegistry.getReservation(data.socketId) !== undefined;
+              if (!hasActiveConn && !hasOtherReservation) {
+                rateLimiter.cleanup(data.socketId);
+              }
+            }
+          );
+          if (!registered && !syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+            documentLoadWaiters.removeWaiter(roomId, data.socketId);
+            const err = new Error("Transport socket disconnected during authentication");
+            (err as unknown as { reason: string }).reason = "socket_closed";
+            throw err;
+          }
+        }
+
         if (requireAuth) {
           let cookieHeader: string | undefined;
 
@@ -267,6 +296,10 @@ export function createSyncServer(
           }
 
           const principal = authResult.principal;
+
+          if (!syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+            throw new Error("Authentication reservation expired or cancelled");
+          }
 
           // Associate member with this reservation early so member-based cleanup/cancels can find it
           syncRegistry.assignMemberToReservation(data.socketId, principal.id, roomId, reservationToken);
@@ -347,6 +380,10 @@ export function createSyncServer(
 
           if (isShuttingDown) {
             throw new Error("Server is shutting down");
+          }
+
+          if (!syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+            throw new Error("Authentication reservation expired or cancelled");
           }
 
           context.principal = principal;
@@ -531,6 +568,10 @@ export function createSyncServer(
         await loadDocument(roomId, data.document);
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
+        }
+        if (ctx?.reservationToken && !syncRegistry.isReservationValid(roomId, socketId, ctx.reservationToken)) {
+          cleanupFailedLoad();
+          throw new Error("Reservation expired or cancelled during document load");
         }
         startSnapshotInterval(roomId, data.document);
         return data.document;

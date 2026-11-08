@@ -331,13 +331,17 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **L: Absolute Hard Handshake Deadline** | In-flight reservations expire at hard deadline of 30,000 ms (`MAX_HANDSHAKE_DURATION_MS`) regardless of continuous heartbeats, preventing zombie reservations from holding slots. | `reservationLease.test.ts` | `enforces absolute hard deadline of 30 seconds even with continuous heartbeats` | Unit / sync registry | **PASS** |
 | **M: Atomic Promotion Revalidation & Rejection** | Promotion to active connection in `connected(data)` revalidates room capacity, member capacity, distinct member limits, room deletion, and shutdown state; on failure, closes WebSocket with status 4003 (or 1001 for shutdown) and cleans up rate limiters. | `reservationLease.test.ts` | `rejects promotion if room capacity was filled by other connections` | Unit / sync registry | **PASS** |
 | **M: Administrative Action Cancellation** | Kicking a member (`closeConnectionsForMember`) or deleting a room (`markRoomDeleted`) cancels all in-flight reservations and stops heartbeat timers. | `reservationLease.test.ts` | `cancels in-flight reservations for kicked member during closeConnectionsForMember` | Unit / sync registry | **PASS** |
+| **N: Immediate Transport Closure Detection** | When an unauthenticated client drops TCP or closes WebSocket during authentication, the transport-level close listener immediately cancels the reservation, stops the heartbeat, and releases room capacity (0 ms delay). | `reservationLease.test.ts` | `releases reservation and halts heartbeat immediately when socket disconnects during async auth` | Unit / sync registry | **PASS** |
+| **N: Post-Await Asynchronous Revalidation** | Every post-await continuation in `onAuthenticate` and `onLoadDocument` checks `isReservationValid`, preventing cancelled handshakes from receiving member identity, renewing leases, or promoting. | `reservationLease.test.ts` | `cleans up reservation and halts heartbeat when socket disconnects during document loading` | Unit / sync registry | **PASS** |
+| **O: Production Caddy Network Identity Pinning** | Dedicated bridge network `pairprep_net` with configurable subnet pins Caddy's IPv4 address, and `TRUSTED_PROXY_CIDRS` is interpolated directly as `${CADDY_PROXY_IPV4}/32`. `infra/deploy.sh` targets service `api`. | `docker-compose.prod.yml`, `deploy.sh` | `docker compose -f infra/docker-compose.prod.yml config` | Config & Deploy Script | **PASS** |
 
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
-[HEAD]  fix(sync): harden proxy trust and connection reservations
+[HEAD]  fix(deploy): finalize proxy configuration and handshake cleanup
+e927134 fix(sync): harden proxy trust and connection reservations
 3f97b32 test(sync): complete final admission and snapshot assertions
 f20ebbc fix(sync): finalize persistence production readiness and admission safety
 0988d7a fix(sync): close persistence hardening verification gaps

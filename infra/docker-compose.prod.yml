@@ -6,11 +6,14 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - NODE_OPTIONS=--max-old-space-size=384
+      - TRUSTED_PROXY_CIDRS=${TRUSTED_PROXY_CIDRS:-${CADDY_PROXY_IPV4:-172.28.0.2}/32}
     env_file:
       - path: ${ENV_FILE:-/opt/pairprep/.env}
         required: false
     expose:
       - "3000"
+    networks:
+      proxy_net: {}
     deploy:
       resources:
         limits:
@@ -24,6 +27,9 @@ services:
       - "443:443"
     environment:
       - SITE_ADDRESS=${SITE_ADDRESS:-http://localhost}
+    networks:
+      proxy_net:
+        ipv4_address: ${CADDY_PROXY_IPV4:-172.28.0.2}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${WEB_DIR:-/opt/pairprep/web}:/srv/web:ro
@@ -31,6 +37,14 @@ services:
       - caddy_config:/config
     depends_on:
       - api
+
+networks:
+  proxy_net:
+    name: ${PAIRPREP_PROXY_NETWORK:-pairprep_proxy_net}
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${PAIRPREP_PROXY_SUBNET:-172.28.0.0/24}
 
 volumes:
   caddy_data:

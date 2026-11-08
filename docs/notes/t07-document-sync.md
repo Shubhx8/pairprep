@@ -324,12 +324,21 @@ Task T07 implements the real-time collaborative document synchronization engine 
 | **I: Pre-Mutation Capacity Admission** | Flush room backpressure release check accounts for active reservations. | `persistenceHardeningGaps.test.ts` | `flushRoom backpressure release check accounts for active reservations` | Unit / persistence admission | **PASS** |
 | **J: Real WebSocket Queue-Saturation Rejection** | Saturated persistence queue rejects real WebSocket edits before Yjs application; server Y.Doc and state vector remain unmodified; no sequence allocated in doc_updates; no broadcast to peers; awareness updates and read-only connections remain fully functional during backpressure; normal write capabilities restore upon queue drainage. | `persistenceHardeningGaps.test.ts` | `rejects real WebSocket edit before Yjs application when queue capacity is saturated and preserves awareness/read-only` | Real WebSocket (`HocuspocusProvider` + `ws`) + `MongoMemoryServer` | **PASS** |
 
+| **K: Exact Reverse-Proxy Trust & Client-IP Resolution** | Express (`app.set("trust proxy", getTrustProxyFn())`) and WebSocket (`getClientIp`) use the identical compiled `proxy-addr` trust function; direct connections and untrusted subnets cannot forge `X-Forwarded-For`; dual-stack IPv4-mapped IPv6 is canonicalized; malformed headers fail safe to direct socket IP. | `proxyTrust.test.ts` | `resolves identical IP for untrusted direct connections, ignoring forged X-Forwarded-For` | Unit / proxy trust & Express | **PASS** |
+| **K: Production Proxy CIDR Validation** | Startup strictly prohibits missing, empty, bare `loopback`, or broad private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `0.0.0.0/0`, `::/0`) in production mode. | `proxyTrust.test.ts` & `config.test.ts` | `rejects broad private network ranges in production mode` | Unit / configuration validation | **PASS** |
+| **L: Multi-Room Socket Reservation Isolation** | Compound keying `${roomId}:${socketId}` in `SyncRegistry` isolates reservations and active connections across multiple rooms for a shared physical socket. | `reservationLease.test.ts` | `allows the same physical socketId to hold distinct reservations across different rooms` | Unit / sync registry | **PASS** |
+| **L: Authentication Reservation Lease & Heartbeat** | Active 3-second heartbeat timers (`timer.unref()`) renew the 10-second reservation lease across slow multi-factor or database authentication boundaries (>10s). | `reservationLease.test.ts` | `maintains reservation lease across slow authentication (>10s) via touch/heartbeat` | Unit / sync registry | **PASS** |
+| **L: Absolute Hard Handshake Deadline** | In-flight reservations expire at hard deadline of 30,000 ms (`MAX_HANDSHAKE_DURATION_MS`) regardless of continuous heartbeats, preventing zombie reservations from holding slots. | `reservationLease.test.ts` | `enforces absolute hard deadline of 30 seconds even with continuous heartbeats` | Unit / sync registry | **PASS** |
+| **M: Atomic Promotion Revalidation & Rejection** | Promotion to active connection in `connected(data)` revalidates room capacity, member capacity, distinct member limits, room deletion, and shutdown state; on failure, closes WebSocket with status 4003 (or 1001 for shutdown) and cleans up rate limiters. | `reservationLease.test.ts` | `rejects promotion if room capacity was filled by other connections` | Unit / sync registry | **PASS** |
+| **M: Administrative Action Cancellation** | Kicking a member (`closeConnectionsForMember`) or deleting a room (`markRoomDeleted`) cancels all in-flight reservations and stops heartbeat timers. | `reservationLease.test.ts` | `cancels in-flight reservations for kicked member during closeConnectionsForMember` | Unit / sync registry | **PASS** |
+
 ---
 
 ## 5. Git Commit History (`task/T07-sync-server`)
 
 ```text
-[HEAD]  test(sync): complete final admission and snapshot assertions
+[HEAD]  fix(sync): harden proxy trust and connection reservations
+3f97b32 test(sync): complete final admission and snapshot assertions
 f20ebbc fix(sync): finalize persistence production readiness and admission safety
 0988d7a fix(sync): close persistence hardening verification gaps
 f2e5551 fix(sync): harden persistence retries and snapshot consistency

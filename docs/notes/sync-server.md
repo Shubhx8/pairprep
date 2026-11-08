@@ -7,17 +7,36 @@ The PairPrep Document Sync Server is built on **Hocuspocus 4.7.1** and **Yjs 13.
 ### 1.1 Ingress & Protocol Upgrade Flow
 1. **HTTP Upgrade**: An incoming WebSocket handshake triggers `httpServer.on("upgrade")`.
 2. **Endpoint Validation**: Only requests directed to pathname `/sync` are processed; others are ignored or passed to other handlers.
-3. **Subnet-Aware Client IP Extraction**: Client IP is extracted via `proxy-addr` configured with trusted upstream proxies (`loopback`, `linklocal`, `uniquelocal`, `10.0.0.0/8`, `172.16.0.0/12`). Direct connections cannot forge client IP via `X-Forwarded-For`.
+3. **Exact Reverse-Proxy Trust & Client IP Extraction**:
+   - Upstream reverse proxies are configured via `TRUSTED_PROXY_CIDRS` (`config.ts`, `apps/server/src/config/proxyTrust.ts`).
+   - In production mode, `TRUSTED_PROXY_CIDRS` must be explicitly configured with exact CIDRs/IPs; bare `"loopback"` and broad private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `0.0.0.0/0`, `::/0`, `uniquelocal`, `linklocal`) are strictly prohibited and fail startup validation.
+   - Express (`app.set("trust proxy", getTrustProxyFn())`) and WebSocket handshake (`getClientIp`) use the exact same compiled `proxy-addr` trust function, guaranteeing byte-for-byte identical client-IP resolution across both transport layers.
+   - Dual-stack IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) are stripped to canonical IPv4 via `normalizeIp`. Direct connections cannot forge client IP via `X-Forwarded-For`, and malformed headers fail safe to direct socket `remoteAddress`.
 4. **IP Rate Limiting**: Bounded sliding window tracking rejected handshake attempts (max 60 rejections/minute/IP). Excess rejections receive `429 Too Many Requests`.
 5. **Origin Verification**: Handshakes validate the `Origin` header against `APP_URL`, `CLIENT_ORIGIN`, and development origins. Untrusted origins are rejected with `403 Forbidden`.
 6. **CrossWS Delegation**: Valid upgrades are handed off to Hocuspocus's internal `crossws` adapter with a startup runtime guard.
 
-### 1.2 Authentication & Capacity Guard (`onAuthenticate`)
+### 1.2 Authentication, Reservation Leases & Admission Guard (`onAuthenticate`, `connected`)
 - **Document ID Validation**: Document names are strictly validated as 24-character hexadecimal MongoDB ObjectIds.
-- **Atomic Capacity Reservation**: Before performing asynchronous database or cookie lookups, the server reserves a slot in the in-memory `SyncRegistry`. A room permits a maximum of 6 concurrent WebSocket connections and 6 distinct members, with at most 3 connections per member (`ROOM-4`).
-- **Principal Resolution**: Handshake cookies are validated against Express sessions (`pairprep.sid`) or signed guest tokens (`pairprep.guest`).
-- **Room & Membership Check**: Verifies that the room exists in MongoDB and the user is an active room member.
-- **Fail-Safe Cleanup**: Any error, rejection, or exception during `onAuthenticate` immediately releases the reserved slot (`syncRegistry.cancelReservation`).
+- **Multi-Room Socket Reservation Isolation**: Reservations and active connections use compound key `${roomId}:${socketId}` in `SyncRegistry`, enabling physical sockets that multiplex multiple documents to maintain completely isolated reservation and connection lifecycles without collision.
+- **Renewable Reservation Leases & Heartbeat**:
+  - Each reservation is created with a 10,000 ms lease (`RESERVATION_LEASE_TTL_MS`) and a unique cryptographic UUID token.
+  - An active renewable heartbeat fires every 3,000 ms (`RESERVATION_HEARTBEAT_MS`) via unreferenced background timers (`timer.unref()`), keeping in-flight reservations alive across slow multi-factor or database authentication boundaries.
+  - If a connection drops before completing authentication, the heartbeat is halted and the lease expires after 10s.
+- **Absolute Hard Handshake Deadline (30s)**:
+  - Every reservation is bound by an absolute hard deadline of 30,000 ms (`MAX_HANDSHAKE_DURATION_MS`).
+  - Even with continuous heartbeats, handshakes exceeding 30s are cancelled, preventing zombie connections from holding room slots indefinitely.
+- **Principal Resolution & Recheck Barrier**:
+  - Handshake cookies are validated against Express sessions (`pairprep.sid`) or signed guest tokens (`pairprep.guest`).
+  - The server verifies room existence and membership in MongoDB.
+  - After each asynchronous boundary, `syncRegistry.isReservationValid(roomId, socketId, token)` rechecks whether the reservation remains valid or was cancelled by an administrative action.
+- **Atomic Promotion & Capacity Revalidation**:
+  - When Hocuspocus triggers `connected(data)`, `syncRegistry.promoteReservation(...)` atomically revalidates room capacity ($\le 6$), member connection limit ($\le 3$), distinct member limit ($\le 6$), room deletion state, and shutdown state.
+  - If any revalidation check fails, the reservation is cancelled and the WebSocket is immediately closed with status `4003` (or `1001` for server shutdown), and rate limiter state is reclaimed.
+- **Administrative In-Flight Cancellation**:
+  - Kicking a member (`closeConnectionsForMember`) cancels any pending reservations for that member in that room and stops their heartbeat timers.
+  - Deleting a room (`markRoomDeleted`, `closeAllConnectionsForRoom`) cancels all in-flight reservations, stops all heartbeats, and rejects future reservations and promotions with `room_unavailable`.
+  - Graceful shutdown (`setShutdown(true)`) cancels all pending reservations, stops all heartbeats, and rejects new handshakes with `server_shutting_down`.
 
 ---
 

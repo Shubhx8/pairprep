@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import { Server, createServer } from "node:http";
 import { config } from "./config.js";
+import { getTrustProxyFn } from "./config/proxyTrust.js";
 import { requestLogger, rootLogger } from "./middleware/logger.js";
 import { createSessionMiddleware } from "./middleware/session.js";
 import passport from "passport";
@@ -36,8 +37,8 @@ import {
 const app = express();
 const PORT = config.PORT;
 
-// Trust proxy set to 1 for reverse proxy (Caddy on Azure VM per AD-1)
-app.set("trust proxy", 1);
+// Trust proxy compiled using centralized reverse proxy configuration (Caddy on Azure VM per AD-1)
+app.set("trust proxy", getTrustProxyFn());
 
 // Structured JSON request logging & X-Request-Id tagging mounted FIRST
 // Ensures all requests (including rate-limited, rejected CORS, and oversized bodies) are tagged and logged

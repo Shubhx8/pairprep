@@ -1,39 +1,22 @@
-import proxyaddr from "proxy-addr";
 import type { IncomingMessage } from "node:http";
+import {
+  getClientIp as resolveClientIp,
+  normalizeIp,
+  parseTrustedProxyCidrs,
+} from "../config/proxyTrust.js";
+import { config } from "../config.js";
 
-// Trusted subnets: loopback, Docker, and internal cluster subnets
-export const TRUSTED_PROXIES = [
-  "loopback",
-  "linklocal",
-  "uniquelocal",
-  "10.0.0.0/8",
-  "172.16.0.0/12",
-];
-const trustFn = proxyaddr.compile(TRUSTED_PROXIES);
+// Re-export trusted proxy list parsed from centralized config
+export const TRUSTED_PROXIES = parseTrustedProxyCidrs(config.TRUSTED_PROXY_CIDRS);
 
-/**
- * Normalizes IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 -> 127.0.0.1)
- * so that rate limiting buckets remain consistent across dual-stack sockets.
- */
-export function normalizeIp(ip: string): string {
-  if (ip.startsWith("::ffff:")) {
-    return ip.slice(7);
-  }
-  return ip;
-}
+export { normalizeIp };
 
 /**
- * Extracts the real client IP address using proxy-addr with trusted proxy configuration.
+ * Extracts the real client IP address using centralized proxy trust configuration.
  * Untrusted direct connections cannot spoof client IP via X-Forwarded-For.
  */
 export function getClientIp(req: IncomingMessage): string {
-  try {
-    const rawIp =
-      proxyaddr(req, trustFn) || req.socket.remoteAddress || "127.0.0.1";
-    return normalizeIp(rawIp);
-  } catch {
-    return normalizeIp(req.socket.remoteAddress || "127.0.0.1");
-  }
+  return resolveClientIp(req);
 }
 
 export interface UpgradeRateLimiterOptions {

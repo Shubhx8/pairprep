@@ -497,7 +497,8 @@ roomsRouter.delete(
     try {
       const room = req.room!;
       await roomRepo.deleteRoom(room.id);
-      // Immediately terminate all sync connections and cascade client mappings
+      // Immediately terminate all sync connections, mark room deleted, and cascade client mappings
+      syncRegistry.markRoomDeleted(room.id);
       syncRegistry.closeAllConnectionsForRoom(room.id, 1000, "room_deleted");
       syncRegistry.setRoomReadOnly(room.id);
       await clientMapRepo.deleteByRoom(room.id);

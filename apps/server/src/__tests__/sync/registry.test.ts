@@ -50,7 +50,10 @@ describe("T07 Sync Registry Unit Tests", () => {
 
       for (let i = 1; i <= MAX_ROOM_CONNECTIONS; i++) {
         const res = registry.reserveSlot(roomId, `sock_${i}`);
-        expect(res).toEqual({ success: true });
+        expect(res.success).toBe(true);
+        if (res.success) {
+          expect(typeof res.token).toBe("string");
+        }
       }
 
       expect(registry.getTotalRoomCount(roomId)).toBe(6);
@@ -76,7 +79,10 @@ describe("T07 Sync Registry Unit Tests", () => {
       expect(registry.getTotalRoomCount(roomId)).toBe(5);
 
       const next = registry.reserveSlot(roomId, "sock_new");
-      expect(next).toEqual({ success: true });
+      expect(next.success).toBe(true);
+      if (next.success) {
+        expect(typeof next.token).toBe("string");
+      }
     });
 
     it("prunes expired reservations older than 10 seconds", () => {
@@ -93,7 +99,10 @@ describe("T07 Sync Registry Unit Tests", () => {
 
       // New reservation succeeds
       const res = registry.reserveSlot(roomId, "fresh_sock", now);
-      expect(res).toEqual({ success: true });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(typeof res.token).toBe("string");
+      }
     });
   });
 

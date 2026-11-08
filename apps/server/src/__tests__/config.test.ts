@@ -33,6 +33,7 @@ describe("Server Config Module (T01)", () => {
       SITE_ORIGIN: "https://pairprep-live.eastasia.cloudapp.azure.com",
       GIT_SHA: "commit-sha-12345",
       RATE_LIMIT_MAX: "50",
+      TRUSTED_PROXY_CIDRS: "127.0.0.1,172.20.0.2",
     };
 
     const cfg = loadConfig(mockEnv as unknown as NodeJS.ProcessEnv);
@@ -41,6 +42,7 @@ describe("Server Config Module (T01)", () => {
     expect(cfg.SITE_ORIGIN).toBe("https://pairprep-live.eastasia.cloudapp.azure.com");
     expect(cfg.GIT_SHA).toBe("commit-sha-12345");
     expect(cfg.RATE_LIMIT_MAX).toBe(50);
+    expect(cfg.TRUSTED_PROXY_CIDRS).toBe("127.0.0.1,172.20.0.2");
   });
 
   it("config: allows MONGODB_URI and SESSION_SECRET to be optional in T01", () => {
@@ -152,6 +154,7 @@ describe("Server Config Module (T01)", () => {
       MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
       SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
       SITE_ORIGIN: "http://localhost:3000",
+      TRUSTED_PROXY_CIDRS: "127.0.0.1,172.20.0.2",
     } as unknown as NodeJS.ProcessEnv);
     expect(localhostProd.SITE_ORIGIN).toBe("http://localhost:3000");
 
@@ -162,6 +165,7 @@ describe("Server Config Module (T01)", () => {
         MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep",
         SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
         SITE_ORIGIN: "   ",
+        TRUSTED_PROXY_CIDRS: "127.0.0.1,172.20.0.2",
       } as unknown as NodeJS.ProcessEnv)
     ).toThrow(/SITE_ORIGIN/);
 
@@ -189,6 +193,7 @@ describe("Server Config Module (T01)", () => {
       MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/pairprep",
       SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
       SITE_ORIGIN: "https://pairprep.example.com",
+      TRUSTED_PROXY_CIDRS: "127.0.0.1,172.20.0.2",
     } as unknown as NodeJS.ProcessEnv);
     expect(validProd.NODE_ENV).toBe("production");
     expect(validProd.MONGODB_URI).toBe(
@@ -196,6 +201,77 @@ describe("Server Config Module (T01)", () => {
     );
     expect(validProd.SESSION_SECRET).toBe("abcdef1234567890abcdef1234567890abcdef12");
     expect(validProd.SITE_ORIGIN).toBe("https://pairprep.example.com");
+  });
+
+  it("config: requires explicit, narrow TRUSTED_PROXY_CIDRS in production and rejects broad ranges", () => {
+    const baseProd = {
+      NODE_ENV: "production",
+      MONGODB_URI: "mongodb+srv://user:pass@cluster.mongodb.net/pairprep",
+      SESSION_SECRET: "abcdef1234567890abcdef1234567890abcdef12",
+      SITE_ORIGIN: "https://pairprep.example.com",
+    };
+
+    // Missing TRUSTED_PROXY_CIDRS (defaults to loopback, rejected in production)
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Empty or whitespace TRUSTED_PROXY_CIDRS
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+        TRUSTED_PROXY_CIDRS: "   ",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Bare "loopback" keyword in production
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+        TRUSTED_PROXY_CIDRS: "loopback",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Prohibited broad private range 10.0.0.0/8
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+        TRUSTED_PROXY_CIDRS: "10.0.0.0/8",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Prohibited broad private range 172.16.0.0/12
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+        TRUSTED_PROXY_CIDRS: "172.16.0.0/12",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Prohibited broad private range 192.168.0.0/16
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+        TRUSTED_PROXY_CIDRS: "192.168.0.0/16",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Prohibited 0.0.0.0/0
+    expect(() =>
+      loadConfig({
+        ...baseProd,
+        TRUSTED_PROXY_CIDRS: "0.0.0.0/0",
+      } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/TRUSTED_PROXY_CIDRS/);
+
+    // Exact IP or specific narrow CIDR is accepted
+    const cfg = loadConfig({
+      ...baseProd,
+      TRUSTED_PROXY_CIDRS: "127.0.0.1, 172.20.0.5/32, ::1",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(cfg.TRUSTED_PROXY_CIDRS).toBe("127.0.0.1, 172.20.0.5/32, ::1");
   });
 
   it("config: keeps MONGODB_URI and SESSION_SECRET optional in development and test", () => {

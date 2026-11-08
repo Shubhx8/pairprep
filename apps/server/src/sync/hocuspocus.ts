@@ -100,6 +100,7 @@ export interface SyncConnectionContext {
   member?: IRoomMember;
   room?: IRoom;
   readOnly?: boolean;
+  reservationToken?: string;
   [key: string]: unknown;
 }
 
@@ -201,9 +202,12 @@ export function createSyncServer(
           const err = new Error(
             "Room capacity exceeded: maximum 6 active connections"
           );
-          (err as unknown as { reason: string }).reason = "room_capacity_exceeded";
+          (err as unknown as { reason: string }).reason = reservation.reason ?? "room_capacity_exceeded";
           throw err;
         }
+        const reservationToken = reservation.token;
+        const context = data.context as SyncConnectionContext;
+        context.reservationToken = reservationToken;
         documentLoadWaiters.addWaiter(roomId, data.socketId);
 
         if (requireAuth) {
@@ -250,6 +254,10 @@ export function createSyncServer(
             throw new Error("Server is shutting down");
           }
 
+          if (!syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+            throw new Error("Authentication reservation expired or cancelled");
+          }
+
           if (!authResult.success) {
             const err = new Error(
               `Authentication failed: ${authResult.reason}`
@@ -260,10 +268,16 @@ export function createSyncServer(
 
           const principal = authResult.principal;
 
+          // Associate member with this reservation early so member-based cleanup/cancels can find it
+          syncRegistry.assignMemberToReservation(data.socketId, principal.id, roomId, reservationToken);
+
           // Verify room exists in database
           const room = await roomRepo.findById(roomId);
           if (isShuttingDown) {
             throw new Error("Server is shutting down");
+          }
+          if (!syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+            throw new Error("Authentication reservation expired or cancelled");
           }
           if (!room) {
             const err = new Error("Room not found");
@@ -282,6 +296,9 @@ export function createSyncServer(
           if (isShuttingDown) {
             throw new Error("Server is shutting down");
           }
+          if (!syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+            throw new Error("Authentication reservation expired or cancelled");
+          }
           if (!member) {
             const err = new Error("Forbidden: not a member of this room");
             (err as unknown as { reason: string }).reason = "not_room_member";
@@ -299,7 +316,7 @@ export function createSyncServer(
           }
 
           // 3b. Per-member connection limit (max 3 connections per member in this room)
-          if (!syncRegistry.checkMemberLimit(roomId, principal.id)) {
+          if (!syncRegistry.checkMemberLimit(roomId, principal.id, Date.now(), data.socketId)) {
             const err = new Error(
               "Member connection limit exceeded: maximum 3 connections per member"
             );
@@ -307,9 +324,6 @@ export function createSyncServer(
               "member_connection_limit_exceeded";
             throw err;
           }
-
-          // Associate member with this reservation
-          syncRegistry.assignMemberToReservation(data.socketId, principal.id);
 
           // 4. Server-enforced read-only check
           let isReadOnly =
@@ -335,7 +349,6 @@ export function createSyncServer(
             throw new Error("Server is shutting down");
           }
 
-          const context = data.context as SyncConnectionContext;
           context.principal = principal;
           context.member = member;
           context.room = room;
@@ -347,8 +360,7 @@ export function createSyncServer(
 
           // If auth is disabled (e.g. mock/spike/test), assign mock principal
           const mockMemberId = `anon_${data.socketId}`;
-          syncRegistry.assignMemberToReservation(data.socketId, mockMemberId);
-          const context = data.context as SyncConnectionContext;
+          syncRegistry.assignMemberToReservation(data.socketId, mockMemberId, roomId, reservationToken);
           context.principal = {
             type: "user",
             id: mockMemberId,
@@ -412,14 +424,36 @@ export function createSyncServer(
         } as unknown as import("../models/users.js").IUser,
       };
       const memberRole = context.member?.role;
-      syncRegistry.promoteReservation(
+      const promoResult = syncRegistry.promoteReservation(
         data.socketId,
         data.documentName,
         memberId,
         principal,
         data.connection,
-        memberRole
+        memberRole,
+        context?.reservationToken
       );
+
+      if (!promoResult.success) {
+        syncRegistry.cancelReservation(data.socketId, data.documentName);
+        const hasActiveConn = !!syncRegistry.getConnection(data.socketId);
+        const hasOtherReservation =
+          syncRegistry.getReservation(data.socketId) !== undefined;
+        if (!hasActiveConn && !hasOtherReservation) {
+          rateLimiter.cleanup(data.socketId);
+        }
+        const closeCode =
+          promoResult.reason === "server_shutting_down" ? 1001 : 4003;
+        try {
+          data.connection?.webSocket?.close(
+            closeCode,
+            promoResult.reason ?? "promotion_failed"
+          );
+        } catch {
+          // ignore
+        }
+        return;
+      }
     },
     async onDisconnect(data) {
       const roomId = data.documentName;
@@ -489,6 +523,11 @@ export function createSyncServer(
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
         }
+        const ctx = (data.context ?? (data as unknown as { connection?: { context?: SyncConnectionContext } }).connection?.context) as SyncConnectionContext | undefined;
+        if (ctx?.reservationToken && !syncRegistry.isReservationValid(roomId, socketId, ctx.reservationToken)) {
+          cleanupFailedLoad();
+          throw new Error("Reservation expired before document load");
+        }
         await loadDocument(roomId, data.document);
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
@@ -511,7 +550,7 @@ export function createSyncServer(
         const ctx = data.connection.context as SyncConnectionContext | undefined;
         actorId = ctx?.principal?.id;
         if (!actorId) {
-          const connMeta = syncRegistry.getConnection(data.connection.socketId);
+          const connMeta = syncRegistry.getConnection(data.connection.socketId, roomId);
           actorId = connMeta?.memberId;
         }
       }

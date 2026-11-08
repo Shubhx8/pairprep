@@ -657,5 +657,142 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
         expect(promoResult.reason).toBe("server_shutting_down");
       }
     });
+
+    // Test 1 — Destroyed Node socket
+    it("immediately rejects and cancels reservation if transport is already destroyed before registration", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_already_destroyed";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(true);
+
+      const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+      mockTransport.destroyed = true;
+
+      let abortCallCount = 0;
+      let abortedReason = "";
+      const registered = registry.registerTransportCloseListener(
+        roomId,
+        socketId,
+        token,
+        mockTransport,
+        (reason) => {
+          abortCallCount++;
+          abortedReason = reason;
+        }
+      );
+
+      // Registration returns failure result
+      expect(registered).toBe(false);
+
+      // Reservation is cancelled immediately
+      expect(registry.getReservation(socketId, roomId)).toBeUndefined();
+      expect(registry.hasReservationForSocket(socketId, roomId)).toBe(false);
+      expect(registry.isReservationValid(roomId, socketId, token)).toBe(false);
+
+      // Heartbeat is stopped immediately
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+
+      // No temporary listeners remain
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+      expect(mockTransport.listenerCount("close")).toBe(0);
+      expect(mockTransport.listenerCount("end")).toBe(0);
+      expect(mockTransport.listenerCount("error")).toBe(0);
+
+      // Abort callback is invoked exactly once
+      expect(abortCallCount).toBe(1);
+      expect(abortedReason).toBe("socket_already_closed");
+    });
+
+    // Test 2 — String-valued closed state
+    it("immediately rejects and cancels reservation if transport has string readyState 'closed'", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_already_closed_str";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(true);
+
+      const mockTransport = new EventEmitter() as EventEmitter & { readyState?: string };
+      mockTransport.readyState = "closed";
+
+      let abortCallCount = 0;
+      let abortedReason = "";
+      const registered = registry.registerTransportCloseListener(
+        roomId,
+        socketId,
+        token,
+        mockTransport,
+        (reason) => {
+          abortCallCount++;
+          abortedReason = reason;
+        }
+      );
+
+      // Registration returns failure result
+      expect(registered).toBe(false);
+
+      // Reservation is cancelled immediately
+      expect(registry.getReservation(socketId, roomId)).toBeUndefined();
+      expect(registry.hasReservationForSocket(socketId, roomId)).toBe(false);
+      expect(registry.isReservationValid(roomId, socketId, token)).toBe(false);
+
+      // Heartbeat is stopped immediately
+      expect(registry.hasHeartbeat(roomId, socketId)).toBe(false);
+
+      // No temporary listeners remain
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+      expect(mockTransport.listenerCount("close")).toBe(0);
+      expect(mockTransport.listenerCount("end")).toBe(0);
+      expect(mockTransport.listenerCount("error")).toBe(0);
+
+      // Abort callback is invoked exactly once
+      expect(abortCallCount).toBe(1);
+      expect(abortedReason).toBe("socket_already_closed");
+    });
+
+    // Test 3 — Listener cleanup across all events
+    it("removes transport listener from close, end, and error events upon cleanup and remains idempotent", () => {
+      const roomId = "507f1f77bcf86cd799439011";
+      const socketId = "sock_cleanup_all_events";
+
+      const res = registry.reserveSlot(roomId, socketId);
+      expect(res.success).toBe(true);
+      if (!res.success) return;
+
+      const token = res.token;
+      const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
+
+      const registered = registry.registerTransportCloseListener(roomId, socketId, token, mockTransport);
+      expect(registered).toBe(true);
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(true);
+
+      // Verify listeners were attached to all 3 events
+      expect(mockTransport.listenerCount("close")).toBe(1);
+      expect(mockTransport.listenerCount("end")).toBe(1);
+      expect(mockTransport.listenerCount("error")).toBe(1);
+
+      // Remove listener explicitly
+      registry.removeTransportCloseListener(roomId, socketId);
+
+      // Verify listener was removed from ALL THREE events
+      expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(false);
+      expect(mockTransport.listenerCount("close")).toBe(0);
+      expect(mockTransport.listenerCount("end")).toBe(0);
+      expect(mockTransport.listenerCount("error")).toBe(0);
+
+      // Repeated cleanup calls are completely harmless and idempotent
+      expect(() => {
+        registry.removeTransportCloseListener(roomId, socketId);
+        registry.removeTransportCloseListener(roomId, socketId);
+      }).not.toThrow();
+    });
   });
 });

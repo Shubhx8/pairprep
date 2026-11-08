@@ -14,6 +14,7 @@ import {
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
+import { documentLoadWaiters } from "../../sync/documentWaiters.js";
 import {
   isAllowedOrigin,
   getAllowedOrigins,
@@ -445,10 +446,11 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
       // Wait a tick for TCP close event to propagate
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      // Assert that any pending reservation or timer is 0
+      // Assert that any pending reservation or timer is 0 and document-load waiters are cleaned
       expect(syncRegistry.getTotalRoomCount(roomId)).toBe(0);
       expect(syncRegistry.getHeartbeatTimerCount()).toBe(0);
       expect(syncRegistry.getTransportCloseListenerCount()).toBe(0);
+      expect(documentLoadWaiters.getWaiters(roomId)).toHaveLength(0);
     });
   });
 });

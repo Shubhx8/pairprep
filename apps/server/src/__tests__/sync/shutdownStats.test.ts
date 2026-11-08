@@ -20,6 +20,7 @@ import {
 } from "../../sync/persistence.js";
 import { ConnectionRateLimiter } from "../../sync/connectionRateLimiter.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
+import { documentLoadWaiters } from "../../sync/documentWaiters.js";
 import { DocUpdateModel } from "../../models/doc_updates.js";
 import { DocSnapshotModel } from "../../models/doc_snapshots.js";
 import { roomRepo } from "../../repos/roomRepo.js";
@@ -1418,6 +1419,9 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       expect(syncRegistry.getPendingReservationsForRoom(unrelatedRoomId)).toEqual([
         charlieSocket,
       ]);
+      expect(documentLoadWaiters.getWaiters(testRoomId)).toEqual(
+        expect.arrayContaining([aliceSocket, bobSocket])
+      );
 
       // 5. Resume and fail document loading
       pauseResolve();
@@ -1433,10 +1437,11 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       // Loader was invoked exactly once throughout the entire deduplicated cycle
       expect(loaderInvocationCount).toBe(1);
 
-      // 7. Verify both reservations for testRoomId are released
+      // 7. Verify both reservations for testRoomId are released and document waiters are removed
       expect(syncRegistry.getReservation(aliceSocket)).toBeUndefined();
       expect(syncRegistry.getReservation(bobSocket)).toBeUndefined();
       expect(syncRegistry.getPendingReservationsForRoom(testRoomId)).toHaveLength(0);
+      expect(documentLoadWaiters.getWaiters(testRoomId)).toHaveLength(0);
 
       // 8. Regression assertion: Unrelated reservation for unrelatedRoomId was NOT cancelled!
       expect(syncRegistry.getReservation(charlieSocket)?.roomId).toBe(unrelatedRoomId);
@@ -1444,6 +1449,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         charlieSocket,
       ]);
       expect(syncRegistry.getPendingReservationCount()).toBe(1);
+      expect(documentLoadWaiters.getWaiters(unrelatedRoomId)).toEqual([]);
 
       // 9. Verify rate limiters for testRoomId were cleaned up, while Charlie's limiter remains active
       expect(limiter.getStats().trackedConnections).toBe(1);

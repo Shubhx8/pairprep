@@ -211,7 +211,8 @@ export class SyncRegistry {
       removeListener?: (event: string, fn: (...args: unknown[]) => void) => unknown;
       off?: (event: string, fn: (...args: unknown[]) => void) => unknown;
       destroyed?: boolean;
-      readyState?: number;
+      closed?: boolean;
+      readyState?: number | string;
     },
     onAborted?: (reason: string) => void
   ): boolean {
@@ -223,8 +224,18 @@ export class SyncRegistry {
       return false;
     }
 
+    const isTransportClosed = (t: typeof target): boolean => {
+      return Boolean(
+        t.destroyed ||
+        t.closed ||
+        t.readyState === 2 ||
+        t.readyState === 3 ||
+        t.readyState === "closed"
+      );
+    };
+
     // If the socket is already destroyed or in closing/closed readyState, cancel immediately
-    if (target.destroyed || target.readyState === 2 || target.readyState === 3) {
+    if (isTransportClosed(target)) {
       this.cancelReservation(socketId, roomId, "socket_closed");
       onAborted?.("socket_already_closed");
       return false;
@@ -257,6 +268,18 @@ export class SyncRegistry {
     };
 
     this.transportCleanupFns.set(key, cleanup);
+
+    // Defensive post-registration check: if transport closed or destroyed during listener registration
+    if (isTransportClosed(target)) {
+      this.removeTransportCloseListener(roomId, socketId);
+      const current = this.reservations.get(key);
+      if (current && !current.cancelled && current.token === token) {
+        this.cancelReservation(socketId, roomId, "socket_closed");
+        onAborted?.("socket_already_closed");
+      }
+      return false;
+    }
+
     return true;
   }
 

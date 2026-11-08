@@ -47,10 +47,7 @@ export function getSessionStore(): MongoStore | null {
       err && typeof err === "object" && "name" in err
         ? String((err as { name: unknown }).name)
         : "Error";
-    rootLogger.error(
-      { errorName },
-      "MongoStore error; invalidating memoized store"
-    );
+    rootLogger.error({ errorName }, "MongoStore error; invalidating memoized store");
     memoizedStore = null;
     lastClient = null;
   });
@@ -61,9 +58,7 @@ export function getSessionStore(): MongoStore | null {
  * Wraps store.get(sid, cb) in a Promise.
  * Returns null if database is down, session not found, or retrieval errors.
  */
-export function fetchSessionData(
-  sid: string
-): Promise<Record<string, unknown> | null> {
+export function fetchSessionData(sid: string): Promise<Record<string, unknown> | null> {
   const store = getSessionStore();
   if (!store) {
     return Promise.resolve(null);

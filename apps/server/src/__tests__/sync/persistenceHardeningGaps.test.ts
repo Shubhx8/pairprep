@@ -32,10 +32,7 @@ import {
   attachSyncServer,
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { DocUpdateModel } from "../../models/doc_updates.js";
 import { DocSnapshotModel } from "../../models/doc_snapshots.js";
 import { docSnapshotRepo } from "../../repos/docSnapshotRepo.js";
@@ -126,13 +123,15 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       let pauseTriggered = false;
 
       // Spy on DocUpdateModel.create to pause during subsequent write
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        if (!pauseTriggered) {
-          pauseTriggered = true;
-          await pausePromise;
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          if (!pauseTriggered) {
+            pauseTriggered = true;
+            await pausePromise;
+          }
+          return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
         }
-        return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      );
 
       // Insert another update that will be flushed when takeSnapshot runs
       text.insert(text.length, "pending_before_snap ");
@@ -164,7 +163,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       const updatesUpToWatermark = await DocUpdateModel.find({
         roomId,
         seq: { $lte: watermark },
-      }).sort({ seq: 1 }).exec();
+      })
+        .sort({ seq: 1 })
+        .exec();
 
       expect(updatesUpToWatermark.length).toBe(watermark);
 
@@ -176,7 +177,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       expect(loadResult.lastSeq).toBeGreaterThanOrEqual(watermark);
 
       // State reconstructed from snapshot + subsequent updates must match final doc text exactly
-      expect(targetDoc.getText("monaco").toString()).toBe(doc.getText("monaco").toString());
+      expect(targetDoc.getText("monaco").toString()).toBe(
+        doc.getText("monaco").toString()
+      );
     });
 
     it("Test 2 — Update arrives at snapshot consistency boundary: proven strictly included or excluded with seq > watermark", async () => {
@@ -224,7 +227,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
 
       await flushRoom(roomId);
 
-      const latestUpdate = await DocUpdateModel.findOne({ roomId }).sort({ seq: -1 }).exec();
+      const latestUpdate = await DocUpdateModel.findOne({ roomId })
+        .sort({ seq: -1 })
+        .exec();
       expect(latestUpdate).not.toBeNull();
       expect(latestUpdate!.seq).toBe(7);
       expect(latestUpdate!.seq).toBeGreaterThan(snapA!.seq);
@@ -232,7 +237,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       // Verify recovery produces full state
       const recoveryDoc = new Y.Doc();
       await loadDocument(roomId, recoveryDoc);
-      expect(recoveryDoc.getText("monaco").toString()).toBe(doc.getText("monaco").toString());
+      expect(recoveryDoc.getText("monaco").toString()).toBe(
+        doc.getText("monaco").toString()
+      );
     });
   });
 
@@ -422,30 +429,47 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       let attempts = 0;
 
       // Fail 3 times on the 2nd record, but allow 1st record to succeed/reconcile
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        const item = args[0] as { seq: number };
-        if (item?.seq === 2 && attempts < 3) {
-          attempts++;
-          throw new Error(`Simulated partial write failure on attempt ${attempts}`);
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          const item = args[0] as { seq: number };
+          if (item?.seq === 2 && attempts < 3) {
+            attempts++;
+            throw new Error(`Simulated partial write failure on attempt ${attempts}`);
+          }
+          return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
         }
-        return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      );
 
       // Attempt 1 fails
-      await expect(flushRoom(roomId)).rejects.toThrow("Simulated partial write failure on attempt 1");
+      await expect(flushRoom(roomId)).rejects.toThrow(
+        "Simulated partial write failure on attempt 1"
+      );
 
       // Verify retry backoff delay is between 250ms and 5000ms
-      const backoff1 = Math.min(MAX_RETRY_BACKOFF_MS, MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, 0));
+      const backoff1 = Math.min(
+        MAX_RETRY_BACKOFF_MS,
+        MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, 0)
+      );
       expect(backoff1).toBe(250);
 
       // Attempt 2 fails
-      await expect(flushRoom(roomId)).rejects.toThrow("Simulated partial write failure on attempt 2");
-      const backoff2 = Math.min(MAX_RETRY_BACKOFF_MS, MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, 1));
+      await expect(flushRoom(roomId)).rejects.toThrow(
+        "Simulated partial write failure on attempt 2"
+      );
+      const backoff2 = Math.min(
+        MAX_RETRY_BACKOFF_MS,
+        MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, 1)
+      );
       expect(backoff2).toBe(500);
 
       // Attempt 3 fails
-      await expect(flushRoom(roomId)).rejects.toThrow("Simulated partial write failure on attempt 3");
-      const backoff3 = Math.min(MAX_RETRY_BACKOFF_MS, MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, 2));
+      await expect(flushRoom(roomId)).rejects.toThrow(
+        "Simulated partial write failure on attempt 3"
+      );
+      const backoff3 = Math.min(
+        MAX_RETRY_BACKOFF_MS,
+        MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, 2)
+      );
       expect(backoff3).toBe(1000);
 
       // Attempt 4: all 3 attempts exceeded, full flush succeeds
@@ -471,7 +495,10 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
     it("proves MongoDB unique compound index roomId_1_seq_1 is physically enforced", async () => {
       const indexes = await DocUpdateModel.collection.indexes();
       const uniqueIndex = indexes.find(
-        (idx) => idx.key && (idx.key as Record<string, number>)["roomId"] === 1 && (idx.key as Record<string, number>)["seq"] === 1
+        (idx) =>
+          idx.key &&
+          (idx.key as Record<string, number>)["roomId"] === 1 &&
+          (idx.key as Record<string, number>)["seq"] === 1
       );
 
       expect(uniqueIndex).toBeDefined();
@@ -574,7 +601,14 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       // Attempt retry with different author and payload for the same seq 3
       requeueUpdates(
         roomId,
-        [{ authorId: "author_conflict", update: new Uint8Array([9, 9, 9]), ts: new Date(), seq: 3 }],
+        [
+          {
+            authorId: "author_conflict",
+            update: new Uint8Array([9, 9, 9]),
+            ts: new Date(),
+            seq: 3,
+          },
+        ],
         Date.now(),
         doc
       );
@@ -630,11 +664,13 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       });
 
       const originalCreate = DocUpdateModel.create.bind(DocUpdateModel);
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        flushStarted();
-        await flushPause;
-        return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          flushStarted();
+          await flushPause;
+          return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
+        }
+      );
 
       const inFlightPromise = flushRoom(roomId);
       await flushStartedPromise;
@@ -680,18 +716,22 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
 
       // Simulate Room A failure on DocUpdateModel.create
       const originalCreate = DocUpdateModel.create.bind(DocUpdateModel);
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        const item = args[0] as { roomId: string };
-        if (item?.roomId === roomId) {
-          throw new Error("Simulated disk error in Room A during shutdown");
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          const item = args[0] as { roomId: string };
+          if (item?.roomId === roomId) {
+            throw new Error("Simulated disk error in Room A during shutdown");
+          }
+          return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
         }
-        return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      );
 
       // Execute drainPersistenceAndSnapshot
       await expect(
         drainPersistenceAndSnapshot({ takeFinalSnapshots: true })
-      ).rejects.toThrow(/Persistence drain encountered failures in 1 room\(s\): 507f1f77bcf86cd799439011/);
+      ).rejects.toThrow(
+        /Persistence drain encountered failures in 1 room\(s\): 507f1f77bcf86cd799439011/
+      );
 
       // 1. Room B must be completely persisted and have a final snapshot
       const roomBUpdates = await DocUpdateModel.find({ roomId: roomBId }).exec();
@@ -829,10 +869,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       await barrierReachedPromise;
 
       // 8. While snapshot is paused at the barrier, Client B sends concurrent edits over WebSocket
-      docB.getText("monaco").insert(
-        docB.getText("monaco").length,
-        "Client B concurrent edit."
-      );
+      docB
+        .getText("monaco")
+        .insert(docB.getText("monaco").length, "Client B concurrent edit.");
 
       // Verify Client A receives Client B's edits over WebSocket
       await vi.waitFor(() => {
@@ -846,10 +885,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       await snapPromise;
 
       // 10. Client A sends an edit strictly after the snapshot watermark was captured
-      docA.getText("monaco").insert(
-        docA.getText("monaco").length,
-        " Post-snapshot edit."
-      );
+      docA
+        .getText("monaco")
+        .insert(docA.getText("monaco").length, " Post-snapshot edit.");
       provA.flushPendingUpdates();
 
       await vi.waitFor(() => {
@@ -909,12 +947,14 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       let pauseDb = true;
 
       const origCreate = DocUpdateModel.create.bind(DocUpdateModel);
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        if (pauseDb) {
-          await pauseBarrierPromise;
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          if (pauseDb) {
+            await pauseBarrierPromise;
+          }
+          return origCreate(...(args as Parameters<typeof DocUpdateModel.create>));
         }
-        return origCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      );
 
       try {
         const customLimiter = new ConnectionRateLimiter({
@@ -981,9 +1021,12 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         }
 
         // Wait for room to be backpressured by persistence capacity
-        await vi.waitFor(() => {
-          expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
-        }, { timeout: 10000 });
+        await vi.waitFor(
+          () => {
+            expect(syncRegistry.isRoomBackpressured(roomId)).toBe(true);
+          },
+          { timeout: 10000 }
+        );
 
         // Capture server-side state
         const serverDoc = getActiveLoadedDocuments().get(roomId);
@@ -1004,7 +1047,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         // 1. Server Y.Doc content remains unchanged
         expect(serverDoc!.getText("monaco").toString()).toBe(serverTextBefore);
         // 2. Server Yjs state vector remains unchanged
-        expect(Buffer.from(Y.encodeStateVector(serverDoc!)).equals(serverSvBefore)).toBe(true);
+        expect(Buffer.from(Y.encodeStateVector(serverDoc!)).equals(serverSvBefore)).toBe(
+          true
+        );
         // 3. No new doc_updates record is created for rejected edit
         const updatesAfter = await DocUpdateModel.countDocuments({ roomId });
         expect(updatesAfter).toBe(updatesBefore);
@@ -1027,9 +1072,12 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         });
         provA.setAwarenessField("user", { name: "Alice" });
         provA.flushPendingUpdates();
-        await vi.waitFor(() => {
-          expect(awarenessReceived).toBe(true);
-        }, { timeout: 5000 });
+        await vi.waitFor(
+          () => {
+            expect(awarenessReceived).toBe(true);
+          },
+          { timeout: 5000 }
+        );
 
         // Verify read-only clients can still connect and synchronize during backpressure
         const wsC = new HocuspocusProviderWebsocket({
@@ -1057,17 +1105,22 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         }
 
         // Backpressure clears once queue falls below recovery threshold
-        await vi.waitFor(() => {
-          expect(syncRegistry.isRoomBackpressured(roomId)).toBe(false);
-        }, { timeout: 5000 });
+        await vi.waitFor(
+          () => {
+            expect(syncRegistry.isRoomBackpressured(roomId)).toBe(false);
+          },
+          { timeout: 5000 }
+        );
 
         // Authorized editor (Client A) can edit again
         textA.insert(0, "POST_RECOVERY_EDIT_");
         provA.flushPendingUpdates();
-        await vi.waitFor(() => {
-          expect(docC.getText("monaco").toString()).toContain("POST_RECOVERY_EDIT_");
-        }, { timeout: 5000 });
-
+        await vi.waitFor(
+          () => {
+            expect(docC.getText("monaco").toString()).toContain("POST_RECOVERY_EDIT_");
+          },
+          { timeout: 5000 }
+        );
       } finally {
         pauseDb = false;
         pauseBarrierResolve();

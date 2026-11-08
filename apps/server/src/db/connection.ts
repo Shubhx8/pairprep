@@ -131,11 +131,7 @@ export async function verifyRequiredDatabaseIndexes(): Promise<void> {
   // 3. Locate the index matching key pattern { roomId: 1, seq: 1 }
   const matchingIndex = indexes.find((idx) => {
     const keys = Object.keys(idx.key || {});
-    return (
-      keys.length === 2 &&
-      idx.key.roomId === 1 &&
-      idx.key.seq === 1
-    );
+    return keys.length === 2 && idx.key.roomId === 1 && idx.key.seq === 1;
   });
 
   if (!matchingIndex) {

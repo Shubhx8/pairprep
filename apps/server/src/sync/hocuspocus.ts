@@ -199,10 +199,9 @@ export function createSyncServer(
         // 2. Synchronous per-room capacity reservation (ROOM-4: max 6 active connections)
         const reservation = syncRegistry.reserveSlot(roomId, data.socketId);
         if (!reservation.success) {
-          const err = new Error(
-            "Room capacity exceeded: maximum 6 active connections"
-          );
-          (err as unknown as { reason: string }).reason = reservation.reason ?? "room_capacity_exceeded";
+          const err = new Error("Room capacity exceeded: maximum 6 active connections");
+          (err as unknown as { reason: string }).reason =
+            reservation.reason ?? "room_capacity_exceeded";
           throw err;
         }
         const reservationToken = reservation.token;
@@ -211,8 +210,13 @@ export function createSyncServer(
         documentLoadWaiters.addWaiter(roomId, data.socketId);
 
         // 2b. Register early transport closure detection to immediately reclaim reservations if the physical socket closes
-        const rawRequest = data.request as unknown as { socket?: import("node:net").Socket } | undefined;
-        const rawWs = (data as unknown as { connection?: { webSocket?: import("node:events").EventEmitter } }).connection?.webSocket;
+        const rawRequest = data.request as unknown as
+          { socket?: import("node:net").Socket } | undefined;
+        const rawWs = (
+          data as unknown as {
+            connection?: { webSocket?: import("node:events").EventEmitter };
+          }
+        ).connection?.webSocket;
         const transportTarget = rawRequest?.socket ?? rawWs;
 
         if (transportTarget) {
@@ -231,7 +235,10 @@ export function createSyncServer(
               }
             }
           );
-          if (!registered && !syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
+          if (
+            !registered &&
+            !syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)
+          ) {
             documentLoadWaiters.removeWaiter(roomId, data.socketId);
             const err = new Error("Transport socket disconnected during authentication");
             (err as unknown as { reason: string }).reason = "socket_closed";
@@ -254,10 +261,7 @@ export function createSyncServer(
                   get: (name: string) => string | null;
                 }
               ).get("cookie") ?? undefined;
-          } else if (
-            data.requestHeaders &&
-            typeof data.requestHeaders === "object"
-          ) {
+          } else if (data.requestHeaders && typeof data.requestHeaders === "object") {
             cookieHeader = (
               data.requestHeaders as unknown as Record<string, string | undefined>
             )["cookie"];
@@ -269,15 +273,10 @@ export function createSyncServer(
             typeof data.request === "object" &&
             "headers" in data.request
           ) {
-            cookieHeader = (data.request as unknown as IncomingMessage).headers[
-              "cookie"
-            ];
+            cookieHeader = (data.request as unknown as IncomingMessage).headers["cookie"];
           }
 
-          const authResult = await resolvePrincipalFromCookies(
-            cookieHeader,
-            roomId
-          );
+          const authResult = await resolvePrincipalFromCookies(cookieHeader, roomId);
 
           if (isShuttingDown) {
             throw new Error("Server is shutting down");
@@ -288,9 +287,7 @@ export function createSyncServer(
           }
 
           if (!authResult.success) {
-            const err = new Error(
-              `Authentication failed: ${authResult.reason}`
-            );
+            const err = new Error(`Authentication failed: ${authResult.reason}`);
             (err as unknown as { reason: string }).reason = authResult.reason;
             throw err;
           }
@@ -302,7 +299,12 @@ export function createSyncServer(
           }
 
           // Associate member with this reservation early so member-based cleanup/cancels can find it
-          syncRegistry.assignMemberToReservation(data.socketId, principal.id, roomId, reservationToken);
+          syncRegistry.assignMemberToReservation(
+            data.socketId,
+            principal.id,
+            roomId,
+            reservationToken
+          );
 
           // Verify room exists in database
           const room = await roomRepo.findById(roomId);
@@ -343,13 +345,19 @@ export function createSyncServer(
             const err = new Error(
               "Room member limit exceeded: maximum 6 distinct members"
             );
-            (err as unknown as { reason: string }).reason =
-              "room_member_limit_exceeded";
+            (err as unknown as { reason: string }).reason = "room_member_limit_exceeded";
             throw err;
           }
 
           // 3b. Per-member connection limit (max 3 connections per member in this room)
-          if (!syncRegistry.checkMemberLimit(roomId, principal.id, Date.now(), data.socketId)) {
+          if (
+            !syncRegistry.checkMemberLimit(
+              roomId,
+              principal.id,
+              Date.now(),
+              data.socketId
+            )
+          ) {
             const err = new Error(
               "Member connection limit exceeded: maximum 3 connections per member"
             );
@@ -397,7 +405,12 @@ export function createSyncServer(
 
           // If auth is disabled (e.g. mock/spike/test), assign mock principal
           const mockMemberId = `anon_${data.socketId}`;
-          syncRegistry.assignMemberToReservation(data.socketId, mockMemberId, roomId, reservationToken);
+          syncRegistry.assignMemberToReservation(
+            data.socketId,
+            mockMemberId,
+            roomId,
+            reservationToken
+          );
           context.principal = {
             type: "user",
             id: mockMemberId,
@@ -479,8 +492,7 @@ export function createSyncServer(
         if (!hasActiveConn && !hasOtherReservation) {
           rateLimiter.cleanup(data.socketId);
         }
-        const closeCode =
-          promoResult.reason === "server_shutting_down" ? 1001 : 4003;
+        const closeCode = promoResult.reason === "server_shutting_down" ? 1001 : 4003;
         try {
           data.connection?.webSocket?.close(
             closeCode,
@@ -516,8 +528,7 @@ export function createSyncServer(
 
         const hocuspocusInstance =
           (data.instance as
-            | { unloadDocument?: (doc: unknown) => Promise<void> }
-            | undefined) ??
+            { unloadDocument?: (doc: unknown) => Promise<void> } | undefined) ??
           (
             server as unknown as {
               hocuspocus?: { unloadDocument?: (doc: unknown) => Promise<void> };
@@ -548,8 +559,7 @@ export function createSyncServer(
           // Cancel only this socket's reservation for roomId
           syncRegistry.cancelReservation(sock, roomId);
           const hasActiveConn = !!syncRegistry.getConnection(sock);
-          const hasOtherReservation =
-            syncRegistry.getReservation(sock) !== undefined;
+          const hasOtherReservation = syncRegistry.getReservation(sock) !== undefined;
           if (!hasActiveConn && !hasOtherReservation) {
             rateLimiter.cleanup(sock);
           }
@@ -560,8 +570,13 @@ export function createSyncServer(
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
         }
-        const ctx = (data.context ?? (data as unknown as { connection?: { context?: SyncConnectionContext } }).connection?.context) as SyncConnectionContext | undefined;
-        if (ctx?.reservationToken && !syncRegistry.isReservationValid(roomId, socketId, ctx.reservationToken)) {
+        const ctx = (data.context ??
+          (data as unknown as { connection?: { context?: SyncConnectionContext } })
+            .connection?.context) as SyncConnectionContext | undefined;
+        if (
+          ctx?.reservationToken &&
+          !syncRegistry.isReservationValid(roomId, socketId, ctx.reservationToken)
+        ) {
           cleanupFailedLoad();
           throw new Error("Reservation expired before document load");
         }
@@ -569,7 +584,10 @@ export function createSyncServer(
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
         }
-        if (ctx?.reservationToken && !syncRegistry.isReservationValid(roomId, socketId, ctx.reservationToken)) {
+        if (
+          ctx?.reservationToken &&
+          !syncRegistry.isReservationValid(roomId, socketId, ctx.reservationToken)
+        ) {
           cleanupFailedLoad();
           throw new Error("Reservation expired or cancelled during document load");
         }
@@ -619,7 +637,8 @@ export function createSyncServer(
       }
     },
     async onChange(data) {
-      const connContext = (data.connection?.context ?? data.context) as SyncConnectionContext | undefined;
+      const connContext = (data.connection?.context ?? data.context) as
+        SyncConnectionContext | undefined;
       // Always populate doc_updates.authorId strictly from the authenticated connection context,
       // never trusting client-supplied identifiers (PRD ATTR-1 / Non-negotiable security rule #2)
       const authorId =
@@ -628,13 +647,7 @@ export function createSyncServer(
           ? data.socketId
           : "anonymous");
       const socketId = data.connection?.socketId ?? data.socketId;
-      queueUpdate(
-        data.documentName,
-        authorId,
-        data.update,
-        data.document,
-        socketId
-      );
+      queueUpdate(data.documentName, authorId, data.update, data.document, socketId);
 
       // Register Yjs clientIds from update metadata to authenticated actorId (first claim wins)
       if (connContext?.principal?.id && mongoose.connection.readyState === 1) {
@@ -767,8 +780,7 @@ export function createSyncServer(
 
       try {
         const crossws = (server as unknown as Record<string, unknown>)["crossws"] as
-          | { closeAll?: (code: number, data: string, force: boolean) => void }
-          | undefined;
+          { closeAll?: (code: number, data: string, force: boolean) => void } | undefined;
         if (typeof crossws?.closeAll === "function") {
           crossws.closeAll(1001, "server_shutting_down", false);
         }
@@ -834,8 +846,9 @@ export function createSyncServer(
           activeConnections: syncRegistry.getActiveConnectionCount(),
           activeRooms: syncRegistry.getActiveRoomCount(),
           activeDocuments:
-            (server as unknown as { hocuspocus?: { getDocumentsCount?: () => number } })
-              .hocuspocus?.getDocumentsCount?.() ?? 0,
+            (
+              server as unknown as { hocuspocus?: { getDocumentsCount?: () => number } }
+            ).hocuspocus?.getDocumentsCount?.() ?? 0,
           pendingReservations: syncRegistry.getPendingReservationCount(),
           upgradeRejections,
           authenticationFailures,
@@ -871,68 +884,59 @@ export function attachSyncServer(
   syncInstance: SyncServerInstance = createSyncServer()
 ): SyncServerInstance {
   // Runtime guard: Throws immediately at startup if Hocuspocus internal adapter is missing or renamed
-  const crossws = (
-    syncInstance.server as unknown as Record<string, unknown>
-  )["crossws"] as
+  const crossws = (syncInstance.server as unknown as Record<string, unknown>)[
+    "crossws"
+  ] as
     | {
-        handleUpgrade: (
-          req: IncomingMessage,
-          sock: Duplex,
-          head: Buffer
-        ) => void;
+        handleUpgrade: (req: IncomingMessage, sock: Duplex, head: Buffer) => void;
       }
     | undefined;
 
   if (!crossws?.handleUpgrade) {
-    throw new Error(
-      "Hocuspocus internal crossws adapter not found - check version"
-    );
+    throw new Error("Hocuspocus internal crossws adapter not found - check version");
   }
 
-  httpServer.on(
-    "upgrade",
-    (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-      const url = new URL(request.url || "/", "http://localhost");
-      if (url.pathname !== "/sync") {
-        // Not a sync endpoint
-        return;
-      }
-
-      // Reject all new upgrade attempts immediately during server shutdown
-      if (syncInstance.isShuttingDown()) {
-        syncInstance.recordUpgradeRejection();
-        socket.write(
-          "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 30\r\n\r\n"
-        );
-        socket.destroy();
-        return;
-      }
-
-      const clientIp = getClientIp(request);
-
-      // 1. IP rate limiter (checks rejected connection attempts)
-      if (syncUpgradeRateLimiter.isRateLimited(clientIp)) {
-        syncInstance.recordUpgradeRejection();
-        socket.write(
-          "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n"
-        );
-        socket.destroy();
-        return;
-      }
-
-      // 2. Strict allowed Origin check
-      if (!isAllowedOrigin(request.headers.origin)) {
-        syncInstance.recordUpgradeRejection();
-        syncUpgradeRateLimiter.recordRejection(clientIp);
-        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-
-      // Delegate WebSocket upgrade to Hocuspocus crossws adapter
-      crossws.handleUpgrade(request, socket, head);
+  httpServer.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const url = new URL(request.url || "/", "http://localhost");
+    if (url.pathname !== "/sync") {
+      // Not a sync endpoint
+      return;
     }
-  );
+
+    // Reject all new upgrade attempts immediately during server shutdown
+    if (syncInstance.isShuttingDown()) {
+      syncInstance.recordUpgradeRejection();
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 30\r\n\r\n"
+      );
+      socket.destroy();
+      return;
+    }
+
+    const clientIp = getClientIp(request);
+
+    // 1. IP rate limiter (checks rejected connection attempts)
+    if (syncUpgradeRateLimiter.isRateLimited(clientIp)) {
+      syncInstance.recordUpgradeRejection();
+      socket.write(
+        "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n"
+      );
+      socket.destroy();
+      return;
+    }
+
+    // 2. Strict allowed Origin check
+    if (!isAllowedOrigin(request.headers.origin)) {
+      syncInstance.recordUpgradeRejection();
+      syncUpgradeRateLimiter.recordRejection(clientIp);
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    // Delegate WebSocket upgrade to Hocuspocus crossws adapter
+    crossws.handleUpgrade(request, socket, head);
+  });
 
   return syncInstance;
 }

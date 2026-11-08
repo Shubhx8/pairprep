@@ -16,19 +16,13 @@ export type SessionResolutionResult =
   | { success: true; principal: Principal }
   | {
       success: false;
-      reason:
-        | "unauthenticated"
-        | "disabled"
-        | "db_unavailable"
-        | "invalid_guest";
+      reason: "unauthenticated" | "disabled" | "db_unavailable" | "invalid_guest";
     };
 
 /**
  * Standard RFC 6265 cookie header string parser.
  */
-export function parseCookieString(
-  cookieHeader: string
-): Record<string, string> {
+export function parseCookieString(cookieHeader: string): Record<string, string> {
   const result: Record<string, string> = {};
   if (!cookieHeader) return result;
 
@@ -78,9 +72,7 @@ export async function resolvePrincipalFromCookies(
     const sid = cookieParser.signedCookie(rawSidCookie, config.SESSION_SECRET);
     if (sid && typeof sid === "string") {
       const sessionData = await fetchSessionData(sid);
-      const passportData = sessionData?.passport as
-        | { user?: unknown }
-        | undefined;
+      const passportData = sessionData?.passport as { user?: unknown } | undefined;
       const userId = passportData?.user;
 
       if (

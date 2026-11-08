@@ -125,8 +125,7 @@ export function isRoomAtPersistenceCapacity(
   const totalBytes = pendingBytes + inFlightBytes + reservedBytes + additionalBytes;
 
   return (
-    totalCount >= MAX_PENDING_UPDATES_PER_ROOM ||
-    totalBytes >= MAX_PENDING_BYTES_PER_ROOM
+    totalCount >= MAX_PENDING_UPDATES_PER_ROOM || totalBytes >= MAX_PENDING_BYTES_PER_ROOM
   );
 }
 
@@ -185,10 +184,7 @@ export function tryReserveAdmission(
  * Transfers an active admission reservation into the pending persistence queue.
  * Decrements reserved counters and increments queued counters without double-counting.
  */
-export function transferAdmissionReservation(
-  roomId: string,
-  socketId: string
-): void {
+export function transferAdmissionReservation(roomId: string, socketId: string): void {
   const list = activeReservationsBySocket.get(socketId);
   if (list && list.length > 0) {
     const idx = list.findIndex((r) => r.roomId === roomId);
@@ -216,16 +212,11 @@ export function checkAndReleaseBackpressure(roomId: string): void {
     const reservedRemainingCount = reservedUpdatesByRoom.get(roomId) ?? 0;
     const reservedRemainingBytes = reservedBytesByRoom.get(roomId) ?? 0;
     const remainingCount =
-      (activeQ?.updates.length ?? 0) +
-      inFlightRemainingCount +
-      reservedRemainingCount;
+      (activeQ?.updates.length ?? 0) + inFlightRemainingCount + reservedRemainingCount;
     const remainingBytes =
-      (activeQ?.totalBytes ?? 0) +
-      inFlightRemainingBytes +
-      reservedRemainingBytes;
+      (activeQ?.totalBytes ?? 0) + inFlightRemainingBytes + reservedRemainingBytes;
     if (
-      remainingCount <=
-        MAX_PENDING_UPDATES_PER_ROOM * RECOVERY_THRESHOLD_RATIO &&
+      remainingCount <= MAX_PENDING_UPDATES_PER_ROOM * RECOVERY_THRESHOLD_RATIO &&
       remainingBytes <= MAX_PENDING_BYTES_PER_ROOM * RECOVERY_THRESHOLD_RATIO
     ) {
       syncRegistry.setRoomBackpressure(roomId, false);
@@ -236,10 +227,7 @@ export function checkAndReleaseBackpressure(roomId: string): void {
 /**
  * Releases an admission reservation for non-mutating messages or failed/aborted frames.
  */
-export function releaseAdmissionReservation(
-  roomId: string,
-  socketId: string
-): void {
+export function releaseAdmissionReservation(roomId: string, socketId: string): void {
   transferAdmissionReservation(roomId, socketId);
   checkAndReleaseBackpressure(roomId);
 }
@@ -247,10 +235,7 @@ export function releaseAdmissionReservation(
 /**
  * Clears all admission reservations for a socket, room, or globally on reset.
  */
-export function clearAdmissionReservations(
-  socketId?: string,
-  roomId?: string
-): void {
+export function clearAdmissionReservations(socketId?: string, roomId?: string): void {
   if (socketId) {
     const list = activeReservationsBySocket.get(socketId);
     if (list) {
@@ -284,7 +269,10 @@ export function clearAdmissionReservations(
 /**
  * Returns reserved admission count and bytes for observability and testing.
  */
-export function getReservedAdmissionStats(roomId?: string): { count: number; bytes: number } {
+export function getReservedAdmissionStats(roomId?: string): {
+  count: number;
+  bytes: number;
+} {
   if (roomId) {
     return {
       count: reservedUpdatesByRoom.get(roomId) ?? 0,
@@ -560,7 +548,8 @@ export function requeueUpdates(
   // Compute bounded exponential backoff with jitter
   const backoffBase = Math.min(
     MAX_RETRY_BACKOFF_MS,
-    MIN_RETRY_BACKOFF_MS * Math.pow(RETRY_BACKOFF_FACTOR, Math.min(10, queue.failureCount - 1))
+    MIN_RETRY_BACKOFF_MS *
+      Math.pow(RETRY_BACKOFF_FACTOR, Math.min(10, queue.failureCount - 1))
   );
   const jitter = Math.floor(Math.random() * 50);
   const retryDelay = Math.min(MAX_RETRY_BACKOFF_MS, backoffBase + jitter);
@@ -575,10 +564,7 @@ export function requeueUpdates(
 /**
  * Flushes pending updates for a room under the room mutex.
  */
-export async function flushRoom(
-  roomId: string,
-  forceSnapshot = false
-): Promise<void> {
+export async function flushRoom(roomId: string, forceSnapshot = false): Promise<void> {
   if (mongoose.connection.readyState !== 1) {
     return;
   }
@@ -602,10 +588,7 @@ export async function flushRoom(
  * Assigns sequence numbers stably, reconciles existing DB records to guarantee
  * idempotent retries, and enforces the 2 MB document cap.
  */
-async function flushRoomLocked(
-  roomId: string,
-  forceSnapshot = false
-): Promise<void> {
+async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<void> {
   const queue = pendingQueues.get(roomId);
   const doc = queue?.document ?? activeLoadedDocuments.get(roomId);
 
@@ -661,10 +644,7 @@ async function flushRoomLocked(
     roomId,
     (inFlightUpdatesByRoom.get(roomId) ?? 0) + batch.length
   );
-  inFlightBytesByRoom.set(
-    roomId,
-    (inFlightBytesByRoom.get(roomId) ?? 0) + batchBytes
-  );
+  inFlightBytesByRoom.set(roomId, (inFlightBytesByRoom.get(roomId) ?? 0) + batchBytes);
 
   pendingQueues.set(roomId, {
     roomId,
@@ -706,8 +686,7 @@ async function flushRoomLocked(
       if (match) {
         const itemBuf = Buffer.from(item.update);
         const isMatch =
-          match.authorId === item.authorId &&
-          Buffer.compare(match.update, itemBuf) === 0;
+          match.authorId === item.authorId && Buffer.compare(match.update, itemBuf) === 0;
 
         if (!isMatch) {
           throw new Error(
@@ -898,8 +877,7 @@ async function takeSnapshotLocked(
       await snapshotTestingHooks.beforeCaptureBarrier();
       if (
         (pendingQueues.get(roomId)?.updates.length ?? 0) > 0 ||
-        (roomAppliedUpdates.get(roomId) || 0) >
-          (roomPersistedUpdates.get(roomId) || 0)
+        (roomAppliedUpdates.get(roomId) || 0) > (roomPersistedUpdates.get(roomId) || 0)
       ) {
         continue;
       }
@@ -914,8 +892,7 @@ async function takeSnapshotLocked(
     // 5. If new updates arrived while awaiting findOne, loop back
     if (
       (pendingQueues.get(roomId)?.updates.length ?? 0) > 0 ||
-      (roomAppliedUpdates.get(roomId) || 0) >
-        (roomPersistedUpdates.get(roomId) || 0)
+      (roomAppliedUpdates.get(roomId) || 0) > (roomPersistedUpdates.get(roomId) || 0)
     ) {
       continue;
     }
@@ -926,8 +903,7 @@ async function takeSnapshotLocked(
     // 7. Verify immediately that no new update arrived
     if (
       (pendingQueues.get(roomId)?.updates.length ?? 0) > 0 ||
-      (roomAppliedUpdates.get(roomId) || 0) >
-        (roomPersistedUpdates.get(roomId) || 0)
+      (roomAppliedUpdates.get(roomId) || 0) > (roomPersistedUpdates.get(roomId) || 0)
     ) {
       continue;
     }
@@ -1045,8 +1021,7 @@ export function getPendingPersistenceStats(now = Date.now()): PersistenceStats {
     }
   }
 
-  const oldestPendingAgeMs =
-    oldestTimestamp > 0 ? Math.max(0, now - oldestTimestamp) : 0;
+  const oldestPendingAgeMs = oldestTimestamp > 0 ? Math.max(0, now - oldestTimestamp) : 0;
 
   return {
     pendingUpdates: queuedUpdates + inFlightUpdatesCount,
@@ -1110,10 +1085,7 @@ export async function drainPersistenceAndSnapshot(
 
   // 4. Capture all rooms: union of pendingQueues and active loaded documents
   const allRoomIds = Array.from(
-    new Set<string>([
-      ...pendingQueues.keys(),
-      ...activeLoadedDocuments.keys(),
-    ])
+    new Set<string>([...pendingQueues.keys(), ...activeLoadedDocuments.keys()])
   );
 
   const failedRooms = new Set<string>();
@@ -1138,8 +1110,7 @@ export async function drainPersistenceAndSnapshot(
         .filter((roomId) => !failedRooms.has(roomId))
         .map(async (roomId) => {
           const doc =
-            activeLoadedDocuments.get(roomId) ??
-            pendingQueues.get(roomId)?.document;
+            activeLoadedDocuments.get(roomId) ?? pendingQueues.get(roomId)?.document;
           if (doc) {
             try {
               await takeSnapshot(roomId, doc, true);
@@ -1168,15 +1139,10 @@ export async function drainPersistenceAndSnapshot(
 
   // 8. Verify no unconfirmed updates and surface errors honestly
   const stats = getPendingPersistenceStats();
-  const totalErrors = [
-    ...inFlightErrors,
-    ...Array.from(roomDrainErrors.values()),
-  ];
+  const totalErrors = [...inFlightErrors, ...Array.from(roomDrainErrors.values())];
   if (totalErrors.length > 0) {
     const primaryError =
-      totalErrors[0] instanceof Error
-        ? totalErrors[0].message
-        : String(totalErrors[0]);
+      totalErrors[0] instanceof Error ? totalErrors[0].message : String(totalErrors[0]);
     const aggregate = new Error(
       `Persistence drain encountered failures in ${failedRooms.size} room(s): ${Array.from(failedRooms).join(", ")}. Primary error: ${primaryError}`
     );

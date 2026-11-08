@@ -26,10 +26,7 @@ import { DocSnapshotModel } from "../../models/doc_snapshots.js";
 import { roomRepo } from "../../repos/roomRepo.js";
 import { roomMemberRepo } from "../../repos/roomMemberRepo.js";
 import * as sessionPrincipal from "../../auth/sessionPrincipal.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { config } from "../../config.js";
 import { setupGracefulShutdown } from "../../index.js";
 import express from "express";
@@ -180,10 +177,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
     it("tracks physical connection counts and capacity accurately during connect and disconnect", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -234,10 +228,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       const roomB = "507f1f77bcf86cd799439022";
 
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -426,10 +417,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
     it("guarantees statistics output exposes no sensitive tokens, cookies, raw slugs or document content", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -472,10 +460,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
   describe("2. Graceful Shutdown & Connection Drain", () => {
     it("rejects new /sync upgrade requests with HTTP 503 after shutdown begins", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -530,10 +515,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
     it("delivers close code 1001 and reason server_shutting_down to existing connected WebSockets", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -560,17 +542,19 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
       await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
 
-      const disconnectPromise = new Promise<{ code: number; reason: string }>((resolve) => {
-        wsProvider.on(
-          "disconnect",
-          ({ event }: { event: { code: number; reason: string } }) => {
-            resolve({
-              code: event?.code,
-              reason: typeof event?.reason === "string" ? event.reason : "",
-            });
-          }
-        );
-      });
+      const disconnectPromise = new Promise<{ code: number; reason: string }>(
+        (resolve) => {
+          wsProvider.on(
+            "disconnect",
+            ({ event }: { event: { code: number; reason: string } }) => {
+              resolve({
+                code: event?.code,
+                reason: typeof event?.reason === "string" ? event.reason : "",
+              });
+            }
+          );
+        }
+      );
 
       // Initiate shutdown
       await syncServer.drainAndShutdown({ drainTimeoutMs: 2000 });
@@ -691,10 +675,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       testApp.get("/ping", (_req, res) => res.json({ ok: true }));
 
       httpServer = createServer(testApp);
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => httpServer!.listen(0, resolve));
       const addr = httpServer.address();
@@ -768,13 +749,17 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
       // Start an asynchronous snapshot
       const snapPromise = takeSnapshot(roomId, doc, true);
-      expect(getPendingPersistenceStats().activeSnapshotOperations).toBeGreaterThanOrEqual(0);
+      expect(
+        getPendingPersistenceStats().activeSnapshotOperations
+      ).toBeGreaterThanOrEqual(0);
 
       // Run persistence drain
       await drainPersistenceAndSnapshot({ takeFinalSnapshots: true });
       await snapPromise;
 
-      const latestSnapshot = await DocSnapshotModel.findOne({ roomId }).sort({ seq: -1 }).exec();
+      const latestSnapshot = await DocSnapshotModel.findOne({ roomId })
+        .sort({ seq: -1 })
+        .exec();
       expect(latestSnapshot).not.toBeNull();
       expect(latestSnapshot!.text).toBe("in-flight snapshot test");
     });
@@ -848,23 +833,19 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
           };
         });
 
-      const findByIdSpy = vi
-        .spyOn(roomRepo, "findById")
-        .mockResolvedValue({
-          _id: testRoomId,
-          slug: "test-slug",
-          status: "open",
-          type: "collaboration",
-        } as unknown as import("../../models/rooms.js").IRoom);
+      const findByIdSpy = vi.spyOn(roomRepo, "findById").mockResolvedValue({
+        _id: testRoomId,
+        slug: "test-slug",
+        status: "open",
+        type: "collaboration",
+      } as unknown as import("../../models/rooms.js").IRoom);
 
-      const findMemberSpy = vi
-        .spyOn(roomMemberRepo, "findMember")
-        .mockResolvedValue({
-          _id: "member_1",
-          roomId: testRoomId,
-          userId: testUserId,
-          role: "editor",
-        } as unknown as import("../../models/room_members.js").IRoomMember);
+      const findMemberSpy = vi.spyOn(roomMemberRepo, "findMember").mockResolvedValue({
+        _id: "member_1",
+        roomId: testRoomId,
+        userId: testUserId,
+        role: "editor",
+      } as unknown as import("../../models/room_members.js").IRoomMember);
 
       syncServer = createSyncServer({ requireAuth: true });
       const onAuth = syncServer.server.configuration.onAuthenticate;
@@ -923,19 +904,17 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       });
 
       // Spy on DocSnapshotModel.findOne to pause during loadDocument
-      const snapSpy = vi
-        .spyOn(DocSnapshotModel, "findOne")
-        .mockImplementation(() => {
-          reachedLoadResolve();
-          return {
-            sort: () => ({
-              exec: async () => {
-                await pausePromise;
-                return null;
-              },
-            }),
-          } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
-        });
+      const snapSpy = vi.spyOn(DocSnapshotModel, "findOne").mockImplementation(() => {
+        reachedLoadResolve();
+        return {
+          sort: () => ({
+            exec: async () => {
+              await pausePromise;
+              return null;
+            },
+          }),
+        } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
+      });
 
       syncServer = createSyncServer({ requireAuth: false });
       const onLoadDoc = syncServer.server.configuration.onLoadDocument;
@@ -1044,9 +1023,9 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         .spyOn(DocUpdateModel, "create")
         .mockRejectedValue(new Error("Database write error during shutdown"));
 
-      await expect(
-        syncServer.drainAndShutdown({ drainTimeoutMs: 50 })
-      ).rejects.toThrow("Database write error during shutdown");
+      await expect(syncServer.drainAndShutdown({ drainTimeoutMs: 50 })).rejects.toThrow(
+        "Database write error during shutdown"
+      );
 
       // Server must NOT be marked destroyed if persistence failed
       expect(syncServer.getStats().status).not.toBe("destroyed");
@@ -1056,10 +1035,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
     it("proves awareness updates sent after shutdown starts do not change server awareness state or reach another participant", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -1121,13 +1097,24 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       });
 
       // Verify server document awareness state has both clients
-      const hocuspocusInstance = (syncServer.server as unknown as {
-        hocuspocus: { documents: Map<string, { awareness: import("y-protocols/awareness").Awareness }> };
-      }).hocuspocus;
+      const hocuspocusInstance = (
+        syncServer.server as unknown as {
+          hocuspocus: {
+            documents: Map<
+              string,
+              { awareness: import("y-protocols/awareness").Awareness }
+            >;
+          };
+        }
+      ).hocuspocus;
       const serverDoc = hocuspocusInstance.documents.get(roomId);
       expect(serverDoc).toBeDefined();
-      expect(serverDoc!.awareness.getStates().get(aliceDoc.clientID)?.user?.name).toBe("Alice");
-      expect(serverDoc!.awareness.getStates().get(bobDoc.clientID)?.user?.name).toBe("Bob");
+      expect(serverDoc!.awareness.getStates().get(aliceDoc.clientID)?.user?.name).toBe(
+        "Alice"
+      );
+      expect(serverDoc!.awareness.getStates().get(bobDoc.clientID)?.user?.name).toBe(
+        "Bob"
+      );
 
       // Track updates received by Bob during/after shutdown
       const bobLateAwarenessUpdates: Array<{
@@ -1145,12 +1132,14 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       // Spy on closeAllConnections: when called, shutdown has entered Phase A (isShuttingDown = true),
       // and sockets are still open. Alice emits awareness updates after shutdown barrier!
       const origCloseAll = syncRegistry.closeAllConnections.bind(syncRegistry);
-      const closeSpy = vi.spyOn(syncRegistry, "closeAllConnections").mockImplementation((code, reason) => {
-        // Alice attempts awareness modification after shutdown started
-        aliceProvider.setAwarenessField("user", { name: "Alice_PostShutdown" });
-        aliceProvider.setAwarenessField("cursor", { line: 99 });
-        return origCloseAll(code, reason);
-      });
+      const closeSpy = vi
+        .spyOn(syncRegistry, "closeAllConnections")
+        .mockImplementation((code, reason) => {
+          // Alice attempts awareness modification after shutdown started
+          aliceProvider.setAwarenessField("user", { name: "Alice_PostShutdown" });
+          aliceProvider.setAwarenessField("cursor", { line: 99 });
+          return origCloseAll(code, reason);
+        });
 
       // Also directly invoke beforeHandleAwareness to simulate an inbound frame processed during shutdown
       const beforeHandleAwareness = syncServer.server.configuration.beforeHandleAwareness;
@@ -1180,7 +1169,9 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         expect(update?.user?.name).not.toBe("Alice_PostShutdown");
         expect(update?.cursor?.line).not.toBe(99);
       }
-      expect(bobProvider.awareness!.getStates().get(aliceDoc.clientID)?.user?.name).not.toBe("Alice_PostShutdown");
+      expect(
+        bobProvider.awareness!.getStates().get(aliceDoc.clientID)?.user?.name
+      ).not.toBe("Alice_PostShutdown");
 
       // 5. Server awareness must not contain the modified state or the late addition
       expect(serverDoc!.awareness.getStates().get(99999)).toBeUndefined();
@@ -1224,19 +1215,17 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         reachedLoadResolve = r;
       });
 
-      const snapSpy = vi
-        .spyOn(DocSnapshotModel, "findOne")
-        .mockImplementation(() => {
-          reachedLoadResolve();
-          return {
-            sort: () => ({
-              exec: async () => {
-                await pausePromise;
-                return null;
-              },
-            }),
-          } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
-        });
+      const snapSpy = vi.spyOn(DocSnapshotModel, "findOne").mockImplementation(() => {
+        reachedLoadResolve();
+        return {
+          sort: () => ({
+            exec: async () => {
+              await pausePromise;
+              return null;
+            },
+          }),
+        } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
+      });
 
       const doc = new Y.Doc();
       const onLoadDoc = syncServer.server.configuration.onLoadDocument;
@@ -1353,20 +1342,18 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
       let loaderInvocationCount = 0;
 
-      const snapSpy = vi
-        .spyOn(DocSnapshotModel, "findOne")
-        .mockImplementation(() => {
-          loaderInvocationCount++;
-          reachedLoadResolve();
-          return {
-            sort: () => ({
-              exec: async () => {
-                await pausePromise;
-                throw new Error("Simulated concurrent load database failure");
-              },
-            }),
-          } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
-        });
+      const snapSpy = vi.spyOn(DocSnapshotModel, "findOne").mockImplementation(() => {
+        loaderInvocationCount++;
+        reachedLoadResolve();
+        return {
+          sort: () => ({
+            exec: async () => {
+              await pausePromise;
+              throw new Error("Simulated concurrent load database failure");
+            },
+          }),
+        } as unknown as ReturnType<typeof DocSnapshotModel.findOne>;
+      });
 
       // Alice begins loading document
       const aliceDocPromise = hp.createDocument(
@@ -1504,7 +1491,9 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         roomA,
         "user_shared",
         { id: "user_shared", type: "user", displayName: "Shared", role: "user" },
-        { readOnly: false } as unknown as import("../../sync/syncRegistry.js").SyncConnectionLike
+        {
+          readOnly: false,
+        } as unknown as import("../../sync/syncRegistry.js").SyncConnectionLike
       );
       limiter.consume(sharedSocketId, 50);
 
@@ -1528,15 +1517,16 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       expect(syncRegistry.getReservation(sharedSocketId)?.roomId).toBe(roomB);
 
       // Room B's load fails
-      const snapSpy = vi
-        .spyOn(DocSnapshotModel, "findOne")
-        .mockImplementationOnce(() => ({
-          sort: () => ({
-            exec: async () => {
-              throw new Error("Simulated load failure for roomB");
-            },
-          }),
-        } as unknown as ReturnType<typeof DocSnapshotModel.findOne>));
+      const snapSpy = vi.spyOn(DocSnapshotModel, "findOne").mockImplementationOnce(
+        () =>
+          ({
+            sort: () => ({
+              exec: async () => {
+                throw new Error("Simulated load failure for roomB");
+              },
+            }),
+          }) as unknown as ReturnType<typeof DocSnapshotModel.findOne>
+      );
 
       await expect(
         hp.createDocument(

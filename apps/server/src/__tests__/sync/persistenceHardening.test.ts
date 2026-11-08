@@ -30,10 +30,7 @@ import {
   createSyncServer,
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 
 describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", () => {
   const roomId = "507f1f77bcf86cd799439011";
@@ -153,19 +150,25 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       // Mock DocUpdateModel.create to succeed on the 1st call, but fail on the 2nd call
       let callCount = 0;
       const originalCreate = DocUpdateModel.create.bind(DocUpdateModel);
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        callCount++;
-        if (callCount === 2) {
-          throw new Error("Simulated partial write failure on item 2");
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          callCount++;
+          if (callCount === 2) {
+            throw new Error("Simulated partial write failure on item 2");
+          }
+          return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
         }
-        return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      );
 
       // Flush should throw on the 2nd item
-      await expect(flushRoom(roomId)).rejects.toThrow("Simulated partial write failure on item 2");
+      await expect(flushRoom(roomId)).rejects.toThrow(
+        "Simulated partial write failure on item 2"
+      );
 
       // Verify that item 1 was committed to MongoDB with seq: 1
-      const docsAfterPartial = await DocUpdateModel.find({ roomId }).sort({ seq: 1 }).exec();
+      const docsAfterPartial = await DocUpdateModel.find({ roomId })
+        .sort({ seq: 1 })
+        .exec();
       expect(docsAfterPartial.length).toBe(1);
       expect(docsAfterPartial[0]!.seq).toBe(1);
       expect(docsAfterPartial[0]!.authorId).toBe("author1");
@@ -175,10 +178,16 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       await flushRoom(roomId);
 
       // Verify MongoDB contains exactly 3 records, with seq 1, 2, 3 without duplicate records!
-      const docsAfterRetry = await DocUpdateModel.find({ roomId }).sort({ seq: 1 }).exec();
+      const docsAfterRetry = await DocUpdateModel.find({ roomId })
+        .sort({ seq: 1 })
+        .exec();
       expect(docsAfterRetry.length).toBe(3);
       expect(docsAfterRetry.map((d) => d.seq)).toEqual([1, 2, 3]);
-      expect(docsAfterRetry.map((d) => d.authorId)).toEqual(["author1", "author2", "author3"]);
+      expect(docsAfterRetry.map((d) => d.authorId)).toEqual([
+        "author1",
+        "author2",
+        "author3",
+      ]);
     });
 
     it("Item 4 & 5: ambiguous write timeout followed by retry reconciles matching content cleanly", async () => {
@@ -192,14 +201,18 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       // Simulate ambiguous write: record is actually written, but MongoDB client receives timeout
       let simulatedTimeoutOnce = false;
       const originalCreate = DocUpdateModel.create.bind(DocUpdateModel);
-      vi.spyOn(DocUpdateModel, "create").mockImplementation(async (...args: unknown[]) => {
-        await originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-        if (!simulatedTimeoutOnce) {
-          simulatedTimeoutOnce = true;
-          throw new Error("MongoNetworkTimeoutError: connection timed out waiting for write ack");
+      vi.spyOn(DocUpdateModel, "create").mockImplementation(
+        async (...args: unknown[]) => {
+          await originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
+          if (!simulatedTimeoutOnce) {
+            simulatedTimeoutOnce = true;
+            throw new Error(
+              "MongoNetworkTimeoutError: connection timed out waiting for write ack"
+            );
+          }
+          return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
         }
-        return originalCreate(...(args as Parameters<typeof DocUpdateModel.create>));
-      });
+      );
 
       // First flush throws timeout
       await expect(flushRoom(roomId)).rejects.toThrow("MongoNetworkTimeoutError");
@@ -247,7 +260,9 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       );
 
       // Flush should throw Consistency failure
-      await expect(flushRoom(roomId)).rejects.toThrow(/Consistency failure: conflicting record/);
+      await expect(flushRoom(roomId)).rejects.toThrow(
+        /Consistency failure: conflicting record/
+      );
     });
 
     it("Item 1: concurrent writers to the same room produce strictly monotonic gapless sequence numbers", async () => {
@@ -276,7 +291,9 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       doc.getText("monaco").insert(0, "test_preserve");
       queueUpdate(roomId, "author_pres", Y.encodeStateAsUpdate(doc), doc);
 
-      const spy = vi.spyOn(DocUpdateModel, "create").mockRejectedValueOnce(new Error("Transient write failure"));
+      const spy = vi
+        .spyOn(DocUpdateModel, "create")
+        .mockRejectedValueOnce(new Error("Transient write failure"));
 
       await expect(flushRoom(roomId)).rejects.toThrow("Transient write failure");
 
@@ -356,7 +373,9 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       expect(getPendingPersistenceStats().pendingUpdates).toBe(0);
 
       // Verify snapshot seq strictly matches the latest update seq
-      const latestUpdate = await DocUpdateModel.findOne({ roomId }).sort({ seq: -1 }).exec();
+      const latestUpdate = await DocUpdateModel.findOne({ roomId })
+        .sort({ seq: -1 })
+        .exec();
       const latestSnapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
 
       expect(latestUpdate).not.toBeNull();
@@ -410,7 +429,9 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       expect(result.hasSnapshot).toBe(true);
       expect(result.lastSeq).toBe(2);
       expect(result.loadedUpdatesCount).toBe(1); // 1 update after snapshot
-      expect(docRecovered.getText("monaco").toString()).toBe("Snapshot Base Plus Incremental");
+      expect(docRecovered.getText("monaco").toString()).toBe(
+        "Snapshot Base Plus Incremental"
+      );
     });
   });
 
@@ -453,10 +474,7 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
 
     it("Item 19 & 20: intermediate disconnect creates no snapshot; final disconnect creates at most one snapshot", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -558,7 +576,9 @@ describe("T07 Persistence Retry & Snapshot Consistency Hardening (Commit 5)", ()
       const doc = new Y.Doc();
       queueUpdate(roomId, "user_fail", new Uint8Array([1, 2, 3]), doc);
 
-      vi.spyOn(DocUpdateModel, "create").mockRejectedValue(new Error("Fatal disk write error"));
+      vi.spyOn(DocUpdateModel, "create").mockRejectedValue(
+        new Error("Fatal disk write error")
+      );
 
       await expect(
         drainPersistenceAndSnapshot({ takeFinalSnapshots: false })

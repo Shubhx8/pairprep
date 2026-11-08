@@ -394,7 +394,12 @@ roomsRouter.patch(
       if (parseResult.data.role === "viewer") {
         syncRegistry.setMemberReadOnly(room.id, targetMember.memberId, true, "viewer");
       } else if (room.status !== "ended" && room.status !== "archived") {
-        syncRegistry.setMemberReadOnly(room.id, targetMember.memberId, false, parseResult.data.role);
+        syncRegistry.setMemberReadOnly(
+          room.id,
+          targetMember.memberId,
+          false,
+          parseResult.data.role
+        );
       }
 
       await roomRepo.touchActivity(room.id);
@@ -437,7 +442,12 @@ roomsRouter.delete(
       await roomRepo.touchActivity(room.id);
 
       // Immediately terminate active WebSocket connections for removed member (< 1s revocation)
-      syncRegistry.closeConnectionsForMember(room.id, targetMember.memberId, 4003, "removed");
+      syncRegistry.closeConnectionsForMember(
+        room.id,
+        targetMember.memberId,
+        4003,
+        "removed"
+      );
 
       res.json({ status: "ok" });
     } catch (err) {

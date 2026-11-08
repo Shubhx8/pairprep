@@ -22,10 +22,7 @@ import { RoomModel } from "../../models/rooms.js";
 import { RoomMemberModel } from "../../models/room_members.js";
 import { SESSION_COOKIE_NAME, getSessionStore } from "../../middleware/session.js";
 import { config } from "../../config.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 
 function signCookieValue(val: string, secret: string): string {
   const hmac = crypto
@@ -262,7 +259,9 @@ describe("T07 Live Room Permission Coordination (ED-6, ROOM-3, ROOM-6)", () => {
 
     // Without reconnecting, editor attempts to type within < 1 second of demotion
     const preEditUpdatesCount = (await DocUpdateModel.find({ roomId })).length;
-    editorDoc.getText("code").insert(editorDoc.getText("code").length, "attempted illegal edit;\n");
+    editorDoc
+      .getText("code")
+      .insert(editorDoc.getText("code").length, "attempted illegal edit;\n");
 
     await new Promise((r) => setTimeout(r, 300));
     await flushRoom(roomId, true);
@@ -292,7 +291,9 @@ describe("T07 Live Room Permission Coordination (ED-6, ROOM-3, ROOM-6)", () => {
     });
     await new Promise((r) => setTimeout(r, 100));
 
-    ownerDoc.getText("code").insert(ownerDoc.getText("code").length, "owner valid write;\n");
+    ownerDoc
+      .getText("code")
+      .insert(ownerDoc.getText("code").length, "owner valid write;\n");
     await new Promise((r) => setTimeout(r, 200));
     await flushRoom(roomId, true);
 

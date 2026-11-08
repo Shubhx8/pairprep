@@ -18,9 +18,7 @@ export function getAllowedOrigins(): Set<string> {
           "http://127.0.0.1:3000",
         ];
 
-  return new Set(
-    origins.filter((o): o is string => Boolean(o && typeof o === "string"))
-  );
+  return new Set(origins.filter((o): o is string => Boolean(o && typeof o === "string")));
 }
 
 /**
@@ -35,4 +33,3 @@ export function isAllowedOrigin(originHeader?: string | string[]): boolean {
   const allowed = getAllowedOrigins();
   return allowed.has(origin.trim());
 }
-

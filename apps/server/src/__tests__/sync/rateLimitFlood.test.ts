@@ -14,10 +14,7 @@ import {
   RateLimitError,
 } from "../../sync/connectionRateLimiter.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { config } from "../../config.js";
 
 describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
@@ -204,19 +201,17 @@ describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
     });
 
     // Capture disconnect event with code and reason
-    const disconnectPromise = new Promise<{ code: number; reason: string }>(
-      (resolve) => {
-        wsProvider.on(
-          "disconnect",
-          ({ event }: { event: { code: number; reason: string } }) => {
-            resolve({
-              code: event?.code,
-              reason: typeof event?.reason === "string" ? event.reason : "",
-            });
-          }
-        );
-      }
-    );
+    const disconnectPromise = new Promise<{ code: number; reason: string }>((resolve) => {
+      wsProvider.on(
+        "disconnect",
+        ({ event }: { event: { code: number; reason: string } }) => {
+          resolve({
+            code: event?.code,
+            reason: typeof event?.reason === "string" ? event.reason : "",
+          });
+        }
+      );
+    });
 
     // Flood the connection with rapid updates exceeding remaining tokens
     for (let i = 0; i < 20; i++) {
@@ -272,19 +267,17 @@ describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
       });
     });
 
-    const disconnectPromise = new Promise<{ code: number; reason: string }>(
-      (resolve) => {
-        wsProvider.on(
-          "disconnect",
-          ({ event }: { event: { code: number; reason: string } }) => {
-            resolve({
-              code: event?.code,
-              reason: typeof event?.reason === "string" ? event.reason : "",
-            });
-          }
-        );
-      }
-    );
+    const disconnectPromise = new Promise<{ code: number; reason: string }>((resolve) => {
+      wsProvider.on(
+        "disconnect",
+        ({ event }: { event: { code: number; reason: string } }) => {
+          resolve({
+            code: event?.code,
+            reason: typeof event?.reason === "string" ? event.reason : "",
+          });
+        }
+      );
+    });
 
     // Flood awareness frames
     for (let i = 0; i < 20; i++) {
@@ -342,19 +335,17 @@ describe("T07 WebSocket Message Rate Limiting & Flood Defense", () => {
       });
     });
 
-    const disconnectPromise = new Promise<{ code: number; reason: string }>(
-      (resolve) => {
-        wsProvider.on(
-          "disconnect",
-          ({ event }: { event: { code: number; reason: string } }) => {
-            resolve({
-              code: event?.code,
-              reason: typeof event?.reason === "string" ? event.reason : "",
-            });
-          }
-        );
-      }
-    );
+    const disconnectPromise = new Promise<{ code: number; reason: string }>((resolve) => {
+      wsProvider.on(
+        "disconnect",
+        ({ event }: { event: { code: number; reason: string } }) => {
+          resolve({
+            code: event?.code,
+            reason: typeof event?.reason === "string" ? event.reason : "",
+          });
+        }
+      );
+    });
 
     // Send a large text insertion of ~15 KB (exceeding 10 KB byte burst capacity)
     const largePayload = "X".repeat(15_000);

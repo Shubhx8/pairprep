@@ -9,10 +9,7 @@ import {
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { DocUpdateModel } from "../../models/doc_updates.js";
 import { DocSnapshotModel } from "../../models/doc_snapshots.js";
 import { config } from "../../config.js";
@@ -72,10 +69,7 @@ describe("T07 Disconnect Lifecycle & Unload (PER-1)", () => {
 
   it("flushes pending updates, unregisters connection, snapshots, and unloads document on disconnect when clientsCount === 0", async () => {
     httpServer = createServer();
-    syncServer = attachSyncServer(
-      httpServer,
-      createSyncServer({ requireAuth: false })
-    );
+    syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
     await new Promise<void>((resolve) => {
       httpServer!.listen(0, () => resolve());
@@ -114,7 +108,9 @@ describe("T07 Disconnect Lifecycle & Unload (PER-1)", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // Verify Hocuspocus has document loaded in memory before disconnect
-    const hocuspocusInstance = (syncServer.server as unknown as { hocuspocus: { documents: Map<string, unknown> } }).hocuspocus;
+    const hocuspocusInstance = (
+      syncServer.server as unknown as { hocuspocus: { documents: Map<string, unknown> } }
+    ).hocuspocus;
     expect(hocuspocusInstance.documents.has(roomId)).toBe(true);
 
     // 3. Disconnect provider

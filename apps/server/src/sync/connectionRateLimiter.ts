@@ -83,11 +83,7 @@ export class ConnectionRateLimiter {
    * Consumes 1 message token and byteLength byte tokens for a given socketId.
    * If either bucket has insufficient tokens, returns allowed: false with the specific reason.
    */
-  consume(
-    socketId: string,
-    byteLength: number,
-    now = Date.now()
-  ): RateLimitResult {
+  consume(socketId: string, byteLength: number, now = Date.now()): RateLimitResult {
     if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
       this.rejections.invalidSocketIdentity++;
       this.rejections.total++;
@@ -242,4 +238,3 @@ export class RateLimitError extends Error {
 }
 
 export const connectionRateLimiter = new ConnectionRateLimiter();
-

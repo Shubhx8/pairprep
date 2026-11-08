@@ -7,10 +7,7 @@ import {
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import * as Y from "yjs";
 import WebSocket from "ws";
 import { userRepo } from "../../repos/userRepo.js";
@@ -102,10 +99,7 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
 
   it("ROOM-4: allows exactly 6 simultaneous connections and rejects the 7th attempt", async () => {
     httpServer = createServer();
-    syncServer = attachSyncServer(
-      httpServer,
-      createSyncServer({ requireAuth: false })
-    );
+    syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
     await new Promise<void>((resolve) => {
       httpServer!.listen(0, () => resolve());
@@ -257,10 +251,7 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
 
     it("enforces max 3 connections per member within the room and releases slot on failed auth", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: true })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: true }));
 
       await new Promise<void>((resolve) => {
         httpServer!.listen(0, () => resolve());
@@ -300,7 +291,9 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
       await new Promise<void>((resolve, reject) => {
         store!.set(
           rawSid,
-          { passport: { user: user.id } } as unknown as import("express-session").SessionData,
+          {
+            passport: { user: user.id },
+          } as unknown as import("express-session").SessionData,
           (err) => (err ? reject(err) : resolve())
         );
       });
@@ -335,7 +328,10 @@ describe("T07 Capacity & Reservation Enforcement (ROOM-4)", () => {
         providers.push(provider);
 
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error(`Conn ${i + 1} timed out`)), 3000);
+          const timeout = setTimeout(
+            () => reject(new Error(`Conn ${i + 1} timed out`)),
+            3000
+          );
           provider.on("authenticated", () => {
             clearTimeout(timeout);
             resolve();

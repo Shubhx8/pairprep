@@ -15,10 +15,7 @@ import {
 } from "../../sync/hocuspocus.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
 import { documentLoadWaiters } from "../../sync/documentWaiters.js";
-import {
-  isAllowedOrigin,
-  getAllowedOrigins,
-} from "../../sync/origin.js";
+import { isAllowedOrigin, getAllowedOrigins } from "../../sync/origin.js";
 import {
   getClientIp,
   UpgradeRateLimiter,
@@ -101,10 +98,7 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
     it("rejects WebSocket connection with missing Origin with 403 Forbidden", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
       await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
       const port = (httpServer.address() as { port: number }).port;
 
@@ -128,10 +122,7 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
     it("rejects WebSocket connection with untrusted Origin with 403 Forbidden", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
       await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
       const port = (httpServer.address() as { port: number }).port;
 
@@ -155,10 +146,7 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
     it("accepts WebSocket connection with allowlisted Origin", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
       await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
       const port = (httpServer.address() as { port: number }).port;
 
@@ -227,10 +215,7 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
     it("returns HTTP 429 when client IP has exceeded the rejection threshold", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: false })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
       await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
       const port = (httpServer.address() as { port: number }).port;
 
@@ -261,7 +246,8 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
   describe("Session Resolution (resolvePrincipalFromCookies)", () => {
     it("parses cookie strings correctly", () => {
-      const cookieStr = 'pairprep.sid=s%3A123.abc; pairprep.guest="guest-id.sig"; other=value';
+      const cookieStr =
+        'pairprep.sid=s%3A123.abc; pairprep.guest="guest-id.sig"; other=value';
       const parsed = parseCookieString(cookieStr);
       expect(parsed["pairprep.sid"]).toBe("s:123.abc");
       expect(parsed["pairprep.guest"]).toBe("guest-id.sig");
@@ -354,7 +340,10 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
       // With mismatched targetRoomId
       const mismatchRoomId = new mongoose.Types.ObjectId().toHexString();
-      const mismatchResult = await resolvePrincipalFromCookies(cookieHeader, mismatchRoomId);
+      const mismatchResult = await resolvePrincipalFromCookies(
+        cookieHeader,
+        mismatchRoomId
+      );
       expect(mismatchResult.success).toBe(false);
       if (!mismatchResult.success) {
         expect(mismatchResult.reason).toBe("invalid_guest");
@@ -373,16 +362,12 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
   describe("Hocuspocus onAuthenticate Hook Document & Auth Validation", () => {
     it("rejects invalid document name (non-ObjectId) in onAuthenticate", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: true })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: true }));
       await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
       const port = (httpServer.address() as { port: number }).port;
 
-      const { HocuspocusProvider, HocuspocusProviderWebsocket } = await import(
-        "@hocuspocus/provider"
-      );
+      const { HocuspocusProvider, HocuspocusProviderWebsocket } =
+        await import("@hocuspocus/provider");
       const { Doc } = await import("yjs");
 
       class AuthTestWs extends WebSocket {
@@ -421,10 +406,7 @@ describe("T07 Handshake, Session Resolution, Origin & IP Limit", () => {
 
     it("immediately cancels reservation and stops heartbeat when real WebSocket disconnects during handshake", async () => {
       httpServer = createServer();
-      syncServer = attachSyncServer(
-        httpServer,
-        createSyncServer({ requireAuth: true })
-      );
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: true }));
       await new Promise<void>((resolve) => httpServer!.listen(0, () => resolve()));
       const port = (httpServer.address() as { port: number }).port;
 

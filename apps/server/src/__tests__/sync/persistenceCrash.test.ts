@@ -4,10 +4,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import mongoose from "mongoose";
 import * as Y from "yjs";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import WebSocket from "ws";
 import { config } from "../../config.js";
 import { DocUpdateModel } from "../../models/doc_updates.js";
@@ -92,18 +89,14 @@ describe("Persistence Crash Recovery (PER-1)", () => {
     targetPort: number
   ): Promise<{ proc: ChildProcess; port: number }> {
     return new Promise((resolve, reject) => {
-      const proc = spawn(
-        process.execPath,
-        ["--import", "tsx", workerScript],
-        {
-          env: {
-            ...process.env,
-            MONGODB_URI: envUri,
-            PORT: String(targetPort),
-          },
-          stdio: ["pipe", "pipe", "pipe"],
-        }
-      );
+      const proc = spawn(process.execPath, ["--import", "tsx", workerScript], {
+        env: {
+          ...process.env,
+          MONGODB_URI: envUri,
+          PORT: String(targetPort),
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
 
       let stdout = "";
       proc.stdout?.on("data", (chunk: Buffer) => {
@@ -151,7 +144,10 @@ describe("Persistence Crash Recovery (PER-1)", () => {
     providerA.attach();
 
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Connect to Process A timed out")), 5000);
+      const timeout = setTimeout(
+        () => reject(new Error("Connect to Process A timed out")),
+        5000
+      );
       providerA.on("synced", () => {
         clearTimeout(timeout);
         resolve();
@@ -194,7 +190,10 @@ describe("Persistence Crash Recovery (PER-1)", () => {
     providerB.attach();
 
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Connect to Process B timed out")), 5000);
+      const timeout = setTimeout(
+        () => reject(new Error("Connect to Process B timed out")),
+        5000
+      );
       providerB.on("synced", () => {
         clearTimeout(timeout);
         resolve();

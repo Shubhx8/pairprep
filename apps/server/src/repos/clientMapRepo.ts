@@ -31,7 +31,12 @@ export class ClientMapRepo {
       if (existing) {
         if (existing.actorId !== actorId) {
           rootLogger.warn(
-            { roomId, clientId, registeredActorId: existing.actorId, claimingActorId: actorId },
+            {
+              roomId,
+              clientId,
+              registeredActorId: existing.actorId,
+              claimingActorId: actorId,
+            },
             "Conflicting Yjs clientId claim detected; retaining original author attribution"
           );
           return { record: existing, isConflict: true, isNew: false };
@@ -65,7 +70,12 @@ export class ClientMapRepo {
         const isConflict = existing ? existing.actorId !== actorId : false;
         if (isConflict && existing) {
           rootLogger.warn(
-            { roomId, clientId, registeredActorId: existing.actorId, claimingActorId: actorId },
+            {
+              roomId,
+              clientId,
+              registeredActorId: existing.actorId,
+              claimingActorId: actorId,
+            },
             "Duplicate key race during Yjs clientId claim; retaining original author attribution"
           );
         }

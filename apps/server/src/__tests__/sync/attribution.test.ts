@@ -20,10 +20,7 @@ import { RoomModel } from "../../models/rooms.js";
 import { RoomMemberModel } from "../../models/room_members.js";
 import { SESSION_COOKIE_NAME, getSessionStore } from "../../middleware/session.js";
 import { config } from "../../config.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 
 function signCookieValue(val: string, secret: string): string {
   const hmac = crypto
@@ -148,7 +145,11 @@ describe("T07 Client Identity Attribution (ATTR-1)", () => {
       expect(aliceClaim.isConflict).toBe(false);
 
       // Eve attempts to claim the same clientId 1003 in the same room
-      const eveClaim = await clientMapRepo.registerClient(roomId, 1003, "user_eve_imposter");
+      const eveClaim = await clientMapRepo.registerClient(
+        roomId,
+        1003,
+        "user_eve_imposter"
+      );
       expect(eveClaim.isConflict).toBe(true);
       expect(eveClaim.isNew).toBe(false);
       expect(eveClaim.record?.actorId).toBe("user_alice");
@@ -175,7 +176,9 @@ describe("T07 Client Identity Attribution (ATTR-1)", () => {
 
       // Fire 5 concurrent registrations for the same (roomId, clientId)
       const results = await Promise.all(
-        actors.map((actorId) => clientMapRepo.registerClient(roomId, targetClientId, actorId))
+        actors.map((actorId) =>
+          clientMapRepo.registerClient(roomId, targetClientId, actorId)
+        )
       );
 
       // Exactly one actor must have isNew: true and isConflict: false
@@ -353,7 +356,10 @@ describe("T07 Client Identity Attribution (ATTR-1)", () => {
       providers.push(aliceProvider);
 
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Alice connection timed out")), 4000);
+        const timeout = setTimeout(
+          () => reject(new Error("Alice connection timed out")),
+          4000
+        );
         aliceProvider.on("authenticated", () => {
           clearTimeout(timeout);
           resolve();
@@ -374,7 +380,10 @@ describe("T07 Client Identity Attribution (ATTR-1)", () => {
       await flushRoom(roomId, true);
 
       // Verify Alice's client_map record exists and is registered to Alice
-      const aliceClientMap = await ClientMapModel.findOne({ roomId, clientId: aliceDoc.clientID });
+      const aliceClientMap = await ClientMapModel.findOne({
+        roomId,
+        clientId: aliceDoc.clientID,
+      });
       expect(aliceClientMap).not.toBeNull();
       expect(aliceClientMap?.actorId).toBe(aliceId);
 
@@ -399,7 +408,10 @@ describe("T07 Client Identity Attribution (ATTR-1)", () => {
       providers.push(eveProvider);
 
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Eve connection timed out")), 4000);
+        const timeout = setTimeout(
+          () => reject(new Error("Eve connection timed out")),
+          4000
+        );
         eveProvider.on("authenticated", () => {
           clearTimeout(timeout);
           resolve();
@@ -412,19 +424,26 @@ describe("T07 Client Identity Attribution (ATTR-1)", () => {
       });
 
       // Eve attempts to claim Alice's clientID via awareness directly
-      eveProvider.awareness?.setLocalStateField("user", { name: "Eve Pretending To Be Alice" });
+      eveProvider.awareness?.setLocalStateField("user", {
+        name: "Eve Pretending To Be Alice",
+      });
       // Eve attempts to register Alice's clientID
       await clientMapRepo.registerClient(roomId, aliceDoc.clientID, eveId);
 
       // Eve types an edit
-      eveDoc.getText("code").insert(eveDoc.getText("code").length, "console.log('Eve writes code');\n");
+      eveDoc
+        .getText("code")
+        .insert(eveDoc.getText("code").length, "console.log('Eve writes code');\n");
 
       await new Promise((r) => setTimeout(r, 400));
       await flushRoom(roomId, true);
 
       // CRITICAL SECURITY ASSERTION 1:
       // In client_map, Alice's clientID remains strictly mapped to Alice (first-claim-wins)
-      const postEveClientMap = await ClientMapModel.findOne({ roomId, clientId: aliceDoc.clientID });
+      const postEveClientMap = await ClientMapModel.findOne({
+        roomId,
+        clientId: aliceDoc.clientID,
+      });
       expect(postEveClientMap).not.toBeNull();
       expect(postEveClientMap?.actorId).toBe(aliceId); // NOT eveId!
 

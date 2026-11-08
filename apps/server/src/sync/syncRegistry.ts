@@ -54,8 +54,7 @@ export interface ActiveConnection {
   roomId: string;
   memberId: string;
   principal:
-    | Principal
-    | { type: string; id: string; displayName: string; [key: string]: unknown };
+    Principal | { type: string; id: string; displayName: string; [key: string]: unknown };
   connection: SyncConnectionLike;
   connectedAt: number;
   memberRole?: string;
@@ -75,8 +74,7 @@ export type PromotionFailureReason =
   | "distinct_member_limit_exceeded";
 
 export type PromotionResult =
-  | { success: true }
-  | { success: false; reason: PromotionFailureReason };
+  { success: true } | { success: false; reason: PromotionFailureReason };
 
 /**
  * PRD ROOM-4 & T07 Sync Registry
@@ -511,11 +509,7 @@ export class SyncRegistry {
    * Verifies that adding a connection for memberId does not exceed the maximum of 6 distinct members.
    * If the member is already present in the room, it does not add a new distinct member.
    */
-  checkDistinctMemberLimit(
-    roomId: string,
-    memberId: string,
-    now = Date.now()
-  ): boolean {
+  checkDistinctMemberLimit(roomId: string, memberId: string, now = Date.now()): boolean {
     const distinct = this.getDistinctMembers(roomId, now);
     if (distinct.has(memberId)) {
       return true;
@@ -570,11 +564,7 @@ export class SyncRegistry {
    * Cancels a pending reservation on auth failure, permission denial, failed document load, or socket error.
    * If roomId is specified, cancels only the reservation for that exact room.
    */
-  cancelReservation(
-    socketId: string,
-    roomId?: string,
-    reason = "cancelled"
-  ): void {
+  cancelReservation(socketId: string, roomId?: string, reason = "cancelled"): void {
     if (roomId) {
       const key = this.makeKey(roomId, socketId);
       const res = this.reservations.get(key);
@@ -601,10 +591,7 @@ export class SyncRegistry {
   /**
    * Returns a pending reservation by its socket ID and optional room ID.
    */
-  getReservation(
-    socketId: string,
-    roomId?: string
-  ): ConnectionReservation | undefined {
+  getReservation(socketId: string, roomId?: string): ConnectionReservation | undefined {
     if (roomId) {
       return this.reservations.get(this.makeKey(roomId, socketId));
     }
@@ -842,10 +829,7 @@ export class SyncRegistry {
           };
           if (typeof conn.close === "function") {
             conn.close({ code, reason });
-          } else if (
-            conn.webSocket &&
-            typeof conn.webSocket.close === "function"
-          ) {
+          } else if (conn.webSocket && typeof conn.webSocket.close === "function") {
             conn.webSocket.close(code, reason);
           }
         } catch {
@@ -937,10 +921,7 @@ export class SyncRegistry {
           };
           if (typeof conn.close === "function") {
             conn.close({ code, reason });
-          } else if (
-            conn.webSocket &&
-            typeof conn.webSocket.close === "function"
-          ) {
+          } else if (conn.webSocket && typeof conn.webSocket.close === "function") {
             conn.webSocket.close(code, reason);
           }
         } catch {
@@ -1053,9 +1034,7 @@ export class SyncRegistry {
       }
     }
 
-    const role =
-      active.memberRole ??
-      (active.principal as { role?: string })?.role;
+    const role = active.memberRole ?? (active.principal as { role?: string })?.role;
     if (role === "viewer") {
       return true;
     }
@@ -1262,10 +1241,7 @@ export class SyncRegistry {
    * Closes all active WebSocket connections across all rooms with a specified close code and reason.
    * Cancels all pending reservations and unregisters connections.
    */
-  closeAllConnections(
-    code = 1001,
-    reason = "server_shutting_down"
-  ): number {
+  closeAllConnections(code = 1001, reason = "server_shutting_down"): number {
     let closed = 0;
     const socketKeys = Array.from(this.activeConnections.keys());
     for (const key of socketKeys) {
@@ -1303,8 +1279,7 @@ export class SyncRegistry {
       if (active) {
         try {
           const ws = active.connection.webSocket as
-            | { terminate?: () => void; _socket?: { destroy?: () => void } }
-            | undefined;
+            { terminate?: () => void; _socket?: { destroy?: () => void } } | undefined;
           if (typeof ws?.terminate === "function") {
             ws.terminate();
           } else if (typeof ws?._socket?.destroy === "function") {

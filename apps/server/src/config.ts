@@ -126,7 +126,8 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env): Config {
     }
 
     const proxyCidrs =
-      rawEnv["TRUSTED_PROXY_CIDRS"] ?? (result.success ? result.data.TRUSTED_PROXY_CIDRS : undefined);
+      rawEnv["TRUSTED_PROXY_CIDRS"] ??
+      (result.success ? result.data.TRUSTED_PROXY_CIDRS : undefined);
     if (
       !rawEnv["TRUSTED_PROXY_CIDRS"] ||
       !proxyCidrs ||

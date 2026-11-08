@@ -10,10 +10,7 @@ import {
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 
 describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () => {
   let httpServer: HttpServer | null = null;
@@ -88,10 +85,7 @@ describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () =>
 
   it("CONC-1: allows up to 6 concurrent participants typing concurrently without conflict", async () => {
     httpServer = createServer();
-    syncServer = attachSyncServer(
-      httpServer,
-      createSyncServer({ requireAuth: false })
-    );
+    syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
     await new Promise<void>((resolve) => {
       httpServer!.listen(0, () => resolve());
@@ -123,7 +117,10 @@ describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () =>
 
       syncPromises.push(
         new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`Sync timeout for participant ${i}`)), 5000);
+          const timer = setTimeout(
+            () => reject(new Error(`Sync timeout for participant ${i}`)),
+            5000
+          );
           provider.on("synced", () => {
             clearTimeout(timer);
             resolve();
@@ -169,10 +166,7 @@ describe("T07 Concurrency & Read-Only Enforcement (CONC-1, CONC-2, ED-6)", () =>
 
   it("ED-6: rejects editing in read-only mode in beforeHandleMessage", async () => {
     httpServer = createServer();
-    syncServer = attachSyncServer(
-      httpServer,
-      createSyncServer({ requireAuth: false })
-    );
+    syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
     await new Promise<void>((resolve) => {
       httpServer!.listen(0, () => resolve());

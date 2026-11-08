@@ -7,10 +7,7 @@ import {
   createSyncServer,
   type SyncServerInstance,
 } from "../../sync/hocuspocus.js";
-import {
-  HocuspocusProvider,
-  HocuspocusProviderWebsocket,
-} from "@hocuspocus/provider";
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import WebSocket from "ws";
 import * as Y from "yjs";
 
@@ -78,10 +75,7 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
 
   it("attaches to HTTP server at /sync with allowed origin and syncs updates", async () => {
     httpServer = createServer();
-    syncServer = attachSyncServer(
-      httpServer,
-      createSyncServer({ requireAuth: false })
-    );
+    syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
 
     await new Promise<void>((resolve) => {
       httpServer!.listen(0, () => resolve());
@@ -139,9 +133,7 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
       }, 5000);
 
       const check = () => {
-        if (
-          doc2.getText("default").toString() === "Collaborative spike verified!"
-        ) {
+        if (doc2.getText("default").toString() === "Collaborative spike verified!") {
           clearTimeout(timeout);
           resolve();
         }
@@ -151,8 +143,6 @@ describe("T07 Spike: Minimal Hocuspocus Attach", () => {
       check();
     });
 
-    expect(doc2.getText("default").toString()).toBe(
-      "Collaborative spike verified!"
-    );
+    expect(doc2.getText("default").toString()).toBe("Collaborative spike verified!");
   });
 });

@@ -86,9 +86,7 @@ export function assertProductionProxyCidrs(
   for (const entry of entries) {
     const lower = entry.toLowerCase();
     if (PROHIBITED_PRODUCTION_PROXY_RANGES.has(lower)) {
-      throw new Error(
-        `TRUSTED_PROXY_CIDRS contains prohibited broad range: ${entry}`
-      );
+      throw new Error(`TRUSTED_PROXY_CIDRS contains prohibited broad range: ${entry}`);
     }
     if (!isValidProxyTrustEntry(entry)) {
       throw new Error(`TRUSTED_PROXY_CIDRS contains invalid entry: ${entry}`);
@@ -118,12 +116,8 @@ export type TrustProxyFn = (addr: string, i: number) => boolean;
  * Compiles a list of trusted proxy CIDRs into a standard trust function.
  * Express accepts `(addr, i) => boolean`, and proxy-addr uses the exact same signature.
  */
-export function compileTrustFunction(
-  trusted: string[] | string
-): TrustProxyFn {
-  const list = Array.isArray(trusted)
-    ? trusted
-    : parseTrustedProxyCidrs(trusted);
+export function compileTrustFunction(trusted: string[] | string): TrustProxyFn {
+  const list = Array.isArray(trusted) ? trusted : parseTrustedProxyCidrs(trusted);
   const safeList = list.length > 0 ? list : ["loopback"];
   return proxyaddr.compile(safeList);
 }
@@ -131,9 +125,7 @@ export function compileTrustFunction(
 // Default singleton compiled from application configuration
 let defaultTrustFn: TrustProxyFn | null = null;
 
-export function getTrustProxyFn(
-  trusted?: string[] | string
-): TrustProxyFn {
+export function getTrustProxyFn(trusted?: string[] | string): TrustProxyFn {
   if (trusted) {
     return compileTrustFunction(trusted);
   }
@@ -160,8 +152,7 @@ export function getClientIp(
   trustFn: TrustProxyFn = getTrustProxyFn()
 ): string {
   try {
-    const rawIp =
-      proxyaddr(req, trustFn) || req.socket.remoteAddress || "127.0.0.1";
+    const rawIp = proxyaddr(req, trustFn) || req.socket.remoteAddress || "127.0.0.1";
     const normalized = normalizeIp(rawIp);
     if (net.isIP(normalized) !== 0) {
       return normalized;

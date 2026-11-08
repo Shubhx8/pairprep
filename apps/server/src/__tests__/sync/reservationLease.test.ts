@@ -146,7 +146,9 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
 
       // At 10.001 seconds without touch, reservation has expired
       const expiredTime = startTime + RESERVATION_LEASE_TTL_MS + 1;
-      expect(registry.isReservationValid(roomId, socketId, token, expiredTime)).toBe(false);
+      expect(registry.isReservationValid(roomId, socketId, token, expiredTime)).toBe(
+        false
+      );
 
       // Promotion attempt fails with reservation_expired
       const mockConn: SyncConnectionLike = { socketId, readOnly: false };
@@ -184,7 +186,9 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
       // At 30.001 seconds, hard deadline exceeded (MAX_HANDSHAKE_DURATION_MS = 30_000)
       const hardDeadlinePast = startTime + MAX_HANDSHAKE_DURATION_MS + 1;
       expect(registry.touchReservation(roomId, socketId, hardDeadlinePast)).toBe(false);
-      expect(registry.isReservationValid(roomId, socketId, token, hardDeadlinePast)).toBe(false);
+      expect(registry.isReservationValid(roomId, socketId, token, hardDeadlinePast)).toBe(
+        false
+      );
 
       const mockConn: SyncConnectionLike = { socketId, readOnly: false };
       const promoResult = registry.promoteReservation(
@@ -254,15 +258,18 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
       // Simulate a previously held reservation attempting promotion after room filled
       const token = "stale-reservation-token";
       const key = `${roomId}:${socketId}`;
-      (registry as unknown as { reservations: Map<string, unknown> }).reservations.set(key, {
-        token,
-        socketId,
-        roomId,
-        reservedAt: Date.now(),
-        leaseExpiresAt: Date.now() + 10_000,
-        hardDeadlineAt: Date.now() + 30_000,
-        cancelled: false,
-      });
+      (registry as unknown as { reservations: Map<string, unknown> }).reservations.set(
+        key,
+        {
+          token,
+          socketId,
+          roomId,
+          reservedAt: Date.now(),
+          leaseExpiresAt: Date.now() + 10_000,
+          hardDeadlineAt: Date.now() + 30_000,
+          cancelled: false,
+        }
+      );
 
       // Now promote sock_late_promo: capacity revalidation fails atomically
       const mockConn: SyncConnectionLike = { socketId, readOnly: false };
@@ -583,8 +590,18 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
       const mockTransportA = new EventEmitter() as EventEmitter & { destroyed?: boolean };
       const mockTransportB = new EventEmitter() as EventEmitter & { destroyed?: boolean };
 
-      registry.registerTransportCloseListener(roomA, socketId, resA.token, mockTransportA);
-      registry.registerTransportCloseListener(roomB, socketId, resB.token, mockTransportB);
+      registry.registerTransportCloseListener(
+        roomA,
+        socketId,
+        resA.token,
+        mockTransportA
+      );
+      registry.registerTransportCloseListener(
+        roomB,
+        socketId,
+        resB.token,
+        mockTransportB
+      );
 
       expect(registry.hasTransportCloseListener(roomA, socketId)).toBe(true);
       expect(registry.hasTransportCloseListener(roomB, socketId)).toBe(true);
@@ -770,7 +787,12 @@ describe("SyncRegistry Reservation Lease & Isolation Hardening (Commit 6)", () =
       const token = res.token;
       const mockTransport = new EventEmitter() as EventEmitter & { destroyed?: boolean };
 
-      const registered = registry.registerTransportCloseListener(roomId, socketId, token, mockTransport);
+      const registered = registry.registerTransportCloseListener(
+        roomId,
+        socketId,
+        token,
+        mockTransport
+      );
       expect(registered).toBe(true);
       expect(registry.hasTransportCloseListener(roomId, socketId)).toBe(true);
 

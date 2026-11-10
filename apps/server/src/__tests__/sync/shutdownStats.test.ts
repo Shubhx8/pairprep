@@ -215,12 +215,132 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       // Disconnect
       provider.destroy();
       wsProvider.destroy();
-      await new Promise((r) => setTimeout(r, 100));
 
-      const statsDisconnected = syncServer.getStats();
-      expect(statsDisconnected.connections.activeConnections).toBe(0);
-      expect(statsDisconnected.connections.activeRooms).toBe(0);
-      expect(statsDisconnected.capacity.totalActiveConnections).toBe(0);
+      await vi.waitFor(
+        () => {
+          const statsDisconnected = syncServer!.getStats();
+          expect(statsDisconnected.connections.activeConnections).toBe(0);
+          expect(statsDisconnected.connections.activeRooms).toBe(0);
+          expect(statsDisconnected.capacity.totalActiveConnections).toBe(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+    });
+
+    it("releases physical connection capacity immediately during slow persistence flush", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      const wsProvider = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsProvider);
+      const clientDoc = new Y.Doc();
+      const provider = new HocuspocusProvider({
+        websocketProvider: wsProvider,
+        name: roomId,
+        document: clientDoc,
+      });
+      providers.push(provider);
+      provider.attach();
+
+      await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
+      expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+      // Mock DocUpdateModel.bulkWrite with a delayed promise to simulate slow persistence
+      let releaseFlush: () => void = () => {};
+      const flushPause = new Promise<void>((r) => {
+        releaseFlush = r;
+      });
+
+      const writeSpy = vi
+        .spyOn(DocUpdateModel, "bulkWrite")
+        .mockImplementation(async () => {
+          await flushPause;
+          return {} as unknown as ReturnType<typeof DocUpdateModel.bulkWrite>;
+        });
+
+      try {
+        // Disconnect
+        provider.destroy();
+        wsProvider.destroy();
+
+        // Physical connection must be released immediately even though persistence flush is paused!
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.capacity.totalActiveConnections).toBe(0);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+
+        // Resume and allow flush to complete
+        releaseFlush();
+      } finally {
+        releaseFlush();
+        writeSpy.mockRestore();
+      }
+    });
+
+    it("releases physical connection capacity cleanly even if persistence flush throws on disconnect", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      const wsProvider = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsProvider);
+      const clientDoc = new Y.Doc();
+      const provider = new HocuspocusProvider({
+        websocketProvider: wsProvider,
+        name: roomId,
+        document: clientDoc,
+      });
+      providers.push(provider);
+      provider.attach();
+
+      await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
+      expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+      // Force persistence failure on disconnect
+      const writeSpy = vi
+        .spyOn(DocUpdateModel, "bulkWrite")
+        .mockRejectedValue(new Error("Simulated bulkWrite failure on disconnect"));
+
+      try {
+        // Disconnect
+        provider.destroy();
+        wsProvider.destroy();
+
+        // Physical connection must return to 0 and not hang or corrupt registry
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.capacity.totalActiveConnections).toBe(0);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+      } finally {
+        writeSpy.mockRestore();
+      }
     });
 
     it("distinguishes active documents from rooms with connected participants", async () => {

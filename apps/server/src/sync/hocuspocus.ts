@@ -508,19 +508,24 @@ export function createSyncServer(
       const roomId = data.documentName;
       const isRoomEmpty = !data.clientsCount || data.clientsCount === 0;
 
-      // 1. Flush pending updates. If room is now empty, take a consistent final snapshot.
-      // If other participants remain, only flush updates without taking a snapshot.
-      await flushRoom(roomId, isRoomEmpty);
+      // 1. Immediately unregister connection from sync registry and clean up rate limiter & admission reservations.
+      // Physical connection capacity must be released synchronously/immediately upon disconnect so stats and capacity reflect reality without waiting on persistence drain.
+      syncRegistry.unregisterConnection(roomId, data.socketId);
+      rateLimiter.cleanup(data.socketId);
+      clearAdmissionReservations(data.socketId, roomId);
 
       // 2. Stop snapshot interval when room is empty
       if (isRoomEmpty) {
         stopSnapshotInterval(roomId);
       }
 
-      // 3. Unregister connection from sync registry and clean up rate limiter & admission reservations
-      syncRegistry.unregisterConnection(roomId, data.socketId);
-      rateLimiter.cleanup(data.socketId);
-      clearAdmissionReservations(data.socketId, roomId);
+      // 3. Flush pending updates. If room is now empty, take a consistent final snapshot.
+      // If other participants remain, only flush updates without taking a snapshot.
+      try {
+        await flushRoom(roomId, isRoomEmpty);
+      } catch (err) {
+        rootLogger.error({ roomId, err }, "Failed to flush room on disconnect");
+      }
 
       // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
       if (isRoomEmpty) {
@@ -539,7 +544,14 @@ export function createSyncServer(
           hocuspocusInstance &&
           typeof hocuspocusInstance.unloadDocument === "function"
         ) {
-          await hocuspocusInstance.unloadDocument(data.document);
+          try {
+            await hocuspocusInstance.unloadDocument(data.document);
+          } catch (unloadErr) {
+            rootLogger.warn(
+              { roomId, err: unloadErr },
+              "Failed to unload document on disconnect"
+            );
+          }
         }
       }
     },

@@ -71,6 +71,7 @@ interface PendingQueue {
   flushDeadlineTimeout?: NodeJS.Timeout;
   debounceTimeout?: NodeJS.Timeout;
   retryTimeout?: NodeJS.Timeout;
+  requiresFinalSnapshot?: boolean;
 }
 
 export interface PersistenceStats {
@@ -319,6 +320,16 @@ export function unregisterLoadedDocument(roomId: string): void {
   activeLoadedDocuments.delete(roomId);
 }
 
+export type DocumentFinalizeHook = (
+  roomId: string,
+  document: Y.Doc
+) => Promise<void> | void;
+let documentFinalizeHook: DocumentFinalizeHook | null = null;
+
+export function setDocumentFinalizeHook(hook: DocumentFinalizeHook | null): void {
+  documentFinalizeHook = hook;
+}
+
 export function getActiveLoadedDocuments(): Map<string, Y.Doc> {
   return new Map(activeLoadedDocuments);
 }
@@ -519,7 +530,8 @@ export function requeueUpdates(
   roomId: string,
   failedBatch: QueuedUpdate[],
   originalFirstUnflushedAt: number,
-  document?: Y.Doc
+  document?: Y.Doc,
+  requiresFinalSnapshot = false
 ): void {
   let queue = pendingQueues.get(roomId);
 
@@ -535,6 +547,7 @@ export function requeueUpdates(
       firstUnflushedAt: originalFirstUnflushedAt,
       failureCount: 1,
       totalBytes: failedBatch.reduce((acc, u) => acc + u.update.byteLength, 0),
+      requiresFinalSnapshot,
     };
     pendingQueues.set(roomId, queue);
   } else {
@@ -546,6 +559,9 @@ export function requeueUpdates(
         ? Math.min(queue.firstUnflushedAt, originalFirstUnflushedAt)
         : originalFirstUnflushedAt;
     queue.failureCount = (queue.failureCount || 0) + 1;
+    if (requiresFinalSnapshot) {
+      queue.requiresFinalSnapshot = true;
+    }
   }
 
   // Enforce backpressure if queue is saturated
@@ -571,7 +587,9 @@ export function requeueUpdates(
   const retryDelay = Math.min(MAX_RETRY_BACKOFF_MS, backoffBase + jitter);
 
   queue.retryTimeout = setTimeout(() => {
-    flushRoom(roomId).catch((err) => {
+    const q = pendingQueues.get(roomId);
+    const needSnapshot = Boolean(q?.requiresFinalSnapshot);
+    flushRoom(roomId, needSnapshot).catch((err) => {
       rootLogger.error({ err, roomId }, "Error in backoff retry flush");
     });
   }, retryDelay);
@@ -607,11 +625,19 @@ export async function flushRoom(roomId: string, forceSnapshot = false): Promise<
 async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<void> {
   const queue = pendingQueues.get(roomId);
   const doc = queue?.document ?? activeLoadedDocuments.get(roomId);
+  const shouldSnapshot = forceSnapshot || Boolean(queue?.requiresFinalSnapshot);
 
   if (!queue || queue.updates.length === 0) {
     checkAndReleaseBackpressure(roomId);
-    if (forceSnapshot && doc) {
+    if (shouldSnapshot && doc) {
       await takeSnapshotLocked(roomId, doc, true);
+      if (queue) queue.requiresFinalSnapshot = false;
+    }
+    if (syncRegistry.getActiveConnectionCount(roomId) === 0 && doc) {
+      unregisterLoadedDocument(roomId);
+      if (documentFinalizeHook) {
+        await documentFinalizeHook(roomId, doc);
+      }
     }
     return;
   }
@@ -669,6 +695,7 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
     firstUnflushedAt: 0,
     failureCount: queue.failureCount,
     totalBytes: 0,
+    requiresFinalSnapshot: shouldSnapshot,
   });
 
   try {
@@ -802,8 +829,11 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
     // Release backpressure if queue fell below recovery threshold (accounting for in-flight and reservations)
     checkAndReleaseBackpressure(roomId);
 
-    if (forceSnapshot && docToEncode) {
+    if (shouldSnapshot && docToEncode) {
       await takeSnapshotLocked(roomId, docToEncode, true);
+      if (queue) queue.requiresFinalSnapshot = false;
+      const curQ = pendingQueues.get(roomId);
+      if (curQ) curQ.requiresFinalSnapshot = false;
     }
 
     // Clean up empty queue if no new updates arrived during DB write and not backpressured
@@ -814,6 +844,16 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
       !syncRegistry.isRoomBackpressured(roomId)
     ) {
       pendingQueues.delete(roomId);
+    }
+
+    if (syncRegistry.getActiveConnectionCount(roomId) === 0 && docToEncode) {
+      const curQ = pendingQueues.get(roomId);
+      if (!curQ || curQ.updates.length === 0) {
+        unregisterLoadedDocument(roomId);
+        if (documentFinalizeHook) {
+          await documentFinalizeHook(roomId, docToEncode);
+        }
+      }
     }
   } catch (err) {
     inFlightUpdatesCount -= batch.length;
@@ -827,7 +867,7 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
     );
     flushFailures++;
     rootLogger.error({ err, roomId }, "Failed to flush updates to MongoDB");
-    requeueUpdates(roomId, batch, originalFirstUnflushedAt, document);
+    requeueUpdates(roomId, batch, originalFirstUnflushedAt, document, shouldSnapshot);
     throw err;
   }
 }
@@ -1256,4 +1296,5 @@ export function resetPersistenceState(): void {
   roomPersistedUpdates.clear();
   snapshotTestingHooks.beforeCaptureBarrier = null;
   snapshotTestingHooks.afterCaptureBarrier = null;
+  documentFinalizeHook = null;
 }

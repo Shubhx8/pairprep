@@ -31,6 +31,7 @@ import {
   drainPersistenceAndSnapshot,
   getPendingPersistenceStats,
   unregisterLoadedDocument,
+  setDocumentFinalizeHook,
   tryReserveAdmission,
   releaseAdmissionReservation,
   clearAdmissionReservations,
@@ -521,14 +522,19 @@ export function createSyncServer(
 
       // 3. Flush pending updates. If room is now empty, take a consistent final snapshot.
       // If other participants remain, only flush updates without taking a snapshot.
+      let flushSuccess = false;
       try {
         await flushRoom(roomId, isRoomEmpty);
+        flushSuccess = true;
       } catch (err) {
         rootLogger.error({ roomId, err }, "Failed to flush room on disconnect");
       }
 
-      // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
-      if (isRoomEmpty) {
+      // 4. When data.clientsCount === 0 and flush succeeded, unload the document from Hocuspocus memory.
+      // If the flush failed (e.g. transient database failure), do NOT unload the document while updates
+      // are still queued for retry in memory; the persistence layer will finalize and unload the document
+      // once the retry flush completes successfully.
+      if (isRoomEmpty && flushSuccess) {
         unregisterLoadedDocument(roomId);
 
         const hocuspocusInstance =
@@ -769,6 +775,31 @@ export function createSyncServer(
     },
   });
 
+  setDocumentFinalizeHook(async (roomId, doc) => {
+    const hocuspocusInstance = (
+      server as unknown as {
+        hocuspocus?: {
+          documents?: Map<string, unknown>;
+          unloadDocument?: (doc: unknown) => Promise<void>;
+        };
+      }
+    ).hocuspocus;
+
+    if (hocuspocusInstance && typeof hocuspocusInstance.unloadDocument === "function") {
+      const docToUnload = doc ?? hocuspocusInstance.documents?.get(roomId);
+      if (docToUnload) {
+        try {
+          await hocuspocusInstance.unloadDocument(docToUnload);
+        } catch (unloadErr) {
+          rootLogger.warn(
+            { roomId, err: unloadErr },
+            "Failed to unload document on finalization"
+          );
+        }
+      }
+    }
+  });
+
   const drainAndShutdown = (opts: ShutdownOptions = {}): Promise<void> => {
     if (shutdownPromise) {
       return shutdownPromise;
@@ -834,6 +865,7 @@ export function createSyncServer(
 
       // Phase E: Destroy server and reset state
       await server.destroy();
+      setDocumentFinalizeHook(null);
       syncRegistry.resetAll();
       rateLimiter.resetAll();
       documentLoadWaiters.resetAll();

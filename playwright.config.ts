@@ -42,6 +42,7 @@ export default defineConfig({
         MONGODB_URI: E2E_MONGODB_URI,
         SESSION_SECRET: E2E_SESSION_SECRET,
         PAIRPREP_E2E: "1",
+        RATE_LIMIT_MAX: process.env["RATE_LIMIT_MAX"] || "1000",
       },
     },
     {

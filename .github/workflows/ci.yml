@@ -99,6 +99,7 @@ jobs:
           PORT: 3001
           MONGODB_URI: "mongodb://127.0.0.1:27017/pairprep_e2e"
           SESSION_SECRET: "test_e2e_secret_at_least_32_chars_long_for_security"
+          RATE_LIMIT_MAX: "1000"
         run: npm run test:e2e
 
   deploy:

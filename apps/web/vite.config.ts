@@ -32,6 +32,17 @@ function siteUrlPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss(), siteUrlPlugin()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("monaco-editor") || id.includes("y-monaco")) {
+            return "monaco-editor";
+          }
+        },
+      },
+    },
+  },
   server: {
     port: parseInt(process.env["VITE_PORT"] || "5173", 10),
     proxy: {

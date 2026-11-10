@@ -45,4 +45,36 @@ if (typeof window !== "undefined") {
   window.IntersectionObserver =
     window.IntersectionObserver ||
     (IntersectionObserverPolyfill as unknown as typeof IntersectionObserver);
+
+  // Polyfill HTMLCanvasElement.prototype.getContext for Monaco editor in jsdom
+  if (typeof HTMLCanvasElement !== "undefined") {
+    HTMLCanvasElement.prototype.getContext = function () {
+      return {
+        fillRect: () => {},
+        clearRect: () => {},
+        getImageData: () => ({ data: [] }),
+        putImageData: () => {},
+        createImageData: () => [],
+        setTransform: () => {},
+        drawImage: () => {},
+        save: () => {},
+        fillText: () => {},
+        restore: () => {},
+        beginPath: () => {},
+        moveTo: () => {},
+        lineTo: () => {},
+        closePath: () => {},
+        stroke: () => {},
+        translate: () => {},
+        scale: () => {},
+        rotate: () => {},
+        arc: () => {},
+        fill: () => {},
+        measureText: () => ({ width: 0 }),
+        transform: () => {},
+        rect: () => {},
+        clip: () => {},
+      } as unknown as CanvasRenderingContext2D;
+    } as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  }
 }

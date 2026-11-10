@@ -11,9 +11,12 @@ import {
 } from "@hocuspocus/provider";
 import { getSyncUrl } from "../lib/syncUrl.js";
 import { isValidRoomId } from "../lib/roomId.js";
+import { formatSyncCloseError } from "../lib/syncErrors.js";
 
 export type RoomSyncStatus =
   "connecting" | "connected" | "reconnecting" | "offline" | "disconnected" | "error";
+
+export { HocuspocusProvider, HocuspocusProviderWebsocket, Y };
 
 export interface UseRoomSyncOptions {
   roomId: string | null | undefined;
@@ -94,7 +97,7 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
     setIsSynced(false);
     setError(null);
 
-    const activeDoc = new Y.Doc({ gc: false });
+    const activeDoc = new Y.Doc();
     const resolvedUrl = getSyncUrl({ overrideUrl: url });
 
     let activeProvider: HocuspocusProvider | null = null;
@@ -138,31 +141,59 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
         },
         onAuthenticationFailed({ reason }: onAuthenticationFailedParameters) {
           if (!isCurrent) return;
+          const formatted = formatSyncCloseError(4001, reason);
           setStatus("error");
-          setError(new Error(`Authentication failed: ${reason}`));
+          setError(new Error(formatted.message));
         },
         onClose({ event }: onCloseParameters) {
           if (!isCurrent) return;
-          if (
-            event &&
-            (event.code === 4001 || event.code === 4003 || event.code === 4029)
-          ) {
-            setStatus("error");
-            setError(
-              new Error(`Connection closed: ${event.reason || `code ${event.code}`}`)
-            );
+          if (event) {
+            const formatted = formatSyncCloseError(event.code, event.reason);
+            if (
+              event.code === 4001 ||
+              event.code === 4003 ||
+              event.code === 4004 ||
+              event.code === 4029 ||
+              event.code === 1001 ||
+              event.code === 1009 ||
+              formatted.isFatal ||
+              event.code >= 4000
+            ) {
+              setStatus("error");
+              setError(new Error(formatted.message));
+            }
           }
         },
       });
+
+      if (customWsProvider) {
+        activeProvider.attach();
+      }
 
       setDoc(activeDoc);
       setProvider(activeProvider);
     } catch (err) {
       if (!isCurrent) return;
+      if (activeProvider) {
+        try {
+          activeProvider.destroy();
+        } catch (cleanupErr) {
+          console.error("[useRoomSync] Provider cleanup error:", cleanupErr);
+        }
+        activeProvider = null;
+      }
+      if (customWsProvider) {
+        try {
+          customWsProvider.destroy();
+        } catch (cleanupErr) {
+          console.error("[useRoomSync] Custom WebSocket cleanup error:", cleanupErr);
+        }
+        customWsProvider = null;
+      }
       try {
         activeDoc.destroy();
-      } catch {
-        // ignore
+      } catch (cleanupErr) {
+        console.error("[useRoomSync] Document cleanup error:", cleanupErr);
       }
       setStatus("error");
       setError(err instanceof Error ? err : new Error(String(err)));
@@ -204,23 +235,23 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
       if (activeProvider) {
         try {
           activeProvider.destroy();
-        } catch {
-          // ignore
+        } catch (cleanupErr) {
+          console.error("[useRoomSync] Provider cleanup error:", cleanupErr);
         }
       }
 
       if (customWsProvider) {
         try {
           customWsProvider.destroy();
-        } catch {
-          // ignore
+        } catch (cleanupErr) {
+          console.error("[useRoomSync] Custom WebSocket cleanup error:", cleanupErr);
         }
       }
 
       try {
         activeDoc.destroy();
-      } catch {
-        // ignore
+      } catch (cleanupErr) {
+        console.error("[useRoomSync] Document cleanup error:", cleanupErr);
       }
     };
   }, [roomId, enabled, url, WebSocketPolyfill]);

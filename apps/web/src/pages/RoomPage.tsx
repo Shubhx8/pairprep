@@ -1,13 +1,20 @@
-import { useState, useEffect, useCallback, type FormEvent } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense, type FormEvent } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../lib/authContext.js";
 import { apiClient, ApiClientError } from "../lib/apiClient.js";
 import type { RoomDto, PublicRoomDto, RoomMemberDetailDto } from "@pairprep/shared";
+import { PARTICIPANT_PALETTE } from "@pairprep/shared";
 import { Button } from "../components/ui/Button.js";
 import { Input } from "../components/ui/Input.js";
 import { Skeleton } from "../components/ui/Skeleton.js";
 import { EmptyState } from "../components/ui/EmptyState.js";
 import { ErrorState } from "../components/ui/ErrorState.js";
+import type { SupportedEditorLanguage } from "../components/CodeEditor.js";
+import { useRoomSync } from "../hooks/useRoomSync.js";
+import { isValidRoomId } from "../lib/roomId.js";
+
+// PRD Performance & Section 14: Dynamic lazy-loading boundary for Monaco collaborative editor
+const CollaborativeEditor = lazy(() => import("../components/CollaborativeEditor.js"));
 import {
   Code2,
   Users,
@@ -18,7 +25,6 @@ import {
   ArrowLeft,
   Sparkles,
   Terminal,
-  FileCode,
 } from "lucide-react";
 
 export default function RoomPage() {
@@ -40,6 +46,34 @@ export default function RoomPage() {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [selectedLanguage, setSelectedLanguage] =
+    useState<SupportedEditorLanguage | null>(null);
+
+  // Sync client hook: only enabled when visitor is an active room member with valid 24-char ObjectId
+  const roomId = room && "id" in room && isValidRoomId(room.id) ? room.id : null;
+  const isSyncEnabled = Boolean(currentMember && roomId);
+  const sync = useRoomSync({ roomId, enabled: isSyncEnabled });
+
+  // Expose sync handle for integration and E2E collaboration testing ONLY in DEV/test and when VITE_PAIRPREP_E2E=1
+  useEffect(() => {
+    if (
+      import.meta.env.DEV &&
+      import.meta.env["VITE_PAIRPREP_E2E"] === "1" &&
+      typeof window !== "undefined"
+    ) {
+      (window as unknown as { __pairprep_sync?: unknown }).__pairprep_sync = {
+        doc: sync.doc,
+        provider: sync.provider,
+        status: sync.status,
+        isSynced: sync.isSynced,
+        error: sync.error,
+      };
+      return () => {
+        delete (window as unknown as { __pairprep_sync?: unknown }).__pairprep_sync;
+      };
+    }
+    return undefined;
+  }, [sync.doc, sync.provider, sync.status, sync.isSynced, sync.error]);
 
   // Rate limit countdown effect
   useEffect(() => {
@@ -108,6 +142,15 @@ export default function RoomPage() {
   useEffect(() => {
     fetchRoom();
   }, [fetchRoom]);
+
+  // Live participant list polling (ROOM-5)
+  useEffect(() => {
+    if (!currentMember) return;
+    const interval = setInterval(() => {
+      fetchRoom();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [currentMember, fetchRoom]);
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -479,31 +522,58 @@ export default function RoomPage() {
             </h2>
             <div className="space-y-2">
               {members.length > 0 ? (
-                members.map((m) => (
-                  <div
-                    key={m.id}
-                    className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs"
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <div className="h-6 w-6 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-[10px] text-primary shrink-0">
-                        {m.displayName.charAt(0).toUpperCase()}
+                members.map((m, idx) => {
+                  const isCurrent =
+                    m.id === currentMember?.id ||
+                    m.displayName === (user?.displayName || guestName);
+                  const participantColor =
+                    PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
+                    (PARTICIPANT_PALETTE[0] as string);
+
+                  return (
+                    <div
+                      key={m.id}
+                      data-testid={`participant-${m.id}`}
+                      className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs"
+                    >
+                      <div className="flex items-center gap-2 truncate">
+                        <div
+                          className="h-6 w-6 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0 border"
+                          style={{
+                            borderColor: participantColor,
+                            color: participantColor,
+                            backgroundColor: `${participantColor}22`,
+                          }}
+                        >
+                          {m.displayName.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="truncate font-medium text-text-primary">
+                          {m.displayName}
+                        </span>
+                        {isCurrent && (
+                          <span className="text-[10px] text-primary font-mono ml-1 font-semibold">
+                            (You)
+                          </span>
+                        )}
                       </div>
-                      <span className="truncate font-medium">{m.displayName}</span>
+                      <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
+                        {m.role}
+                      </span>
                     </div>
-                    <span className="text-[10px] font-mono text-text-subtle uppercase">
-                      {m.role}
-                    </span>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div className="flex items-center gap-2 p-2 rounded-lg bg-surface border border-border-subtle text-xs">
                   <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center font-bold text-[10px] text-primary">
                     {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
                   </div>
-                  <span className="font-medium">
+                  <span className="font-medium text-text-primary">
                     {currentMember?.displayName || "You"}
                   </span>
-                  <span className="text-[10px] font-mono text-text-subtle ml-auto">
+                  <span className="text-[10px] text-primary font-mono font-semibold">
+                    (You)
+                  </span>
+                  <span className="text-[10px] font-mono text-text-subtle ml-auto uppercase">
                     {currentMember?.role || "editor"}
                   </span>
                 </div>
@@ -519,40 +589,51 @@ export default function RoomPage() {
           </div>
         </aside>
 
-        {/* Center: Collaborative Workspace Placeholder */}
+        {/* Center: Collaborative Workspace */}
         <section className="flex flex-col bg-canvas p-4 sm:p-6 overflow-hidden space-y-4">
-          <div className="flex-1 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden shadow-inner">
-            <div className="border-b border-border-subtle bg-surface-subtle px-4 py-2.5 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-mono text-text-secondary">
-                <FileCode className="h-4 w-4 text-primary" />
-                <span>
-                  main.
-                  {fullRoom.language === "python"
-                    ? "py"
-                    : fullRoom.language === "cpp"
-                      ? "cpp"
-                      : "js"}
-                </span>
+          <Suspense
+            fallback={
+              <div
+                data-testid="editor-loading-fallback"
+                className="flex flex-1 items-center justify-center min-h-[400px] bg-canvas-subtle border border-border rounded-lg text-text-muted text-sm font-mono"
+              >
+                Loading collaborative editor...
               </div>
-              <span className="flex items-center gap-1.5 text-xs text-success font-medium">
-                <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
-                Collaborative Session Active
-              </span>
-            </div>
-
-            <div className="flex-1 flex flex-col justify-center items-center p-8 text-center space-y-3">
-              <div className="p-3 rounded-2xl bg-primary/10 border border-primary/20 text-primary">
-                <Code2 className="h-8 w-8" />
-              </div>
-              <h2 className="text-base font-semibold text-text-primary">
-                Collaborative Code Editor
-              </h2>
-              <p className="text-xs text-text-secondary max-w-sm">
-                Real-time Monaco editor, Yjs CRDT synchronization, and sandbox container
-                execution will mount here.
-              </p>
-            </div>
-          </div>
+            }
+          >
+            <CollaborativeEditor
+              doc={sync.doc}
+              provider={sync.provider}
+              status={sync.status}
+              isSynced={sync.isSynced}
+              error={sync.error}
+              language={selectedLanguage ?? fullRoom.language}
+              onLanguageChange={setSelectedLanguage}
+              readOnly={isEnded || currentMember?.role === "viewer"}
+              user={{
+                name:
+                  user?.displayName ||
+                  currentMember?.displayName ||
+                  guestName ||
+                  "Participant",
+                color:
+                  PARTICIPANT_PALETTE[
+                    members.length > 0
+                      ? Math.max(
+                          0,
+                          members.findIndex(
+                            (m) =>
+                              m.displayName ===
+                              (user?.displayName ||
+                                currentMember?.displayName ||
+                                guestName)
+                          )
+                        ) % PARTICIPANT_PALETTE.length
+                      : 0
+                  ] || (PARTICIPANT_PALETTE[0] as string),
+              }}
+            />
+          </Suspense>
 
           {/* Terminal / Output Placeholder */}
           <div className="h-40 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">

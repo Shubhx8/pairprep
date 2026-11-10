@@ -1,6 +1,5 @@
 import type { Environment } from "monaco-editor";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
 declare global {
   interface Window {
@@ -21,10 +20,7 @@ export function setupMonacoWorkers(): void {
 
   window.MonacoEnvironment = {
     ...window.MonacoEnvironment,
-    getWorker(_workerId: string, label: string): Worker {
-      if (label === "typescript" || label === "javascript") {
-        return new tsWorker();
-      }
+    getWorker(_workerId: string, _label: string): Worker {
       return new editorWorker();
     },
   };

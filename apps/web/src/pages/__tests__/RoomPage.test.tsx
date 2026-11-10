@@ -10,6 +10,7 @@ import type {
   RoomMemberDetailDto,
   UserPrivateDto,
 } from "@pairprep/shared";
+import "../../components/CollaborativeEditor.js";
 
 describe("RoomPage", () => {
   const mockRoom: RoomDto = {
@@ -94,9 +95,12 @@ describe("RoomPage", () => {
 
     renderWithRoute();
 
-    await waitFor(() => {
-      expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
+      },
+      { timeout: 5000 }
+    );
 
     expect(screen.getByText("Dynamic Programming Practice")).toBeInTheDocument();
     expect(screen.getByText("python")).toBeInTheDocument();
@@ -340,9 +344,12 @@ describe("RoomPage", () => {
 
     renderWithRoute();
 
-    await waitFor(() => {
-      expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
+      },
+      { timeout: 5000 }
+    );
     expect(screen.queryByText("Room Closed")).not.toBeInTheDocument();
   });
 });

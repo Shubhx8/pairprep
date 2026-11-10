@@ -172,7 +172,7 @@ export default function RoomPage() {
     provider: sync.provider,
     localClientId: sync.doc?.clientID,
     onRefresh: refreshRoom,
-    fallbackIntervalMs: 30000,
+    fallbackIntervalMs: import.meta.env["VITE_PAIRPREP_E2E"] === "1" ? 4000 : 30000,
     debounceMs: 500,
   });
 

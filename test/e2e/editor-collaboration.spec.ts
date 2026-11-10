@@ -517,15 +517,20 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
           await mongoose.connect(E2E_CONFIG.mongoUri);
         }
         const roomId = roomDetails.room?.id || roomDetails.id;
-        const dbUpdates = await DocUpdateModel.find({ roomId })
-          .sort({ seq: 1 })
-          .lean();
+        const dbUpdates = await DocUpdateModel.find({ roomId }).sort({ seq: 1 }).lean();
         expect(dbUpdates.length).toBeGreaterThan(0);
 
         // Reconstruct a single authoritative Y.Doc by sequentially replaying all persisted updates
         const reconstructedDoc = new Y.Doc();
         for (const updateRecord of dbUpdates) {
-          Y.applyUpdate(reconstructedDoc, updateRecord.update);
+          const raw = updateRecord.update as unknown as { buffer?: ArrayBuffer };
+          const updateBytes =
+            updateRecord.update instanceof Uint8Array
+              ? updateRecord.update
+              : raw?.buffer
+                ? new Uint8Array(raw.buffer)
+                : new Uint8Array(Buffer.from(updateRecord.update as unknown as string));
+          Y.applyUpdate(reconstructedDoc, updateBytes);
         }
 
         const reconstructedCode = reconstructedDoc.getText("code").toString();

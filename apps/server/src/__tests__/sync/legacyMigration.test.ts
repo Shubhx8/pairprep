@@ -258,7 +258,9 @@ describe("T08 Yjs Canonical Field Migration ('code' vs legacy 'monaco')", () => 
       }
       const initialDoc = new Y.Doc();
       initialDoc.getText("monaco").insert(0, "stale content");
-      initialDoc.getText("code"); // explicitly empty
+      // Intentionally empty canonical field: insert and delete creates Yjs CRDT item with length 0
+      initialDoc.getText("code").insert(0, "init");
+      initialDoc.getText("code").delete(0, 4);
       const initialUpdate = Y.encodeStateAsUpdate(initialDoc);
 
       await DocUpdateModel.create({

@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import path from "node:path";
+import mongoose from "mongoose";
 import * as Y from "yjs";
 import { DocUpdateModel } from "../../apps/server/src/models/doc_updates.js";
 import {
@@ -48,8 +49,12 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       email: `alice.${Date.now()}@pairprep.com`,
     });
 
-    const hostContext = await browser.newContext();
-    const guestContext = await browser.newContext();
+    const hostContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const guestContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
 
     const urlObj = new URL(baseURL || "http://localhost:5173");
     await hostContext.addCookies([
@@ -64,7 +69,11 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
     ]);
 
     // Start Playwright tracing on Host context to record the collaboration and offline/reconnect flow
-    await hostContext.tracing.start({ screenshots: true, snapshots: true });
+    try {
+      await hostContext.tracing.start({ screenshots: true, snapshots: true });
+    } catch {
+      // Tracing may already be active via playwright.config.ts trace on-first-retry
+    }
 
     try {
       // 2. Host creates room from Dashboard
@@ -161,7 +170,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       const awarenessStyleContent = await awarenessStyleLocator.textContent();
       expect(awarenessStyleContent).toContain(".yRemoteSelection");
       expect(awarenessStyleContent).toContain(".yRemoteSelectionHead");
-      expect(awarenessStyleContent).toContain('content: "Bob Dev"');
+      expect(awarenessStyleContent).toContain('content: "Bob Peer"');
       expect(awarenessStyleContent).toContain("background-color: #");
 
       // Verify actual Monaco DOM cursor and selection decorations rendered inside Host editor
@@ -351,8 +360,12 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       email: `owner.${Date.now()}@pairprep.com`,
     });
 
-    const hostContext = await browser.newContext();
-    const guestContext = await browser.newContext();
+    const hostContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const guestContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
     const urlObj = new URL(baseURL || "http://localhost:5173");
 
     await hostContext.addCookies([
@@ -500,6 +513,9 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
 
       // Layer 3: Authoritative persisted-state reconstruction from sequential DocUpdateModel records
       if (dbAvailable) {
+        if (mongoose.connection.readyState === 0) {
+          await mongoose.connect(E2E_CONFIG.mongoUri);
+        }
         const dbUpdates = await DocUpdateModel.find({ roomId: roomDetails.id })
           .sort({ seq: 1 })
           .lean();
@@ -566,8 +582,12 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       email: `normal.${Date.now()}@pairprep.com`,
     });
 
-    const hostContext = await browser.newContext();
-    const guestContext = await browser.newContext();
+    const hostContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const guestContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
     const urlObj = new URL(baseURL || "http://localhost:5173");
 
     await hostContext.addCookies([
@@ -736,8 +756,12 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       email: `alice.room5.${Date.now()}@pairprep.com`,
     });
 
-    const hostContext = await browser.newContext();
-    const guestContext = await browser.newContext();
+    const hostContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const guestContext = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
     const urlObj = new URL(baseURL || "http://localhost:5173");
 
     await hostContext.addCookies([
@@ -770,6 +794,11 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       const roomUrl = hostPage.url();
       const slug = roomUrl.split("/r/")[1]?.split("?")[0];
 
+      // Wait for RoomPage and Editor to mount before checking sidebar
+      await expect(hostPage.getByTestId("collaborative-editor")).toBeVisible({
+        timeout: 10000,
+      });
+
       // 2. Verify Host sidebar participant list
       const hostAside = hostPage.locator("aside");
       await expect(hostAside.getByText("Alice Host")).toBeVisible({ timeout: 10000 });
@@ -784,6 +813,11 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       });
       await guestPage.getByLabel(/Your Display Name/i).fill("Bob Participant");
       await guestPage.getByRole("button", { name: /Join as Guest/i }).click();
+
+      // Wait for Guest editor to mount
+      await expect(guestPage.getByTestId("collaborative-editor")).toBeVisible({
+        timeout: 10000,
+      });
 
       // 4. Dynamic update on Host WITHOUT page reload
       await expect(hostAside.getByText("Bob Participant")).toBeVisible({
@@ -904,6 +938,12 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
     } finally {
       await context.close();
       await hostSeed.cleanup();
+    }
+  });
+
+  test.afterAll(async () => {
+    if (mongoose.connection.readyState === 1) {
+      await mongoose.disconnect();
     }
   });
 });

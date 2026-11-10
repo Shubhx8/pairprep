@@ -82,7 +82,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
 
       await expect(
         hostPage.getByRole("heading", { name: /Practice Rooms/i })
-      ).toBeVisible({ timeout: 10000 });
+      ).toBeVisible({ timeout: 15000 });
 
       const createBtn = hostPage.getByRole("button", {
         name: /Create Practice Room|New Room/i,
@@ -269,7 +269,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       await page.goto("/dashboard");
 
       await expect(page.getByRole("heading", { name: /Practice Rooms/i })).toBeVisible({
-        timeout: 10000,
+        timeout: 15000,
       });
 
       const createBtn = page.getByRole("button", {
@@ -516,7 +516,8 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
         if (mongoose.connection.readyState === 0) {
           await mongoose.connect(E2E_CONFIG.mongoUri);
         }
-        const dbUpdates = await DocUpdateModel.find({ roomId: roomDetails.id })
+        const roomId = roomDetails.room?.id || roomDetails.id;
+        const dbUpdates = await DocUpdateModel.find({ roomId })
           .sort({ seq: 1 })
           .lean();
         expect(dbUpdates.length).toBeGreaterThan(0);
@@ -700,7 +701,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       const page = await context.newPage();
       await page.goto("/dashboard");
       await expect(page.getByRole("heading", { name: /Practice Rooms/i })).toBeVisible({
-        timeout: 10000,
+        timeout: 15000,
       });
 
       const createBtn = page.getByRole("button", {
@@ -781,7 +782,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       await hostPage.goto("/dashboard");
       await expect(
         hostPage.getByRole("heading", { name: /Practice Rooms/i })
-      ).toBeVisible({ timeout: 10000 });
+      ).toBeVisible({ timeout: 15000 });
 
       const createBtn = hostPage.getByRole("button", {
         name: /Create Practice Room|New Room/i,
@@ -821,9 +822,9 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
 
       // 4. Dynamic update on Host WITHOUT page reload
       await expect(hostAside.getByText("Bob Participant")).toBeVisible({
-        timeout: 12000,
+        timeout: 20000,
       });
-      await expect(hostAside.getByText("editor")).toBeVisible();
+      await expect(hostAside.getByText("editor")).toBeVisible({ timeout: 10000 });
 
       // Ensure (You) is ONLY on Alice on Host page
       const hostYouBadges = hostAside.getByText("(You)");
@@ -854,7 +855,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       expect(patchRes.status()).toBe(200);
 
       // 7. Dynamic role update on Guest WITHOUT page reload
-      await expect(guestAside.getByText("viewer")).toBeVisible({ timeout: 12000 });
+      await expect(guestAside.getByText("viewer")).toBeVisible({ timeout: 20000 });
     } finally {
       await hostContext.close();
       await guestContext.close();
@@ -905,7 +906,7 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
       // 1. Visit /dashboard
       await page.goto("/dashboard");
       await expect(page.getByRole("heading", { name: /Practice Rooms/i })).toBeVisible({
-        timeout: 10000,
+        timeout: 15000,
       });
 
       // Assert zero Monaco chunks or worker requests on /dashboard

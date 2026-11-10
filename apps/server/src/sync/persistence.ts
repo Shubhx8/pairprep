@@ -330,7 +330,8 @@ export function getActiveLoadedDocuments(): Map<string, Y.Doc> {
  */
 export async function loadDocument(
   roomId: string,
-  targetDoc: Y.Doc
+  targetDoc: Y.Doc,
+  options?: { readOnly?: boolean }
 ): Promise<{ lastSeq: number; loadedUpdatesCount: number; hasSnapshot: boolean }> {
   if (mongoose.connection.readyState !== 1) {
     throw new Error(
@@ -339,13 +340,14 @@ export async function loadDocument(
   }
 
   return roomMutex.runExclusive(roomId, async () => {
-    return loadDocumentLocked(roomId, targetDoc);
+    return loadDocumentLocked(roomId, targetDoc, options);
   });
 }
 
 async function loadDocumentLocked(
   roomId: string,
-  targetDoc: Y.Doc
+  targetDoc: Y.Doc,
+  options?: { readOnly?: boolean }
 ): Promise<{ lastSeq: number; loadedUpdatesCount: number; hasSnapshot: boolean }> {
   // 1. Fetch latest snapshot if one exists
   const snapshot = await docSnapshotRepo.getLatestSnapshot(roomId);
@@ -372,6 +374,15 @@ async function loadDocumentLocked(
     lastSeq = updates[updates.length - 1]!.seq;
   }
 
+  // 3. Migrate legacy document fields if document contains "monaco" but lacks canonical "code"
+  let migrationUpdate: Uint8Array | null = null;
+  const captureMigration = (update: Uint8Array) => {
+    migrationUpdate = update;
+  };
+  targetDoc.on("update", captureMigration);
+  const { migrated } = migrateLegacyDocFields(targetDoc);
+  targetDoc.off("update", captureMigration);
+
   trackedDocs.add(targetDoc);
   activeLoadedDocuments.set(roomId, targetDoc);
   targetDoc.on("update", () => {
@@ -380,6 +391,11 @@ async function loadDocumentLocked(
   });
   roomAppliedUpdates.set(roomId, 0);
   roomPersistedUpdates.set(roomId, 0);
+
+  // Queue migration update into persistence pipeline unless client is read-only
+  if (migrated && migrationUpdate && !options?.readOnly) {
+    queueUpdate(roomId, "system:migration", migrationUpdate, targetDoc);
+  }
 
   return {
     lastSeq,
@@ -928,6 +944,46 @@ async function takeSnapshotLocked(
 }
 
 /**
+ * Extracts canonical document text for snapshots.
+ * If canonical "code" is present in document.share, its text is returned
+ * (even if intentionally empty "").
+ * Only if "code" is completely absent from document.share does it fall back to legacy "monaco".
+ */
+export function extractCanonicalDocText(document: Y.Doc): string {
+  if (document.share.has("code")) {
+    return document.getText("code").toString();
+  }
+  if (document.share.has("monaco")) {
+    return document.getText("monaco").toString();
+  }
+  return "";
+}
+
+/**
+ * Migrates a legacy document that contains "monaco" but lacks canonical "code".
+ * If canonical "code" is already present in document.share (even if empty), canonical "code"
+ * takes precedence and no migration is performed.
+ * If "monaco" exists in document.share and "code" does not exist in document.share,
+ * the contents of "monaco" are copied into a newly initialized "code" field.
+ */
+export function migrateLegacyDocFields(document: Y.Doc): { migrated: boolean } {
+  if (document.share.has("code")) {
+    return { migrated: false };
+  }
+  if (document.share.has("monaco")) {
+    const legacyText = document.getText("monaco").toString();
+    const canonicalText = document.getText("code");
+    if (legacyText.length > 0) {
+      document.transact(() => {
+        canonicalText.insert(0, legacyText);
+      });
+    }
+    return { migrated: true };
+  }
+  return { migrated: false };
+}
+
+/**
  * Saves a document snapshot and prunes older snapshots to keep only the 3 latest.
  * Pruning uses deterministic sorting with timestamp and _id tie-breakers.
  */
@@ -937,7 +993,7 @@ export async function saveSnapshot(
   stateUpdate: Uint8Array,
   document: Y.Doc
 ): Promise<void> {
-  const text = document.getText("monaco")?.toString() || "";
+  const text = extractCanonicalDocText(document);
 
   try {
     await docSnapshotRepo.createSnapshot({

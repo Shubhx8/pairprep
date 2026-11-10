@@ -580,7 +580,7 @@ export function createSyncServer(
           cleanupFailedLoad();
           throw new Error("Reservation expired before document load");
         }
-        await loadDocument(roomId, data.document);
+        await loadDocument(roomId, data.document, { readOnly: ctx?.readOnly });
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
         }

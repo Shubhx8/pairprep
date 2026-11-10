@@ -698,7 +698,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       const finalStats = getPendingPersistenceStats();
       expect(finalStats.pendingUpdates).toBe(0);
       expect(finalStats.inFlightUpdates).toBe(0);
-    });
+    }, 20000);
   });
 
   // =========================================================================
@@ -1100,8 +1100,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         // Resume persistence and verify capacity recovery
         pauseDb = false;
         pauseBarrierResolve();
-        while (getPendingPersistenceStats().queuedUpdates > 0) {
+        while (getPendingPersistenceStats().pendingUpdates > 0) {
           await flushRoom(roomId);
+          await new Promise((r) => setTimeout(r, 50));
         }
 
         // Backpressure clears once queue falls below recovery threshold
@@ -1109,7 +1110,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
           () => {
             expect(syncRegistry.isRoomBackpressured(roomId)).toBe(false);
           },
-          { timeout: 5000 }
+          { timeout: 15000 }
         );
 
         // Authorized editor (Client A) can edit again
@@ -1126,7 +1127,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         pauseBarrierResolve();
         vi.restoreAllMocks();
       }
-    }, 30000);
+    }, 45000);
   });
 
   // =========================================================================

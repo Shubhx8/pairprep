@@ -33,7 +33,7 @@ function loadEnvFileSafely(): void {
   }
 }
 
-if (process.env["NODE_ENV"] !== "test") {
+if (process.env["NODE_ENV"] !== "test" && !process.env["PAIRPREP_E2E"]) {
   loadEnvFileSafely();
 }
 

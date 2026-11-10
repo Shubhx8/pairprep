@@ -343,8 +343,6 @@ export function isRoomPersistencePending(roomId: string): boolean {
   );
 }
 
-
-
 export function getActiveLoadedDocuments(): Map<string, Y.Doc> {
   return new Map(activeLoadedDocuments);
 }

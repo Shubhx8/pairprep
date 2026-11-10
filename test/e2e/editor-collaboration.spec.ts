@@ -947,6 +947,298 @@ test.describe("Monaco Editor Real Browser Collaboration (T08 Phase 3)", () => {
     }
   });
 
+  test("Monaco and room page make zero external network requests on /r/:slug (Finding 2 Network Isolation)", async ({
+    browser,
+    baseURL,
+  }) => {
+    const isCI = Boolean(process.env["CI"]);
+    const dbAvailable = await checkE2EDatabaseAvailable();
+    if (!dbAvailable) {
+      if (isCI) {
+        throw new Error(
+          `CI Failure: E2E database '${E2E_CONFIG.database}' is unreachable at ${E2E_CONFIG.mongoUri}.`
+        );
+      }
+      test.skip(true, `Test requires active E2E database.`);
+    }
+
+    const hostSeed = await seedE2EUserAndSession({
+      displayName: "Network Isolation Auditor",
+      email: `network.audit.${Date.now()}@pairprep.com`,
+    });
+
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const appUrl = new URL(baseURL || "http://localhost:5173");
+    const appOrigin = appUrl.origin;
+
+    await context.addCookies([
+      {
+        name: SESSION_COOKIE_NAME,
+        value: hostSeed.cookie.value,
+        domain: appUrl.hostname,
+        path: "/",
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ]);
+
+    try {
+      const page = await context.newPage();
+
+      const observedHttpRequests: { url: string; origin: string; method: string }[] = [];
+      const observedWebSockets: { url: string; origin: string }[] = [];
+      const failedRequests: { url: string; failure: string }[] = [];
+      const excludedInternalResources: string[] = [];
+
+      // Monitor page-level network requests
+      page.on("request", (req) => {
+        const reqUrl = req.url();
+        if (reqUrl.startsWith("data:") || reqUrl.startsWith("blob:")) {
+          excludedInternalResources.push(reqUrl.substring(0, 30));
+          return;
+        }
+        try {
+          const parsed = new URL(reqUrl);
+          observedHttpRequests.push({
+            url: reqUrl,
+            origin: parsed.origin,
+            method: req.method(),
+          });
+        } catch {
+          // ignore invalid urls
+        }
+      });
+
+      page.on("requestfailed", (req) => {
+        failedRequests.push({
+          url: req.url(),
+          failure: req.failure()?.errorText || "unknown",
+        });
+      });
+
+      page.on("websocket", (ws) => {
+        const wsUrl = ws.url();
+        try {
+          const parsed = new URL(wsUrl);
+          const normalizedOrigin = `${parsed.protocol === "wss:" ? "https:" : "http:"}//${parsed.host}`;
+          observedWebSockets.push({
+            url: wsUrl,
+            origin: normalizedOrigin,
+          });
+        } catch {
+          // ignore invalid ws url
+        }
+      });
+
+      // 1. Navigate to dashboard and create a room
+      await page.goto("/dashboard");
+      await expect(page.getByRole("heading", { name: /Practice Rooms/i })).toBeVisible({
+        timeout: 15000,
+      });
+
+      const createBtn = page.getByRole("button", {
+        name: /Create Practice Room|New Room/i,
+      });
+      await createBtn.click();
+      await page.getByLabel(/Room Title/i).fill("Network Isolation Audit Room");
+      await page.getByRole("button", { name: /^Create Room$/i }).click();
+
+      // 2. Wait until navigation to /r/:slug completes and Monaco is mounted and usable
+      await page.waitForURL(/\/r\/[A-Za-z0-9_-]+/, { timeout: 10000 });
+      const editorLocator = page.getByTestId("collaborative-editor");
+      await expect(editorLocator).toBeVisible({ timeout: 10000 });
+
+      // Wait for Monaco DOM elements (.monaco-editor) and type into editor
+      await expect(page.locator(".monaco-editor")).toBeVisible({ timeout: 10000 });
+      const hostMonacoInput = page.locator(".monaco-editor textarea");
+      await hostMonacoInput.focus();
+      await page.keyboard.type("# Testing local network isolation\n");
+
+      // Keep recording for an additional 2 seconds while active
+      await page.waitForTimeout(2000);
+
+      // 3. Assertion: All HTTP(S) requests must originate from the application's own origin
+      expect(observedHttpRequests.length).toBeGreaterThan(0);
+      for (const req of observedHttpRequests) {
+        expect(
+          req.origin,
+          `Request to external origin detected: ${req.url} (expected origin: ${appOrigin})`
+        ).toBe(appOrigin);
+      }
+
+      // 4. Assertion: All WebSockets must originate from the application's own origin
+      expect(observedWebSockets.length).toBeGreaterThan(0);
+      for (const ws of observedWebSockets) {
+        expect(
+          ws.origin,
+          `WebSocket to external origin detected: ${ws.url} (expected origin: ${appOrigin})`
+        ).toBe(appOrigin);
+      }
+
+      // 5. Assertion: Zero failed requests to external domains
+      const externalFailed = failedRequests.filter((f) => {
+        if (f.url.startsWith("data:") || f.url.startsWith("blob:")) return false;
+        try {
+          return new URL(f.url).origin !== appOrigin;
+        } catch {
+          return true;
+        }
+      });
+      expect(externalFailed).toHaveLength(0);
+    } finally {
+      await context.close();
+      await hostSeed.cleanup();
+    }
+  });
+
+  test("Monaco and room page make zero external network requests on /r/:slug (Finding 2 Network Isolation)", async ({
+    browser,
+    baseURL,
+  }) => {
+    const isCI = Boolean(process.env["CI"]);
+    const dbAvailable = await checkE2EDatabaseAvailable();
+    if (!dbAvailable) {
+      if (isCI) {
+        throw new Error(
+          `CI Failure: E2E database '${E2E_CONFIG.database}' is unreachable at ${E2E_CONFIG.mongoUri}.`
+        );
+      }
+      test.skip(true, `Test requires active E2E database.`);
+    }
+
+    const hostSeed = await seedE2EUserAndSession({
+      displayName: "Network Isolation Auditor",
+      email: `network.audit.${Date.now()}@pairprep.com`,
+    });
+
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const appUrl = new URL(baseURL || "http://localhost:5173");
+    const appOrigin = appUrl.origin;
+
+    await context.addCookies([
+      {
+        name: SESSION_COOKIE_NAME,
+        value: hostSeed.cookie.value,
+        domain: appUrl.hostname,
+        path: "/",
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ]);
+
+    try {
+      const page = await context.newPage();
+
+      const observedHttpRequests: { url: string; origin: string; method: string }[] = [];
+      const observedWebSockets: { url: string; origin: string }[] = [];
+      const failedRequests: { url: string; failure: string }[] = [];
+      const excludedInternalResources: string[] = [];
+
+      // Monitor page-level network requests
+      page.on("request", (req) => {
+        const reqUrl = req.url();
+        if (reqUrl.startsWith("data:") || reqUrl.startsWith("blob:")) {
+          excludedInternalResources.push(reqUrl.substring(0, 30));
+          return;
+        }
+        try {
+          const parsed = new URL(reqUrl);
+          observedHttpRequests.push({
+            url: reqUrl,
+            origin: parsed.origin,
+            method: req.method(),
+          });
+        } catch {
+          // ignore invalid urls
+        }
+      });
+
+      page.on("requestfailed", (req) => {
+        failedRequests.push({
+          url: req.url(),
+          failure: req.failure()?.errorText || "unknown",
+        });
+      });
+
+      page.on("websocket", (ws) => {
+        const wsUrl = ws.url();
+        try {
+          const parsed = new URL(wsUrl);
+          const normalizedOrigin = `${parsed.protocol === "wss:" ? "https:" : "http:"}//${parsed.host}`;
+          observedWebSockets.push({
+            url: wsUrl,
+            origin: normalizedOrigin,
+          });
+        } catch {
+          // ignore invalid ws url
+        }
+      });
+
+      // 1. Navigate to dashboard and create a room
+      await page.goto("/dashboard");
+      await expect(page.getByRole("heading", { name: /Practice Rooms/i })).toBeVisible({
+        timeout: 15000,
+      });
+
+      const createBtn = page.getByRole("button", {
+        name: /Create Practice Room|New Room/i,
+      });
+      await createBtn.click();
+      await page.getByLabel(/Room Title/i).fill("Network Isolation Audit Room");
+      await page.getByRole("button", { name: /^Create Room$/i }).click();
+
+      // 2. Wait until navigation to /r/:slug completes and Monaco is mounted and usable
+      await page.waitForURL(/\/r\/[A-Za-z0-9_-]+/, { timeout: 10000 });
+      const editorLocator = page.getByTestId("collaborative-editor");
+      await expect(editorLocator).toBeVisible({ timeout: 10000 });
+
+      // Wait for Monaco DOM elements (.monaco-editor) and type into editor
+      await expect(page.locator(".monaco-editor")).toBeVisible({ timeout: 10000 });
+      const hostMonacoInput = page.locator(".monaco-editor textarea");
+      await hostMonacoInput.focus();
+      await page.keyboard.type("# Testing local network isolation\n");
+
+      // Keep recording for an additional 2 seconds while active
+      await page.waitForTimeout(2000);
+
+      // 3. Assertion: All HTTP(S) requests must originate from the application's own origin
+      expect(observedHttpRequests.length).toBeGreaterThan(0);
+      for (const req of observedHttpRequests) {
+        expect(
+          req.origin,
+          `Request to external origin detected: ${req.url} (expected origin: ${appOrigin})`
+        ).toBe(appOrigin);
+      }
+
+      // 4. Assertion: All WebSockets must originate from the application's own origin
+      expect(observedWebSockets.length).toBeGreaterThan(0);
+      for (const ws of observedWebSockets) {
+        expect(
+          ws.origin,
+          `WebSocket to external origin detected: ${ws.url} (expected origin: ${appOrigin})`
+        ).toBe(appOrigin);
+      }
+
+      // 5. Assertion: Zero failed requests to external domains
+      const externalFailed = failedRequests.filter((f) => {
+        if (f.url.startsWith("data:") || f.url.startsWith("blob:")) return false;
+        try {
+          return new URL(f.url).origin !== appOrigin;
+        } catch {
+          return true;
+        }
+      });
+      expect(externalFailed).toHaveLength(0);
+    } finally {
+      await context.close();
+      await hostSeed.cleanup();
+    }
+  });
+
   test.afterAll(async () => {
     if (mongoose.connection.readyState === 1) {
       await mongoose.disconnect();

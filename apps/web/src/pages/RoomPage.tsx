@@ -11,6 +11,7 @@ import { EmptyState } from "../components/ui/EmptyState.js";
 import { ErrorState } from "../components/ui/ErrorState.js";
 import type { SupportedEditorLanguage } from "../components/CodeEditor.js";
 import { useRoomSync } from "../hooks/useRoomSync.js";
+import { useParticipantSync } from "../hooks/useParticipantSync.js";
 import { isValidRoomId } from "../lib/roomId.js";
 
 // PRD Performance & Section 14: Dynamic lazy-loading boundary for Monaco collaborative editor
@@ -143,14 +144,37 @@ export default function RoomPage() {
     fetchRoom();
   }, [fetchRoom]);
 
-  // Live participant list polling (ROOM-5)
-  useEffect(() => {
-    if (!currentMember) return;
-    const interval = setInterval(() => {
-      fetchRoom();
-    }, 4000);
-    return () => clearInterval(interval);
-  }, [currentMember, fetchRoom]);
+  // Background participant refresh helper (silent refresh without loading skeletons)
+  const refreshRoom = useCallback(async () => {
+    if (!slug) return;
+    try {
+      const res = await apiClient.get<{
+        room: RoomDto | PublicRoomDto;
+        currentMember?: RoomMemberDetailDto;
+        members?: RoomMemberDetailDto[];
+      }>(`/rooms/${slug}`);
+
+      setRoom(res.room);
+      setCurrentMember(res.currentMember ?? null);
+      setMembers(res.members ?? []);
+    } catch (err) {
+      if (err instanceof ApiClientError && err.status === 429 && err.retryAfterSec) {
+        setCountdown(err.retryAfterSec);
+      }
+      throw err;
+    }
+  }, [slug]);
+
+  // Event-driven participant synchronization with 30s fallback & 429 backoff (Finding 1 / ROOM-5)
+  useParticipantSync({
+    enabled: Boolean(currentMember && slug),
+    slug: slug ?? null,
+    provider: sync.provider,
+    localClientId: sync.doc?.clientID,
+    onRefresh: refreshRoom,
+    fallbackIntervalMs: 30000,
+    debounceMs: 500,
+  });
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);

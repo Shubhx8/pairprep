@@ -17,6 +17,7 @@ import {
   startSnapshotInterval,
   getPendingPersistenceStats,
   drainPersistenceAndSnapshot,
+  loadDocument,
 } from "../../sync/persistence.js";
 import { ConnectionRateLimiter } from "../../sync/connectionRateLimiter.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
@@ -255,17 +256,32 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
       expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
 
-      // Mock DocUpdateModel.bulkWrite with a delayed promise to simulate slow persistence
-      let releaseFlush: () => void = () => {};
-      const flushPause = new Promise<void>((r) => {
-        releaseFlush = r;
+      // Generate real edit on canonical "code" field and wait for queue
+      clientDoc.getText("code").insert(0, "slow persistence test content");
+      await vi.waitFor(
+        () => {
+          expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+
+      // Instrument DocUpdateModel.create to hold flush while asserting physical capacity release
+      let writeStarted = false;
+      let releaseBarrier: () => void = () => {};
+      const barrier = new Promise<void>((r) => {
+        releaseBarrier = r;
       });
 
+      const origCreate = DocUpdateModel.create.bind(DocUpdateModel);
       const writeSpy = vi
-        .spyOn(DocUpdateModel, "bulkWrite")
-        .mockImplementation(async () => {
-          await flushPause;
-          return {} as unknown as ReturnType<typeof DocUpdateModel.bulkWrite>;
+        .spyOn(DocUpdateModel, "create")
+        .mockImplementation(async (docs: unknown, options?: unknown) => {
+          writeStarted = true;
+          await barrier;
+          return origCreate(
+            docs as Parameters<typeof origCreate>[0],
+            options as Parameters<typeof origCreate>[1]
+          );
         });
 
       try {
@@ -279,14 +295,39 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
             const stats = syncServer!.getStats();
             expect(stats.connections.activeConnections).toBe(0);
             expect(stats.capacity.totalActiveConnections).toBe(0);
+            expect(writeStarted).toBe(true);
           },
           { timeout: 2000, interval: 25 }
         );
 
+        // Verify that while write is held, persistence has pending or in-flight updates
+        expect(getPendingPersistenceStats().pendingUpdates).toBeGreaterThan(0);
+
         // Resume and allow flush to complete
-        releaseFlush();
+        releaseBarrier();
+
+        // Wait for persistence to complete, snapshot to be saved, and document to be unloaded
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.persistence.pendingUpdates).toBe(0);
+            expect(stats.persistence.snapshotsSaved).toBeGreaterThanOrEqual(1);
+            expect(stats.connections.activeDocuments).toBe(0);
+          },
+          { timeout: 3000, interval: 25 }
+        );
+
+        // Verify that MongoDB has the persisted update and snapshot
+        const persistedUpdates = await DocUpdateModel.find({ roomId }).exec();
+        expect(persistedUpdates.length).toBeGreaterThan(0);
+
+        const verifyDoc = new Y.Doc();
+        await loadDocument(roomId, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe(
+          "slow persistence test content"
+        );
       } finally {
-        releaseFlush();
+        releaseBarrier();
         writeSpy.mockRestore();
       }
     });
@@ -319,24 +360,71 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
       await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
       expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
 
-      // Force persistence failure on disconnect
+      // Generate real edit on canonical "code" field and wait for queue
+      clientDoc.getText("code").insert(0, "failed persistence then recovered");
+      await vi.waitFor(
+        () => {
+          expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+
+      // Force persistence failure on disconnect once, then allow retry to succeed
+      let hasFailed = false;
+      const origCreate = DocUpdateModel.create.bind(DocUpdateModel);
       const writeSpy = vi
-        .spyOn(DocUpdateModel, "bulkWrite")
-        .mockRejectedValue(new Error("Simulated bulkWrite failure on disconnect"));
+        .spyOn(DocUpdateModel, "create")
+        .mockImplementation(async (docs: unknown, options?: unknown) => {
+          if (!hasFailed) {
+            hasFailed = true;
+            throw new Error(
+              "Simulated transient database write failure during disconnect"
+            );
+          }
+          return origCreate(
+            docs as Parameters<typeof origCreate>[0],
+            options as Parameters<typeof origCreate>[1]
+          );
+        });
 
       try {
         // Disconnect
         provider.destroy();
         wsProvider.destroy();
 
-        // Physical connection must return to 0 and not hang or corrupt registry
+        // 1. Physical connection capacity must return to 0 immediately
         await vi.waitFor(
           () => {
             const stats = syncServer!.getStats();
             expect(stats.connections.activeConnections).toBe(0);
             expect(stats.capacity.totalActiveConnections).toBe(0);
+            expect(hasFailed).toBe(true);
           },
           { timeout: 2000, interval: 25 }
+        );
+
+        // 2. The failed update must be requeued, NOT discarded
+        expect(getPendingPersistenceStats().pendingUpdates).toBeGreaterThan(0);
+
+        // 3. Document must NOT be prematurely unloaded while updates are still queued/retrying in memory
+        expect(syncServer.getStats().connections.activeDocuments).toBe(1);
+
+        // 4. Retry timeout will fire, flush successfully to MongoDB, take final snapshot, and finalize/unload doc
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.persistence.pendingUpdates).toBe(0);
+            expect(stats.persistence.snapshotsSaved).toBeGreaterThanOrEqual(1);
+            expect(stats.connections.activeDocuments).toBe(0);
+          },
+          { timeout: 4000, interval: 50 }
+        );
+
+        // 5. Verify that subsequent loadDocument reconstructs the edit
+        const verifyDoc = new Y.Doc();
+        await loadDocument(roomId, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe(
+          "failed persistence then recovered"
         );
       } finally {
         writeSpy.mockRestore();

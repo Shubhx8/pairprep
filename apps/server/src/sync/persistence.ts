@@ -330,6 +330,21 @@ export function setDocumentFinalizeHook(hook: DocumentFinalizeHook | null): void
   documentFinalizeHook = hook;
 }
 
+export function isRoomPersistencePending(roomId: string): boolean {
+  const queue = pendingQueues.get(roomId);
+  const pendingCount = queue?.updates.length ?? 0;
+  const inFlightCount = inFlightUpdatesByRoom.get(roomId) ?? 0;
+  const hasRetry = queue?.retryTimeout !== undefined;
+  return (
+    pendingCount > 0 ||
+    inFlightCount > 0 ||
+    hasRetry ||
+    Boolean(queue?.requiresFinalSnapshot)
+  );
+}
+
+
+
 export function getActiveLoadedDocuments(): Map<string, Y.Doc> {
   return new Map(activeLoadedDocuments);
 }
@@ -589,9 +604,19 @@ export function requeueUpdates(
   queue.retryTimeout = setTimeout(() => {
     const q = pendingQueues.get(roomId);
     const needSnapshot = Boolean(q?.requiresFinalSnapshot);
-    flushRoom(roomId, needSnapshot).catch((err) => {
-      rootLogger.error({ err, roomId }, "Error in backoff retry flush");
-    });
+    flushRoom(roomId, needSnapshot)
+      .then(async () => {
+        if (needSnapshot && syncRegistry.getActiveConnectionCount(roomId) === 0) {
+          const docToFinalize = activeLoadedDocuments.get(roomId) ?? q?.document;
+          unregisterLoadedDocument(roomId);
+          if (documentFinalizeHook && docToFinalize) {
+            await documentFinalizeHook(roomId, docToFinalize);
+          }
+        }
+      })
+      .catch((err) => {
+        rootLogger.error({ err, roomId }, "Error in backoff retry flush");
+      });
   }, retryDelay);
 }
 
@@ -632,12 +657,6 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
     if (shouldSnapshot && doc) {
       await takeSnapshotLocked(roomId, doc, true);
       if (queue) queue.requiresFinalSnapshot = false;
-    }
-    if (syncRegistry.getActiveConnectionCount(roomId) === 0 && doc) {
-      unregisterLoadedDocument(roomId);
-      if (documentFinalizeHook) {
-        await documentFinalizeHook(roomId, doc);
-      }
     }
     return;
   }
@@ -844,16 +863,6 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
       !syncRegistry.isRoomBackpressured(roomId)
     ) {
       pendingQueues.delete(roomId);
-    }
-
-    if (syncRegistry.getActiveConnectionCount(roomId) === 0 && docToEncode) {
-      const curQ = pendingQueues.get(roomId);
-      if (!curQ || curQ.updates.length === 0) {
-        unregisterLoadedDocument(roomId);
-        if (documentFinalizeHook) {
-          await documentFinalizeHook(roomId, docToEncode);
-        }
-      }
     }
   } catch (err) {
     inFlightUpdatesCount -= batch.length;

@@ -32,6 +32,7 @@ import {
   getPendingPersistenceStats,
   unregisterLoadedDocument,
   setDocumentFinalizeHook,
+  isRoomPersistencePending,
   tryReserveAdmission,
   releaseAdmissionReservation,
   clearAdmissionReservations,
@@ -771,6 +772,15 @@ export function createSyncServer(
           data.removedClients.clear();
         }
         return;
+      }
+    },
+    async beforeUnloadDocument(data) {
+      if (isShuttingDown) {
+        return;
+      }
+      const roomId = data.documentName;
+      if (isRoomPersistencePending(roomId)) {
+        throw new Error(`Cannot unload document ${roomId}: persistence pending`);
       }
     },
   });

@@ -1095,12 +1095,7 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
 
         // Concurrent new work arrives before retry fires
         doc.getText("code").insert(26, " + concurrent edit");
-        queueUpdate(
-          testRoomId,
-          "concurrent_user",
-          Y.encodeStateAsUpdate(doc),
-          doc
-        );
+        queueUpdate(testRoomId, "concurrent_user", Y.encodeStateAsUpdate(doc), doc);
         expect(getPendingPersistenceStats().queuedUpdates).toBe(1);
 
         // Wait for retry: must persist the new update AND snapshot, NOT discard them!

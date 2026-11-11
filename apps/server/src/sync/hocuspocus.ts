@@ -30,9 +30,11 @@ import {
   stopAllSnapshotIntervals,
   drainPersistenceAndSnapshot,
   getPendingPersistenceStats,
+  registerLoadedDocument,
   unregisterLoadedDocument,
   setDocumentFinalizeHook,
   isRoomPersistencePending,
+  hasSnapshotInterval,
   tryReserveAdmission,
   releaseAdmissionReservation,
   clearAdmissionReservations,
@@ -505,16 +507,29 @@ export function createSyncServer(
         }
         return;
       }
+
+      // Ensure the document is registered as loaded in persistence registry
+      const loadedDoc =
+        (data as unknown as { document?: Y.Doc }).document ??
+        data.instance.documents?.get(data.documentName);
+      if (loadedDoc) {
+        registerLoadedDocument(data.documentName, loadedDoc);
+        if (!hasSnapshotInterval(data.documentName)) {
+          startSnapshotInterval(data.documentName, loadedDoc);
+        }
+      }
     },
     async onDisconnect(data) {
       const roomId = data.documentName;
-      const isRoomEmpty = !data.clientsCount || data.clientsCount === 0;
 
       // 1. Immediately unregister connection from sync registry and clean up rate limiter & admission reservations.
       // Physical connection capacity must be released synchronously/immediately upon disconnect so stats and capacity reflect reality without waiting on persistence drain.
       syncRegistry.unregisterConnection(roomId, data.socketId);
       rateLimiter.cleanup(data.socketId);
       clearAdmissionReservations(data.socketId, roomId);
+
+      const initialCount = syncRegistry.getActiveConnectionCount(roomId);
+      const isRoomEmpty = initialCount === 0;
 
       // 2. Stop snapshot interval when room is empty
       if (isRoomEmpty) {
@@ -531,19 +546,36 @@ export function createSyncServer(
         rootLogger.error({ roomId, err }, "Failed to flush room on disconnect");
       }
 
-      // 4. When data.clientsCount === 0 and flush succeeded, unload the document from Hocuspocus memory.
+      // 4. Re-check active connection count after the async flush!
+      // A participant may have reconnected while flushRoom was executing/awaiting.
+      const currentActiveCount = syncRegistry.getActiveConnectionCount(roomId);
+      if (currentActiveCount > 0) {
+        // Participant reconnected during flush! Restore registration and snapshot timer
+        registerLoadedDocument(roomId, data.document);
+        if (!hasSnapshotInterval(roomId)) {
+          startSnapshotInterval(roomId, data.document);
+        }
+        return;
+      }
+
+      // 5. When room is genuinely still empty and flush succeeded, attempt unload from Hocuspocus memory.
       // If the flush failed (e.g. transient database failure), do NOT unload the document while updates
       // are still queued for retry in memory; the persistence layer will finalize and unload the document
       // once the retry flush completes successfully.
-      if (isRoomEmpty && flushSuccess) {
-        unregisterLoadedDocument(roomId);
-
+      if (flushSuccess) {
         const hocuspocusInstance =
-          (data.instance as
-            { unloadDocument?: (doc: unknown) => Promise<void> } | undefined) ??
+          (data.instance as unknown as
+            | {
+                documents?: Map<string, unknown>;
+                unloadDocument?: (doc: unknown) => Promise<void>;
+              }
+            | undefined) ??
           (
             server as unknown as {
-              hocuspocus?: { unloadDocument?: (doc: unknown) => Promise<void> };
+              hocuspocus?: {
+                documents?: Map<string, unknown>;
+                unloadDocument?: (doc: unknown) => Promise<void>;
+              };
             }
           ).hocuspocus;
 
@@ -558,6 +590,18 @@ export function createSyncServer(
               { roomId, err: unloadErr },
               "Failed to unload document on disconnect"
             );
+          }
+          const stillHas = hocuspocusInstance.documents?.has(roomId) ?? false;
+          if (!stillHas) {
+            unregisterLoadedDocument(roomId);
+          } else {
+            registerLoadedDocument(roomId, data.document);
+            if (
+              syncRegistry.getActiveConnectionCount(roomId) > 0 &&
+              !hasSnapshotInterval(roomId)
+            ) {
+              startSnapshotInterval(roomId, data.document);
+            }
           }
         }
       }
@@ -807,7 +851,10 @@ export function createSyncServer(
           );
         }
       }
+      const stillHas = hocuspocusInstance.documents?.has(roomId) ?? false;
+      return !stillHas;
     }
+    return true;
   });
 
   const drainAndShutdown = (opts: ShutdownOptions = {}): Promise<void> => {

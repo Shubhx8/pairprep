@@ -32,8 +32,6 @@ export interface CodeEditorProps extends Omit<
   onChange?: (value: string) => void;
 }
 
-import { MONACO_THEME_NAME, ensureThemeRegistered } from "./monacoTheme.js";
-
 /**
  * Normalizes language string to Monaco's recognized language IDs.
  * Specifically maps "c++" / "cpp" to "cpp", "js" to "javascript", "py" to "python".
@@ -48,17 +46,6 @@ export function normalizeLanguage(lang?: string): SupportedEditorLanguage {
   return "python";
 }
 
-/**
- * Reusable Monaco Editor React Component (PRD ED-1).
- *
- * Implements:
- * - Lazy web worker initialization via setupMonacoWorkers()
- * - Syntax highlighting for Python, C++, and JavaScript
- * - Controlled language and readOnly updates without recreating model or editor
- * - Automatic layout resizing via ResizeObserver
- * - StrictMode resilience (cancels async mounts and cleans up on unmount)
- * - Design-token compliant dark theme
- */
 export const CodeEditor: FC<CodeEditorProps> = ({
   value,
   defaultValue = "",
@@ -89,7 +76,6 @@ export const CodeEditor: FC<CodeEditorProps> = ({
     let changeListener: monaco.IDisposable | null = null;
 
     setupMonacoWorkers();
-    ensureThemeRegistered();
 
     if (!containerRef.current) return;
 
@@ -100,7 +86,7 @@ export const CodeEditor: FC<CodeEditorProps> = ({
       const editor = monaco.editor.create(containerRef.current, {
         value: initialText,
         language: normalizedLang,
-        theme: MONACO_THEME_NAME,
+        theme: "vs-dark",
         readOnly,
         automaticLayout: false, // Managed reliably by our ResizeObserver
         fontSize: 14,

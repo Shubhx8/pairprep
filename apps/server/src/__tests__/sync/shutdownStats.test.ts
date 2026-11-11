@@ -928,16 +928,20 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
           { timeout: 2000, interval: 25 }
         );
 
-        // Now verify preservation of concurrent new work:
-        // Trigger another snapshot failure, but insert new update while retry is pending
+        // Now verify preservation of concurrent new work in a fresh room:
+        const roomB = "507f1f77bcf86cd799439066";
+        const docB = new Y.Doc();
+        docB.getText("code").insert(0, "roomB text");
+        await loadDocument(roomB, docB);
+
         snapFailedOnce = false;
-        await expect(flushRoom(testRoomId, true)).rejects.toThrow(
+        await expect(flushRoom(roomB, true)).rejects.toThrow(
           "Simulated snapshot creation failure on empty queue"
         );
 
         // Concurrent new work arrives before retry fires
-        doc.getText("code").insert(26, " + concurrent edit");
-        queueUpdate(testRoomId, "concurrent_user", Y.encodeStateAsUpdate(doc), doc);
+        docB.getText("code").insert(10, " + concurrent edit");
+        queueUpdate(roomB, "concurrent_user", Y.encodeStateAsUpdate(docB), docB);
         expect(getPendingPersistenceStats().queuedUpdates).toBe(1);
 
         // Wait for retry: must persist the new update AND snapshot, NOT discard them!
@@ -950,168 +954,8 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
         );
 
         const verifyDoc = new Y.Doc();
-        await loadDocument(testRoomId, verifyDoc);
-        expect(verifyDoc.getText("code").toString()).toBe(
-          "initial snapshot only text + concurrent edit"
-        );
-      } finally {
-        snapSpy.mockRestore();
-      }
-    });
-
-    it("handles stateless latency_ping and returns latency_pong with matching nonce", async () => {
-      httpServer = createServer();
-      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
-
-      await new Promise<void>((resolve) => {
-        httpServer!.listen(0, () => resolve());
-      });
-      const addr = httpServer.address();
-      if (!addr || typeof addr === "string") throw new Error("Invalid address");
-      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
-
-      const wsProvider = new HocuspocusProviderWebsocket({
-        url: wsUrl,
-        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
-      });
-      wsProviders.push(wsProvider);
-      const clientDoc = new Y.Doc();
-      const provider = new HocuspocusProvider({
-        websocketProvider: wsProvider,
-        name: roomId,
-        document: clientDoc,
-      });
-      providers.push(provider);
-      provider.attach();
-
-      await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
-
-      let receivedPong: { type: string; nonce: string; sentAt: number } | null = null;
-      provider.on("stateless", ({ payload }: { payload: string }) => {
-        try {
-          const parsed = JSON.parse(payload);
-          if (parsed.type === "latency_pong") {
-            receivedPong = parsed;
-          }
-        } catch {
-          // ignore
-        }
-      });
-
-      const testNonce = "test_nonce_12345";
-      provider.sendStateless(
-        JSON.stringify({
-          type: "latency_ping",
-          nonce: testNonce,
-          sentAt: Date.now(),
-        })
-      );
-
-      await vi.waitFor(() => {
-        expect(receivedPong).not.toBeNull();
-        expect(receivedPong?.type).toBe("latency_pong");
-        expect(receivedPong?.nonce).toBe(testNonce);
-      });
-    });
-
-    it("ignores persistenceTestingHooks.isDbConnectedOverride when NODE_ENV is production", () => {
-      const origEnv = process.env.NODE_ENV;
-      try {
-        persistenceTestingHooks.isDbConnectedOverride = () => false;
-
-        // In test environment, override is honored
-        process.env.NODE_ENV = "test";
-        expect(isDbReady()).toBe(false);
-
-        // In production environment, override is strictly ignored
-        process.env.NODE_ENV = "production";
-        expect(isDbReady()).toBe(mongoose.connection.readyState === 1);
-
-        // resetPersistenceState clears override
-        resetPersistenceState();
-        expect(persistenceTestingHooks.isDbConnectedOverride).toBeNull();
-      } finally {
-        process.env.NODE_ENV = origEnv;
-        resetPersistenceState();
-      }
-    });
-
-    it("creates snapshot-only retry queue, recovers on retry, cleans up empty queue, and preserves concurrent new work", async () => {
-      const testRoomId = "507f1f77bcf86cd799439055";
-      const doc = new Y.Doc();
-      doc.getText("code").insert(0, "initial snapshot only text");
-
-      // Load document into active documents
-      await loadDocument(testRoomId, doc);
-      expect(getActiveLoadedDocuments().has(testRoomId)).toBe(true);
-
-      // Force snapshot failure once when there are NO pending updates
-      let snapFailedOnce = false;
-      const origCreateSnapshot = docSnapshotRepo.createSnapshot.bind(docSnapshotRepo);
-      const snapSpy = vi
-        .spyOn(docSnapshotRepo, "createSnapshot")
-        .mockImplementation(async (data) => {
-          if (!snapFailedOnce) {
-            snapFailedOnce = true;
-            throw new Error("Simulated snapshot creation failure on empty queue");
-          }
-          return origCreateSnapshot(data);
-        });
-
-      try {
-        // flushRoom with forceSnapshot = true on empty queue
-        await expect(flushRoom(testRoomId, true)).rejects.toThrow(
-          "Simulated snapshot creation failure on empty queue"
-        );
-
-        expect(snapFailedOnce).toBe(true);
-
-        // Document must still be loaded awaiting final snapshot retry
-        expect(getActiveLoadedDocuments().has(testRoomId)).toBe(true);
-
-        // Wait for retry to succeed
-        await vi.waitFor(
-          () => {
-            const stats = getPendingPersistenceStats();
-            expect(stats.snapshotsSaved).toBeGreaterThanOrEqual(1);
-          },
-          { timeout: 5000, interval: 50 }
-        );
-
-        // Verify the empty retry queue was cleaned up from pendingQueues
-        await vi.waitFor(
-          () => {
-            expect(getPendingPersistenceStats().roomsWithPendingUpdates).toBe(0);
-          },
-          { timeout: 2000, interval: 25 }
-        );
-
-        // Now verify preservation of concurrent new work:
-        // Trigger another snapshot failure, but insert new update while retry is pending
-        snapFailedOnce = false;
-        await expect(flushRoom(testRoomId, true)).rejects.toThrow(
-          "Simulated snapshot creation failure on empty queue"
-        );
-
-        // Concurrent new work arrives before retry fires
-        doc.getText("code").insert(26, " + concurrent edit");
-        queueUpdate(testRoomId, "concurrent_user", Y.encodeStateAsUpdate(doc), doc);
-        expect(getPendingPersistenceStats().queuedUpdates).toBe(1);
-
-        // Wait for retry: must persist the new update AND snapshot, NOT discard them!
-        await vi.waitFor(
-          () => {
-            expect(getPendingPersistenceStats().pendingUpdates).toBe(0);
-            expect(getPendingPersistenceStats().queuedUpdates).toBe(0);
-          },
-          { timeout: 5000, interval: 50 }
-        );
-
-        const verifyDoc = new Y.Doc();
-        await loadDocument(testRoomId, verifyDoc);
-        expect(verifyDoc.getText("code").toString()).toBe(
-          "initial snapshot only text + concurrent edit"
-        );
+        await loadDocument(roomB, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe("roomB text + concurrent edit");
       } finally {
         snapSpy.mockRestore();
       }

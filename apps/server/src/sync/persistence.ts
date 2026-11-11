@@ -325,8 +325,11 @@ export const persistenceTestingHooks = {
 };
 
 export function isDbReady(): boolean {
-  if (persistenceTestingHooks.isDbConnectedOverride) {
-    return persistenceTestingHooks.isDbConnectedOverride();
+  if (process.env.NODE_ENV === "test") {
+    const override = persistenceTestingHooks.isDbConnectedOverride;
+    if (override) {
+      return override();
+    }
   }
   return mongoose.connection.readyState === 1;
 }
@@ -711,14 +714,35 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
         await takeSnapshotLocked(roomId, doc, true);
         if (queue) queue.requiresFinalSnapshot = false;
         const curQ = pendingQueues.get(roomId);
-        if (curQ) curQ.requiresFinalSnapshot = false;
+        if (curQ) {
+          curQ.requiresFinalSnapshot = false;
+          if (
+            curQ.updates.length === 0 &&
+            !curQ.retryTimeout &&
+            !syncRegistry.isRoomBackpressured(roomId)
+          ) {
+            pendingQueues.delete(roomId);
+          }
+        }
       } catch (snapErr) {
         snapshotFailures++;
-        if (queue) {
-          queue.requiresFinalSnapshot = true;
-          queue.failureCount = (queue.failureCount || 0) + 1;
-          scheduleQueueRetry(roomId, queue);
+        let curQ = queue || pendingQueues.get(roomId);
+        if (!curQ) {
+          curQ = {
+            roomId,
+            document: doc,
+            updates: [],
+            firstUnflushedAt: 0,
+            failureCount: 1,
+            totalBytes: 0,
+            requiresFinalSnapshot: true,
+          };
+          pendingQueues.set(roomId, curQ);
+        } else {
+          curQ.requiresFinalSnapshot = true;
+          curQ.failureCount = (curQ.failureCount || 0) + 1;
         }
+        scheduleQueueRetry(roomId, curQ);
         throw snapErr;
       }
     }

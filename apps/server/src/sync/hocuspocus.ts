@@ -699,6 +699,27 @@ export function createSyncServer(
         }
       }
     },
+    async onStateless(data) {
+      try {
+        const parsed = JSON.parse(data.payload);
+        if (
+          parsed &&
+          parsed.type === "latency_ping" &&
+          typeof parsed.nonce === "string"
+        ) {
+          data.connection.sendStateless(
+            JSON.stringify({
+              type: "latency_pong",
+              nonce: parsed.nonce,
+              sentAt: parsed.sentAt,
+              serverTime: Date.now(),
+            })
+          );
+        }
+      } catch {
+        // Ignore non-JSON or malformed stateless messages
+      }
+    },
     async onChange(data) {
       const connContext = (data.connection?.context ?? data.context) as
         SyncConnectionContext | undefined;

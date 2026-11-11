@@ -106,10 +106,11 @@ export const CollaborativeEditor: FC<CollaborativeEditorProps> = ({
     }
   };
 
-  // Latency debug probe (?debug=latency)
-  // Clock-independent request/echo protocol via awareness:
-  // Initiator sets ping with local timestamp stored only on initiator.
-  // Responder echoes probeId. Initiator measures RTT = now() - sentAt.
+  // Latency debug probe (?debug=latency - Section 5.2)
+  // Dual-mechanism protocol:
+  // 1. Primary: Client-to-server-to-client WebSocket RTT via Hocuspocus stateless ping/pong.
+  // 2. Peer: Dual-client awareness ping/echo.
+  // Samples every 5000ms (5s) per PRD / Section 5.2 requirement.
   const isLatencyDebug =
     typeof window !== "undefined" && window.location.search.includes("debug=latency");
 
@@ -121,15 +122,59 @@ export const CollaborativeEditor: FC<CollaborativeEditorProps> = ({
   } | null>(null);
 
   useEffect(() => {
-    if (!isLatencyDebug || !provider?.awareness || !doc) return;
+    if (!isLatencyDebug || !provider || !doc) return;
 
     const awareness = provider.awareness;
     const pendingProbes = new Map<string, number>();
     const samples: number[] = [];
     const myClientId = doc.clientID;
 
+    const recordSample = (rtt: number, nonce: string) => {
+      if (rtt < 0 || rtt > 10000) return;
+      samples.push(rtt);
+      if (samples.length > 50) samples.shift();
+      const sorted = [...samples].sort((a, b) => a - b);
+      const p50 = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
+      const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? p50;
+      const max = sorted[sorted.length - 1] ?? 0;
+      const stats = {
+        p50: Math.round(p50),
+        p95: Math.round(p95),
+        max: Math.round(max),
+        count: samples.length,
+      };
+      setLatencyStats(stats);
+      console.log(
+        `[ED-4 Latency Probe] Sample #${stats.count}: RTT=${Math.round(rtt)}ms | Median(P50)=${stats.p50}ms | P95=${stats.p95}ms | Max=${stats.max}ms | Nonce=${nonce}`
+      );
+    };
+
+    // 1. Listen for stateless WebSocket server pongs
+    const onStateless = ({ payload }: { payload: string }) => {
+      try {
+        const msg = JSON.parse(payload);
+        if (msg && msg.type === "latency_pong" && typeof msg.nonce === "string") {
+          const sentAt = pendingProbes.get(msg.nonce);
+          if (sentAt !== undefined) {
+            pendingProbes.delete(msg.nonce);
+            recordSample(performance.now() - sentAt, msg.nonce);
+          }
+        }
+      } catch {
+        // ignore malformed message
+      }
+    };
+
+    if (typeof (provider as unknown as { on?: unknown }).on === "function") {
+      (
+        provider as unknown as {
+          on: (evt: string, cb: (data: { payload: string }) => void) => void;
+        }
+      ).on("stateless", onStateless);
+    }
+
+    // 2. Sample every 5 seconds (5000ms) per Section 5.2
     const interval = setInterval(() => {
-      // Prune probes older than 5000ms
       const now = performance.now();
       for (const [id, sentAt] of pendingProbes.entries()) {
         if (now - sentAt > 5000) {
@@ -137,19 +182,49 @@ export const CollaborativeEditor: FC<CollaborativeEditorProps> = ({
         }
       }
 
-      const probeId = `${myClientId}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      pendingProbes.set(probeId, performance.now());
-      awareness.setLocalStateField("latencyPing", {
-        probeId,
-        initiatorId: myClientId,
-      });
-    }, 1000);
+      const nonce = `${myClientId}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      pendingProbes.set(nonce, performance.now());
 
+      // Send stateless WebSocket ping to server
+      try {
+        if (
+          typeof (provider as unknown as { sendStateless?: unknown }).sendStateless ===
+          "function"
+        ) {
+          (
+            provider as unknown as { sendStateless: (payload: string) => void }
+          ).sendStateless(
+            JSON.stringify({
+              type: "latency_ping",
+              nonce,
+              sentAt: performance.now(),
+            })
+          );
+        }
+      } catch {
+        // ignore on closed socket
+      }
+
+      // Also set awareness ping for peer echo fallback
+      if (awareness) {
+        try {
+          awareness.setLocalStateField("latencyPing", {
+            probeId: nonce,
+            initiatorId: myClientId,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }, 5000);
+
+    // 3. Awareness change handling for peer echo
     const onAwarenessChange = () => {
+      if (!awareness) return;
       const states = awareness.getStates();
 
       states.forEach((st, cid) => {
-        // 1. Echo back any ping from a remote client
+        // Echo back remote ping
         if (cid !== myClientId && st["latencyPing"]) {
           const ping = st["latencyPing"] as { probeId: string; initiatorId: number };
           if (ping.initiatorId !== myClientId) {
@@ -164,42 +239,40 @@ export const CollaborativeEditor: FC<CollaborativeEditorProps> = ({
           }
         }
 
-        // 2. Measure RTT when an echo for our own ping is received
+        // Measure RTT when echo for our ping is received
         if (cid !== myClientId && st["latencyEcho"]) {
           const echo = st["latencyEcho"] as { probeId: string; echoedFor: number };
           if (echo.echoedFor === myClientId && pendingProbes.has(echo.probeId)) {
             const sentAt = pendingProbes.get(echo.probeId)!;
             pendingProbes.delete(echo.probeId);
-            const rtt = Math.max(0, performance.now() - sentAt);
-            if (rtt < 10000) {
-              samples.push(rtt);
-              if (samples.length > 50) samples.shift();
-              const sorted = [...samples].sort((a, b) => a - b);
-              const p50 = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
-              const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? p50;
-              const max = sorted[sorted.length - 1] ?? 0;
-              setLatencyStats({
-                p50: Math.round(p50),
-                p95: Math.round(p95),
-                max: Math.round(max),
-                count: samples.length,
-              });
-            }
+            recordSample(performance.now() - sentAt, echo.probeId);
           }
         }
       });
     };
 
-    awareness.on("change", onAwarenessChange);
+    if (awareness) {
+      awareness.on("change", onAwarenessChange);
+    }
+
     return () => {
       clearInterval(interval);
-      awareness.off("change", onAwarenessChange);
-      try {
-        awareness.setLocalStateField("latencyPing", null);
-        awareness.setLocalStateField("latencyEcho", null);
-      } catch {
-        // ignore on unmount
+      if (typeof (provider as unknown as { off?: unknown }).off === "function") {
+        (provider as unknown as { off: (evt: string, cb: unknown) => void }).off(
+          "stateless",
+          onStateless
+        );
       }
+      if (awareness) {
+        awareness.off("change", onAwarenessChange);
+        try {
+          awareness.setLocalStateField("latencyPing", null);
+          awareness.setLocalStateField("latencyEcho", null);
+        } catch {
+          // ignore
+        }
+      }
+      pendingProbes.clear();
     };
   }, [isLatencyDebug, provider, doc]);
 

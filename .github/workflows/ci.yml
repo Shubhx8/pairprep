@@ -62,7 +62,7 @@ jobs:
 
   e2e:
     name: End-to-End Tests (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     services:
       mongodb:

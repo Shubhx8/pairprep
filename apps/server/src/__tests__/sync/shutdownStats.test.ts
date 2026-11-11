@@ -18,12 +18,16 @@ import {
   getPendingPersistenceStats,
   drainPersistenceAndSnapshot,
   loadDocument,
+  hasSnapshotInterval,
+  getActiveLoadedDocuments,
+  persistenceTestingHooks,
 } from "../../sync/persistence.js";
 import { ConnectionRateLimiter } from "../../sync/connectionRateLimiter.js";
 import { syncRegistry } from "../../sync/syncRegistry.js";
 import { documentLoadWaiters } from "../../sync/documentWaiters.js";
 import { DocUpdateModel } from "../../models/doc_updates.js";
 import { DocSnapshotModel } from "../../models/doc_snapshots.js";
+import { docSnapshotRepo } from "../../repos/docSnapshotRepo.js";
 import { roomRepo } from "../../repos/roomRepo.js";
 import { roomMemberRepo } from "../../repos/roomMemberRepo.js";
 import * as sessionPrincipal from "../../auth/sessionPrincipal.js";
@@ -427,6 +431,426 @@ describe("T07 Sync Statistics & Graceful Shutdown Drain", () => {
           "failed persistence then recovered"
         );
       } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it("recovers persistence and unloads document when database is initially unavailable at disconnect", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      const wsProvider = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsProvider);
+      const clientDoc = new Y.Doc();
+      const provider = new HocuspocusProvider({
+        websocketProvider: wsProvider,
+        name: roomId,
+        document: clientDoc,
+      });
+      providers.push(provider);
+      provider.attach();
+
+      await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
+      expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+      clientDoc.getText("code").insert(0, "content before mongo outage");
+      await vi.waitFor(
+        () => {
+          expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+
+      // Simulate database connection outage
+      persistenceTestingHooks.isDbConnectedOverride = () => false;
+
+      try {
+        // Disconnect
+        provider.destroy();
+        wsProvider.destroy();
+
+        // 1. Physical connection capacity must return to 0 immediately
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.capacity.totalActiveConnections).toBe(0);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+
+        // 2. Pending updates remain in memory and document stays loaded
+        expect(getPendingPersistenceStats().pendingUpdates).toBeGreaterThan(0);
+        expect(syncServer.getStats().connections.activeDocuments).toBe(1);
+
+        // 3. Restore database connection
+        persistenceTestingHooks.isDbConnectedOverride = null;
+
+        // 4. Retry timeout will fire, flush successfully to MongoDB, take final snapshot, and unload doc
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.persistence.pendingUpdates).toBe(0);
+            expect(stats.persistence.snapshotsSaved).toBeGreaterThanOrEqual(1);
+            expect(stats.connections.activeDocuments).toBe(0);
+          },
+          { timeout: 5000, interval: 50 }
+        );
+
+        // 5. Subsequent loadDocument verifies data integrity
+        const verifyDoc = new Y.Doc();
+        await loadDocument(roomId, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe("content before mongo outage");
+      } finally {
+        persistenceTestingHooks.isDbConnectedOverride = null;
+      }
+    });
+
+    it("recovers persistence and unloads document when database becomes unavailable during retry", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      const wsProvider = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsProvider);
+      const clientDoc = new Y.Doc();
+      const provider = new HocuspocusProvider({
+        websocketProvider: wsProvider,
+        name: roomId,
+        document: clientDoc,
+      });
+      providers.push(provider);
+      provider.attach();
+
+      await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
+      expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+      clientDoc.getText("code").insert(0, "retry during outage test");
+      await vi.waitFor(
+        () => {
+          expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+
+      // Force initial disconnect flush to fail
+      let initialFailed = false;
+      const origCreate = DocUpdateModel.create.bind(DocUpdateModel);
+      const writeSpy = vi
+        .spyOn(DocUpdateModel, "create")
+        .mockImplementation(async (docs: unknown, options?: unknown) => {
+          if (!initialFailed) {
+            initialFailed = true;
+            throw new Error("Initial flush error triggering retry");
+          }
+          return origCreate(
+            docs as Parameters<typeof origCreate>[0],
+            options as Parameters<typeof origCreate>[1]
+          );
+        });
+
+      try {
+        // Disconnect
+        provider.destroy();
+        wsProvider.destroy();
+
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.capacity.totalActiveConnections).toBe(0);
+            expect(initialFailed).toBe(true);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+
+        // Before retry succeeds, make DB unavailable
+        persistenceTestingHooks.isDbConnectedOverride = () => false;
+
+        // Verify document is still loaded and updates are pending
+        expect(syncServer.getStats().connections.activeDocuments).toBe(1);
+        expect(getPendingPersistenceStats().pendingUpdates).toBeGreaterThan(0);
+
+        // Wait a short moment to ensure a retry occurred while DB was down
+        await new Promise((r) => setTimeout(r, 600));
+
+        // Still pending and still loaded because retry failed due to DB outage
+        expect(syncServer.getStats().connections.activeDocuments).toBe(1);
+        expect(getPendingPersistenceStats().pendingUpdates).toBeGreaterThan(0);
+
+        // Restore DB connection
+        persistenceTestingHooks.isDbConnectedOverride = null;
+
+        // Retry should now succeed, save snapshot, and finalize document
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.persistence.pendingUpdates).toBe(0);
+            expect(stats.persistence.snapshotsSaved).toBeGreaterThanOrEqual(1);
+            expect(stats.connections.activeDocuments).toBe(0);
+          },
+          { timeout: 6000, interval: 50 }
+        );
+
+        const verifyDoc = new Y.Doc();
+        await loadDocument(roomId, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe("retry during outage test");
+      } finally {
+        writeSpy.mockRestore();
+        persistenceTestingHooks.isDbConnectedOverride = null;
+      }
+    });
+
+    it("recovers and unloads document when final snapshot fails after update persistence succeeds", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      const wsProvider = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(wsProvider);
+      const clientDoc = new Y.Doc();
+      const provider = new HocuspocusProvider({
+        websocketProvider: wsProvider,
+        name: roomId,
+        document: clientDoc,
+      });
+      providers.push(provider);
+      provider.attach();
+
+      await new Promise<void>((resolve) => provider.on("synced", () => resolve()));
+      expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+      clientDoc.getText("code").insert(0, "snapshot failure recovery test");
+      await vi.waitFor(
+        () => {
+          expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+
+      let snapshotFailedOnce = false;
+      const origCreateSnapshot = docSnapshotRepo.createSnapshot.bind(docSnapshotRepo);
+      const snapSpy = vi
+        .spyOn(docSnapshotRepo, "createSnapshot")
+        .mockImplementation(async (data) => {
+          if (!snapshotFailedOnce) {
+            snapshotFailedOnce = true;
+            throw new Error("Simulated transient snapshot failure");
+          }
+          return origCreateSnapshot(data);
+        });
+
+      try {
+        // Disconnect
+        provider.destroy();
+        wsProvider.destroy();
+
+        // 1. Connection drops immediately
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.capacity.totalActiveConnections).toBe(0);
+            expect(snapshotFailedOnce).toBe(true);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+
+        // 2. Updates were already persisted in MongoDB!
+        const storedUpdates = await DocUpdateModel.find({ roomId }).exec();
+        expect(storedUpdates.length).toBeGreaterThan(0);
+
+        // 3. In-flight count must NOT be double-decremented (remains 0)
+        expect(getPendingPersistenceStats().inFlightUpdates).toBe(0);
+
+        // 4. Document must still be loaded awaiting final snapshot retry
+        expect(syncServer.getStats().connections.activeDocuments).toBe(1);
+
+        // 5. Retry should successfully create final snapshot and finalize document
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.persistence.snapshotsSaved).toBeGreaterThanOrEqual(1);
+            expect(stats.connections.activeDocuments).toBe(0);
+          },
+          { timeout: 5000, interval: 50 }
+        );
+
+        const verifyDoc = new Y.Doc();
+        await loadDocument(roomId, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe(
+          "snapshot failure recovery test"
+        );
+      } finally {
+        snapSpy.mockRestore();
+      }
+    });
+
+    it("protects document lifecycle and recurring snapshots when another participant reconnects during delayed finalization", async () => {
+      httpServer = createServer();
+      syncServer = attachSyncServer(httpServer, createSyncServer({ requireAuth: false }));
+
+      await new Promise<void>((resolve) => {
+        httpServer!.listen(0, () => resolve());
+      });
+      const addr = httpServer.address();
+      if (!addr || typeof addr === "string") throw new Error("Invalid address");
+      const wsUrl = `ws://127.0.0.1:${addr.port}/sync`;
+
+      // 1. Alice connects
+      const aliceWs = new HocuspocusProviderWebsocket({
+        url: wsUrl,
+        WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+      });
+      wsProviders.push(aliceWs);
+      const aliceDoc = new Y.Doc();
+      const aliceProvider = new HocuspocusProvider({
+        websocketProvider: aliceWs,
+        name: roomId,
+        document: aliceDoc,
+      });
+      providers.push(aliceProvider);
+      aliceProvider.attach();
+
+      await new Promise<void>((resolve) => aliceProvider.on("synced", () => resolve()));
+      expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+      aliceDoc.getText("code").insert(0, "alice text");
+      await vi.waitFor(
+        () => {
+          expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+        },
+        { timeout: 2000, interval: 25 }
+      );
+
+      // Set barrier on DocUpdateModel.create during Alice's disconnect flush
+      let aliceWriteStarted = false;
+      let releaseBarrier: () => void = () => {};
+      const barrier = new Promise<void>((r) => {
+        releaseBarrier = r;
+      });
+
+      const origCreate = DocUpdateModel.create.bind(DocUpdateModel);
+      const writeSpy = vi
+        .spyOn(DocUpdateModel, "create")
+        .mockImplementation(async (docs: unknown, options?: unknown) => {
+          aliceWriteStarted = true;
+          await barrier;
+          return origCreate(
+            docs as Parameters<typeof origCreate>[0],
+            options as Parameters<typeof origCreate>[1]
+          );
+        });
+
+      let bobWs: HocuspocusProviderWebsocket | null = null;
+      let bobProvider: HocuspocusProvider | null = null;
+
+      try {
+        // Alice disconnects
+        aliceProvider.destroy();
+        aliceWs.destroy();
+
+        // Alice's physical connection released immediately
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.capacity.totalActiveConnections).toBe(0);
+            expect(aliceWriteStarted).toBe(true);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+
+        // 2. Bob connects while Alice's flush is held at database write
+        bobWs = new HocuspocusProviderWebsocket({
+          url: wsUrl,
+          WebSocketPolyfill: BrowserLikeWebSocket as unknown as typeof WebSocket,
+        });
+        wsProviders.push(bobWs);
+        const bobDoc = new Y.Doc();
+        bobProvider = new HocuspocusProvider({
+          websocketProvider: bobWs,
+          name: roomId,
+          document: bobDoc,
+        });
+        providers.push(bobProvider);
+        bobProvider.attach();
+
+        await new Promise<void>((resolve) => bobProvider!.on("synced", () => resolve()));
+
+        // Bob sees Alice's text
+        expect(bobDoc.getText("code").toString()).toBe("alice text");
+        expect(syncServer.getStats().capacity.totalActiveConnections).toBe(1);
+
+        // 3. Release barrier to let Alice's flush complete
+        releaseBarrier();
+
+        // Wait a short moment for Alice's disconnect handler to finish
+        await new Promise((r) => setTimeout(r, 100));
+
+        // 4. Bob's active document and recurring snapshot interval MUST remain intact!
+        expect(syncServer.getStats().connections.activeDocuments).toBe(1);
+        expect(getActiveLoadedDocuments().has(roomId)).toBe(true);
+        expect(hasSnapshotInterval(roomId)).toBe(true);
+
+        // 5. Bob makes an edit
+        bobDoc.getText("code").insert(10, " + bob edit");
+        await vi.waitFor(
+          () => {
+            expect(getPendingPersistenceStats().queuedUpdates).toBeGreaterThan(0);
+          },
+          { timeout: 2000, interval: 25 }
+        );
+
+        // 6. Bob disconnects cleanly
+        bobProvider.destroy();
+        bobWs.destroy();
+
+        // Document should now finalize cleanly and unload
+        await vi.waitFor(
+          () => {
+            const stats = syncServer!.getStats();
+            expect(stats.connections.activeConnections).toBe(0);
+            expect(stats.connections.activeDocuments).toBe(0);
+            expect(stats.persistence.pendingUpdates).toBe(0);
+          },
+          { timeout: 4000, interval: 50 }
+        );
+
+        // 7. Verify combined document reconstructed
+        const verifyDoc = new Y.Doc();
+        await loadDocument(roomId, verifyDoc);
+        expect(verifyDoc.getText("code").toString()).toBe("alice text + bob edit");
+      } finally {
+        releaseBarrier();
         writeSpy.mockRestore();
       }
     });

@@ -7,6 +7,7 @@
 > **PRD Requirements Addressed**: `ED-1`, `ED-2`, `ED-3`, `ED-4`, `ED-5`, `ED-6`, `ED-7`, `ROOM-4`, `CONC-1`, `CONC-2`, `AD-1`, `PER-1`
 >
 > **Primary Components Built**:
+>
 > - Dependency & Worker Architecture: Monaco Editor (`monaco-editor@0.52.2`), Yjs (`yjs@13.6.33`), `y-monaco@0.1.6`, Hocuspocus Provider (`@hocuspocus/provider@4.7.1`), Vite Web Worker bundler (`editor.worker.js`)
 > - Client Synchronization Hook: `useRoomSync.ts` (`apps/web/src/hooks/useRoomSync.ts`)
 > - Monaco Editor Integration: `CodeEditor.tsx` (`apps/web/src/components/CodeEditor.tsx`)
@@ -25,19 +26,19 @@ Task T08 implements the client-side collaborative code editor for PairPrep. It c
 
 ### Requirement Mappings (PRD Compliance Matrix)
 
-| Requirement ID | PRD Specification | Implementation Detail in T08 | Status & Verification Qualification |
-| :--- | :--- | :--- | :--- |
-| **`ED-1`** | **Monaco editor with syntax highlighting**: Python, C++ and JavaScript highlight correctly; language selectable per room. | `CodeEditor.tsx` built with `monaco-editor@0.52.2`, web worker lazy setup via `setupMonacoWorkers()`, custom `pairprep-dark` theme, ResizeObserver layout, and syntax highlighting for Python, C++, and JavaScript. Supported languages strictly validated with `isValidEditorLanguage` and synchronized across participants via `doc.getMap("roomConfig")`. Route-level lazy loading ensures Monaco is never loaded on `/dashboard`. | **DONE** — Verified in `CodeEditor.test.tsx`, `CollaborativeEditor.test.tsx`, and Playwright E2E `editor-collaboration.spec.ts`. |
-| **`ED-2`** | **Conflict-free live editing**: Two users typing in the same line concurrently end with identical text on both screens, with neither user's characters lost, in 100 out of 100 automated trials. | `useMonacoBinding.ts` binds Monaco model to canonical `doc.getText("code")` via `y-monaco`. Tested sequential bidirectional propagation and deterministic same-position concurrent convergence in `monacoSync.test.ts` (100/100 trials with randomized distinct payloads, exact length check, zero character loss) and Playwright real-browser tests. | **DONE** — Character-level CRDT convergence mathematically guaranteed by Yjs; semantic conflict resolution remains human responsibility. |
-| **`ED-3`** | **Live cursors and selections**: Each remote user's cursor and selection show in a distinct color with a name label, updating in under 200 ms at the 95th percentile. | `useMonacoBinding` propagates local selection and cursor to Yjs awareness with user name and safe color from `PARTICIPANT_PALETTE`. Injects scoped dynamic CSS with character sanitization (`escapeCssContent`) for remote cursors, selections, and name badges. Verified in integration tests and Playwright real-browser tests. | **PARTIAL** — Fully implemented and verified in browsers and automated suites (localhost dual-client RTT P95 < 5ms). Full qualification: WAN P95 < 200ms across wide-area broadband requires production multi-region deployment telemetry and cannot be measured locally. |
-| **`ED-4`** | **Sync latency**: Remote edit visible in under 200 ms at the 95th percentile on a normal broadband connection (measured, see section 19). | Opt-in clock-independent request/echo latency telemetry (`?debug=latency`) measures localhost dual-client RTT via Yjs awareness. Automated 100-trial concurrent editing benchmarks demonstrate local loopback P95 < 10ms. Connection state tracked via `SyncStatusIndicator.tsx`. | **PARTIAL** — Local loopback dual-client RTT measured and verified. Full qualification: Real broadband WAN latency is dependent on public internet transit and production hosting infrastructure, not measurable in local test suites. |
-| **`ED-5`** | **Offline tolerance**: Disconnected edits stay in the local editor and merge on reconnect without data loss; a banner shows connection state. | Local edits continue in-memory while offline and merge deterministically upon reconnection via CRDT state vectors. Verified in Playwright E2E with browser context offline mode (`context.setOffline(true)`). Responsive status indicator reflects `Offline` and `Reconnecting` states. | **DONE** — Operates in-memory for the duration of the active browser tab session; does not persist across page reloads without IndexedDB persistent storage. |
-| **`ED-6`** | **Read-only for viewers**: Viewers cannot modify the document; attempts are rejected by the server, not just the UI. | `RoomPage.tsx` and `CollaborativeEditor.tsx` enforce read-only UI for viewers and ended rooms (`editor.updateOptions({ readOnly: true })`), backed by server-side authorization in Hocuspocus `beforeHandleMessage` dropping update frames on `connection.readOnly` sockets. Verified in Playwright E2E by executing direct programmatic Yjs mutations over WebSocket and confirming server rejection and owner immunity. | **DONE** — Verified at both UI and server protocol layers with genuine forced-edit WebSocket tests. |
-| **`ROOM-4`** | **Participant limit**: A room holds at most 6 participants; the 7th sees a _Room full_ message. | Strict capacity limits enforced at HTTP room admission, WebSocket connection authentication (`room_capacity_exceeded` / `room_member_limit_exceeded`), and web UI displaying friendly "Room is Full" empty state. Room ID validated with strict 24-character hexadecimal ObjectId regex. | **DONE** — Verified in server capacity unit tests and frontend error mapping tests. |
-| **`ROOM-5`** | **Participant list**: Everyone sees who is present, with name, color and role, updating live. | `RoomPage.tsx` sidebar participant list polls room state dynamically (every 4s), displaying participant names, distinct safe colors from `PARTICIPANT_PALETTE`, authoritative REST roles (`owner`, `editor`, `viewer`), `(You)` badge for local user, and dynamic membership/role changes without page reload. | **DONE** — Verified in Playwright real-browser multi-context test `editor-collaboration.spec.ts`. |
-| **`CONC-1`** | Multi-client collaborative editing. | Verified across independent browser contexts and independent `HocuspocusProvider` instances with real session cookies. | **DONE** |
-| **`AD-1`** | Same-origin WebSocket proxying. | Vite dev server configured with `/sync` proxy (`ws: true`) forwarding native browser WebSocket connections to backend on port 3001. | **DONE** |
-| **`PER-1`** | Document persistence & crash recovery within 2s. | Backend persistence via Task T07 queues updates with 250ms debounce and 2,000ms scheduling deadline. Verified recovery of persisted state from MongoDB after SIGKILL. Client hook operates in-memory and does not provide offline persistence across page reloads. | **PARTIAL** — Verified state reconstruction after SIGKILL for tested edits confirmed in MongoDB; universal 2s durable commit SLA not established for arbitrary crash timings. |
+| Requirement ID | PRD Specification                                                                                                                                                                                | Implementation Detail in T08                                                                                                                                                                                                                                                                                                                                                                                                          | Status & Verification Qualification                                                                                                                                                                                                                                       |
+| :------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`ED-1`**     | **Monaco editor with syntax highlighting**: Python, C++ and JavaScript highlight correctly; language selectable per room.                                                                        | `CodeEditor.tsx` built with `monaco-editor@0.52.2`, web worker lazy setup via `setupMonacoWorkers()`, custom `pairprep-dark` theme, ResizeObserver layout, and syntax highlighting for Python, C++, and JavaScript. Supported languages strictly validated with `isValidEditorLanguage` and synchronized across participants via `doc.getMap("roomConfig")`. Route-level lazy loading ensures Monaco is never loaded on `/dashboard`. | **DONE** — Verified in `CodeEditor.test.tsx`, `CollaborativeEditor.test.tsx`, and Playwright E2E `editor-collaboration.spec.ts`.                                                                                                                                          |
+| **`ED-2`**     | **Conflict-free live editing**: Two users typing in the same line concurrently end with identical text on both screens, with neither user's characters lost, in 100 out of 100 automated trials. | `useMonacoBinding.ts` binds Monaco model to canonical `doc.getText("code")` via `y-monaco`. Tested with two real Hocuspocus providers connected over WebSockets to sync server in `ed2Convergence.test.ts` across 100 trials of concurrent same-line edits with deterministic pseudo-random interleaving; all 100 trials converged with 0 divergence and 0 missing characters.                                                        | **PARTIAL** — Verified across 100/100 automated trials with real dual providers (100 converged, 0 divergent, 0 missing characters). Marked PARTIAL pending multi-region broadband live-site validation.                                                                   |
+| **`ED-3`**     | **Live cursors and selections**: Each remote user's cursor and selection show in a distinct color with a name label, updating in under 200 ms at the 95th percentile.                            | `useMonacoBinding` propagates local selection and cursor to Yjs awareness with user name and safe color from `PARTICIPANT_PALETTE`. Injects scoped dynamic CSS with character sanitization (`escapeCssContent`) for remote cursors, selections, and name badges. Dedicated Playwright test `test/e2e/ed3-ed4-latency.spec.ts` measures 200 samples across dual browser contexts with a single test-process clock.                     | **PARTIAL** — Fully implemented and verified in browsers and automated suites (localhost dual-client RTT P95 < 5ms). Full qualification: WAN P95 < 200ms across wide-area broadband requires production multi-region deployment telemetry and cannot be measured locally. |
+| **`ED-4`**     | **Sync latency**: Remote edit visible in under 200 ms at the 95th percentile on a normal broadband connection (measured, see section 19).                                                        | Minimal, strictly validated stateless `latency_ping`/`pong` handler retained (256-byte cap, exactly three keys, nonce <= 128, token bucket rate limiting, unicast pong, read-only connections allowed). Dedicated Playwright test (`test/e2e/ed3-ed4-latency.spec.ts`) records 200 remote update samples using a single test-process clock.                                                                                           | **PARTIAL** — Local loopback dual-client RTT measured and verified. Full qualification: Real broadband WAN latency is dependent on public internet transit and production hosting infrastructure; live broadband validation pending staging/production deployment.        |
+| **`ED-5`**     | **Offline tolerance**: Disconnected edits stay in the local editor and merge on reconnect without data loss; a banner shows connection state.                                                    | Local edits continue in-memory while offline and merge deterministically upon reconnection via CRDT state vectors. Verified in Playwright E2E with browser context offline mode (`context.setOffline(true)`). Responsive status indicator reflects `Offline` and `Reconnecting` states.                                                                                                                                               | **DONE** — Operates in-memory for the duration of the active browser tab session; does not persist across page reloads without IndexedDB persistent storage.                                                                                                              |
+| **`ED-6`**     | **Read-only for viewers**: Viewers cannot modify the document; attempts are rejected by the server, not just the UI.                                                                             | `RoomPage.tsx` and `CollaborativeEditor.tsx` enforce read-only UI for viewers and ended rooms (`editor.updateOptions({ readOnly: true })`), backed by server-side authorization in Hocuspocus `beforeHandleMessage` dropping update frames on `connection.readOnly` sockets. Verified in Playwright E2E by executing direct programmatic Yjs mutations over WebSocket and confirming server rejection and owner immunity.             | **DONE** — Verified at both UI and server protocol layers with genuine forced-edit WebSocket tests.                                                                                                                                                                       |
+| **`ROOM-4`**   | **Participant limit**: A room holds at most 6 participants; the 7th sees a _Room full_ message.                                                                                                  | Strict capacity limits enforced at HTTP room admission, WebSocket connection authentication (`room_capacity_exceeded` / `room_member_limit_exceeded`), and web UI displaying friendly "Room is Full" empty state. Room ID validated with strict 24-character hexadecimal ObjectId regex.                                                                                                                                              | **DONE** — Verified in server capacity unit tests and frontend error mapping tests.                                                                                                                                                                                       |
+| **`ROOM-5`**   | **Participant list**: Everyone sees who is present, with name, color and role, updating live.                                                                                                    | `RoomPage.tsx` sidebar participant list polls room state dynamically (every 4s), displaying participant names, distinct safe colors from `PARTICIPANT_PALETTE`, authoritative REST roles (`owner`, `editor`, `viewer`), `(You)` badge for local user, and dynamic membership/role changes without page reload.                                                                                                                        | **DONE** — Verified in Playwright real-browser multi-context test `editor-collaboration.spec.ts`.                                                                                                                                                                         |
+| **`CONC-1`**   | Multi-client collaborative editing.                                                                                                                                                              | Verified across independent browser contexts and independent `HocuspocusProvider` instances with real session cookies.                                                                                                                                                                                                                                                                                                                | **DONE**                                                                                                                                                                                                                                                                  |
+| **`AD-1`**     | Same-origin WebSocket proxying.                                                                                                                                                                  | Vite dev server configured with `/sync` proxy (`ws: true`) forwarding native browser WebSocket connections to backend on port 3001.                                                                                                                                                                                                                                                                                                   | **DONE**                                                                                                                                                                                                                                                                  |
+| **`PER-1`**    | Document persistence & crash recovery within 2s.                                                                                                                                                 | Backend persistence via Task T07 queues updates with 250ms debounce and 2,000ms scheduling deadline. Verified recovery of persisted state from MongoDB after SIGKILL. Client hook operates in-memory and does not provide offline persistence across page reloads.                                                                                                                                                                    | **PARTIAL** — Verified state reconstruction after SIGKILL for tested edits confirmed in MongoDB; universal 2s durable commit SLA not established for arbitrary crash timings.                                                                                             |
 
 ---
 
@@ -99,6 +100,7 @@ During Phase 2.1, a deep architectural audit of `@hocuspocus/provider@4.7.1` est
 In React 18 and 19 development mode, effects are mounted, unmounted, and remounted synchronously. A naive WebSocket hook causes socket leaks, duplicate connections, and state updates on unmounted components.
 
 `useRoomSync` solves this with:
+
 - **`isCurrent` Generation Guard**: A local boolean flag set to `false` during effect cleanup. All asynchronous callbacks (`onStatus`, `onSynced`, `onAuthenticationFailed`, `onClose`, window `online`/`offline`) verify `if (!isCurrent) return;` before calling state dispatchers.
 - **Idempotent Resource Teardown**: Effect cleanup systematically executes:
   ```typescript
@@ -115,11 +117,13 @@ In React 18 and 19 development mode, effects are mounted, unmounted, and remount
 ### 2.3 E2E Test Isolation Architecture (`PAIRPREP_E2E`)
 
 When running Playwright end-to-end tests, the test runner evaluates spec files in the main process before workers launch:
+
 - Importing server modules (`apps/server/src/middleware/session.ts`) into test files loaded `apps/server/src/config.ts`, which executed `loadEnvFileSafely()` and polluted the test runner with root `.env` values (such as a 64-character development session secret).
 - When the E2E test harness signed session cookies with the dev secret, but Playwright's `webServer` ran the server with the test secret, cookie verification failed with `401 Unauthorized`.
 - Furthermore, setting `NODE_ENV="test"` in `webServer.env` caused `apps/server/src/index.ts` to skip `bootstrapServer()` and exit prematurely.
 
 **Solution implemented in Phase 2.1**:
+
 1. Added guard `if (process.env["NODE_ENV"] !== "test" && !process.env["PAIRPREP_E2E"])` to `apps/server/src/config.ts`.
 2. Playwright exports `process.env["PAIRPREP_E2E"] = "1"`, ensuring `.env` is never parsed during E2E runs.
 3. Aligned `E2E_MONGODB_URI` and `E2E_SESSION_SECRET` uniformly across both the Playwright runner and the `webServer[0].env` child process.
@@ -130,7 +134,9 @@ When running Playwright end-to-end tests, the test runner evaluates spec files i
 ## 3. Key Implementation Files
 
 ### 1. `apps/web/src/hooks/useRoomSync.ts`
+
 Manages the complete Hocuspocus WebSocket connection and Yjs document lifecycle.
+
 - Validates 24-character hexadecimal ObjectId.
 - Dynamically derives WebSocket URL with protocol matching (`ws:` for `http:`, `wss:` for `https:`).
 - Supports optional `WebSocketPolyfill` for Node/test environments with explicit `.attach()`.
@@ -138,18 +144,24 @@ Manages the complete Hocuspocus WebSocket connection and Yjs document lifecycle.
 - Handles browser offline/online transitions without dropping document state.
 
 ### 2. `apps/web/src/lib/syncUrl.ts`
+
 Resolves the WebSocket URL for the document synchronization service.
+
 - Translates `http://` / `https://` browser origins to `ws://` / `wss://`.
 - Defaults to same-origin path `/sync`.
 - Respects `overrideUrl` option or `VITE_SYNC_URL` environment variable if supplied.
 
 ### 3. `apps/web/src/lib/roomId.ts`
+
 Validates room identifiers.
+
 - Enforces strict regex `/^[0-9a-fA-F]{24}$/`.
 - Rejects URL slugs, nulls, undefined, and non-hexadecimal strings prior to provider construction.
 
 ### 4. `test/e2e/sync-proxy.spec.ts`
+
 Verifies the full browser-to-server WebSocket pipeline, unidirectional remote propagation, and fixture exception safety:
+
 - Launches real Chromium browser context with session cookie injection.
 - Navigates to `/dashboard` through Vite dev server (`http://localhost:5174`).
 - Establishes native browser `HocuspocusProvider` to `ws://${window.location.host}/sync` through Vite's development proxy (`ws: true`).
@@ -157,20 +169,24 @@ Verifies the full browser-to-server WebSocket pipeline, unidirectional remote pr
 - Inserts collaborative Y.Text edit in the browser document and asserts unidirectional propagation to an independently authenticated observer's separate Y.Doc across the real server.
 - Verifies rejection of unauthenticated browser connections.
 - Provides exception-safe `seedRoom()` fixture lifecycle: rolls back partially inserted records and closes database connections on setup failure.
-- *Scope distinction*: This test verifies browser proxy upgrade, ambient cookie auth, and unidirectional browser-to-observer propagation. It does not claim bidirectional synchronization within the browser test itself.
+- _Scope distinction_: This test verifies browser proxy upgrade, ambient cookie auth, and unidirectional browser-to-observer propagation. It does not claim bidirectional synchronization within the browser test itself.
 
 ### 5. `test/e2e/support/__tests__/syncSmoke.test.ts`
+
 Real-stack integration tests against a live MongoDB and Hocuspocus server demonstrating bidirectional CRDT convergence and concurrency:
+
 - Connects authenticated client via signed session cookie and updates `code` Y.Text.
 - Tests two distinct authenticated clients (Alice and Bob) concurrently in the same room, proving bidirectional CRDT synchronization: Client A inserts prefix, Client B observes prefix and appends suffix, Client A observes suffix and reaches exact Y.Text content equality and encoded Yjs state-vector equality.
 - Tests deterministic simultaneous same-position concurrent Y.Text insertion convergence where both clients insert distinct characters at the exact same index without waiting for intermediate network roundtrips, proving both insertions survive, final text converges identically, and Yjs encoded state vectors match exactly (`Y.encodeStateVector(docA)` == `Y.encodeStateVector(docB)`).
 - Validates exception-safe concurrent resource cleanup: previously created providers and documents are cleanly destroyed even if setup fails midway through initialization.
 - Verifies rejection of unauthenticated connections (`authenticationFailed`).
 - Verifies rejection of room URL slugs instead of ObjectIds.
-- *Scope distinction*: This test proves CRDT convergence at the character/string and state-vector level for concurrent edits. It does not claim semantic code logic conflict resolution or persistence across client reloads.
+- _Scope distinction_: This test proves CRDT convergence at the character/string and state-vector level for concurrent edits. It does not claim semantic code logic conflict resolution or persistence across client reloads.
 
 ### 6. `test/e2e/support/__tests__/monacoSync.test.ts`
+
 Real-stack Monaco Editor and Yjs synchronization tests against a live MongoDB and Hocuspocus server:
+
 - Instantiates two independent Monaco Editor instances (`editorA` and `editorB`) and two independent `Y.Doc` / `HocuspocusProvider` connections in JSDOM.
 - Binds Monaco models to canonical `doc.getText("code")` using `MonacoBinding` from `y-monaco`.
 - Verifies real bidirectional editing: edits typed into Monaco Editor A propagate over real WebSockets to update Monaco Editor B, and vice versa.
@@ -182,7 +198,9 @@ Real-stack Monaco Editor and Yjs synchronization tests against a live MongoDB an
 - Cleans up all Monaco models, editors, bindings, providers, documents, sessions, and database fixtures idempotently. Skips gracefully outside CI if MongoDB is unreachable.
 
 ### 7. `test/e2e/editor-collaboration.spec.ts`
+
 Full real-stack Chromium browser collaboration test suite executed with Playwright:
+
 - Launches two real browser contexts (Host and Guest) against Vite (`http://localhost:5173`) and Express/Hocuspocus backend (`http://localhost:3001`).
 - Verifies Monaco Editor mounts inside the React component tree with custom `pairprep-dark` theme and `JetBrains Mono` font.
 - Tests dynamic language switching (`python` -> `javascript`) updating file indicators and syntax highlighting.
@@ -206,31 +224,32 @@ Full real-stack Chromium browser collaboration test suite executed with Playwrig
 PairPrep establishes `"code"` as the canonical Yjs text field for editor content across all web and server components. Legacy documents created in earlier iterations with `"monaco"` are safely and idempotently migrated into `"code"`.
 
 ### Canonical Migration Rules
+
 1. **Precedence**: `doc.getText("code")` is canonical. If `"code"` exists in `document.share` (even when intentionally empty `""`), it takes precedence over `"monaco"`. JavaScript truthiness (`"" || ...`) is strictly avoided to prevent resurrecting deleted code.
 2. **Transparent Migration**: When `document.share.has("monaco")` is true but `document.share.has("code")` is false, `migrateLegacyDocFields()` transacts the legacy text into `"code"`.
 3. **Snapshot Extraction**: `saveSnapshot()` uses `extractCanonicalDocText()`, writing the canonical document text directly into MongoDB `doc_snapshots.text`.
 
 ### Comprehensive `getText()` Inventory
 
-| File Path | Line(s) | Target Field | Context / Purpose |
-| :--- | :--- | :--- | :--- |
-| `apps/server/src/sync/persistence.ts` | 941 | `"code"` | `extractCanonicalDocText`: returns canonical text if present in `document.share` |
-| `apps/server/src/sync/persistence.ts` | 944 | `"monaco"` | `extractCanonicalDocText`: fallback to legacy field if `"code"` is absent |
-| `apps/server/src/sync/persistence.ts` | 961 | `"monaco"` | `migrateLegacyDocFields`: reads legacy text |
-| `apps/server/src/sync/persistence.ts` | 962 | `"code"` | `migrateLegacyDocFields`: populates canonical field |
-| `apps/web/src/hooks/useMonacoBinding.ts` | 146 | `"monaco"` | Client-side migration: reads legacy text if `"code"` is absent before binding |
-| `apps/web/src/hooks/useMonacoBinding.ts` | 149 | `"code"` | Client-side migration: writes legacy text into canonical field |
-| `apps/web/src/hooks/useMonacoBinding.ts` | 154 | `fieldName` (`"code"`) | Primary Monaco editor binding to Y.Text |
-| `apps/web/src/hooks/__tests__/useMonacoBinding.test.ts` | 50, 160, 161, 207, 208, 260 | `"code"` | Unit tests for Monaco binding and selection mapping |
-| `apps/web/src/hooks/__tests__/useMonacoBinding.test.ts` | 240 | `"monaco"` | Unit test verifying legacy migration before mounting |
-| `apps/server/src/__tests__/sync/legacyMigration.test.ts` | 20, 28, 62, 68, 74, 83, 87, 155 | `"code"` | Migration unit tests verifying canonical precedence |
-| `apps/server/src/__tests__/sync/legacyMigration.test.ts` | 27, 39, 55, 67, 79, 138 | `"monaco"` | Migration unit tests verifying legacy handling |
-| `apps/server/src/__tests__/sync/attribution.test.ts` | 376, 435, 436 | `"code"` | Server sync attribution tests |
-| `apps/server/src/__tests__/sync/livePermissions.test.ts` | 243, 263, 264, 295, 296, 410, 608, 626, 834 | `"code"` | Server role-enforced editing tests |
-| `test/e2e/support/__tests__/monacoSync.test.ts` | 223, 274, 413, 414 | `"code"` | Real two-client Monaco sync test |
-| `test/e2e/support/__tests__/syncSmoke.test.ts` | 251, 252, 453, 457, 482, 483, 487, 512, 513, 742, 746, 770, 771, 777, 778, 783, 814, 846, 847 | `"code"` | Real-stack Hocuspocus sync smoke tests |
-| `test/e2e/sync-proxy.spec.ts` | 312, 334, 358 | `"code"` | Native browser WebSocket proxy E2E spec |
-| `test/e2e/editor-collaboration.spec.ts` | 439, 444 | `"code"` | Forced-edit server rejection E2E test |
+| File Path                                                | Line(s)                                                                                       | Target Field           | Context / Purpose                                                                |
+| :------------------------------------------------------- | :-------------------------------------------------------------------------------------------- | :--------------------- | :------------------------------------------------------------------------------- |
+| `apps/server/src/sync/persistence.ts`                    | 941                                                                                           | `"code"`               | `extractCanonicalDocText`: returns canonical text if present in `document.share` |
+| `apps/server/src/sync/persistence.ts`                    | 944                                                                                           | `"monaco"`             | `extractCanonicalDocText`: fallback to legacy field if `"code"` is absent        |
+| `apps/server/src/sync/persistence.ts`                    | 961                                                                                           | `"monaco"`             | `migrateLegacyDocFields`: reads legacy text                                      |
+| `apps/server/src/sync/persistence.ts`                    | 962                                                                                           | `"code"`               | `migrateLegacyDocFields`: populates canonical field                              |
+| `apps/web/src/hooks/useMonacoBinding.ts`                 | 146                                                                                           | `"monaco"`             | Client-side migration: reads legacy text if `"code"` is absent before binding    |
+| `apps/web/src/hooks/useMonacoBinding.ts`                 | 149                                                                                           | `"code"`               | Client-side migration: writes legacy text into canonical field                   |
+| `apps/web/src/hooks/useMonacoBinding.ts`                 | 154                                                                                           | `fieldName` (`"code"`) | Primary Monaco editor binding to Y.Text                                          |
+| `apps/web/src/hooks/__tests__/useMonacoBinding.test.ts`  | 50, 160, 161, 207, 208, 260                                                                   | `"code"`               | Unit tests for Monaco binding and selection mapping                              |
+| `apps/web/src/hooks/__tests__/useMonacoBinding.test.ts`  | 240                                                                                           | `"monaco"`             | Unit test verifying legacy migration before mounting                             |
+| `apps/server/src/__tests__/sync/legacyMigration.test.ts` | 20, 28, 62, 68, 74, 83, 87, 155                                                               | `"code"`               | Migration unit tests verifying canonical precedence                              |
+| `apps/server/src/__tests__/sync/legacyMigration.test.ts` | 27, 39, 55, 67, 79, 138                                                                       | `"monaco"`             | Migration unit tests verifying legacy handling                                   |
+| `apps/server/src/__tests__/sync/attribution.test.ts`     | 376, 435, 436                                                                                 | `"code"`               | Server sync attribution tests                                                    |
+| `apps/server/src/__tests__/sync/livePermissions.test.ts` | 243, 263, 264, 295, 296, 410, 608, 626, 834                                                   | `"code"`               | Server role-enforced editing tests                                               |
+| `test/e2e/support/__tests__/monacoSync.test.ts`          | 223, 274, 413, 414                                                                            | `"code"`               | Real two-client Monaco sync test                                                 |
+| `test/e2e/support/__tests__/syncSmoke.test.ts`           | 251, 252, 453, 457, 482, 483, 487, 512, 513, 742, 746, 770, 771, 777, 778, 783, 814, 846, 847 | `"code"`               | Real-stack Hocuspocus sync smoke tests                                           |
+| `test/e2e/sync-proxy.spec.ts`                            | 312, 334, 358                                                                                 | `"code"`               | Native browser WebSocket proxy E2E spec                                          |
+| `test/e2e/editor-collaboration.spec.ts`                  | 439, 444                                                                                      | `"code"`               | Forced-edit server rejection E2E test                                            |
 
 ---
 
@@ -278,6 +297,7 @@ npm run build
 ## 5. Non-Blocking Technical Debt
 
 The following non-blocking technical debt items from Phase 2.2.5 and Phase 3 are tracked for future refactoring:
+
 1. **Test-Fixture Rollback Boundary**: In `test/e2e/support/sessionHarness.ts`, partial fixture failure during multi-document seeding cleans up known entities via `try...finally`, but catastrophic process exits during failure-injection tests rely on subsequent test-suite teardown.
 2. **Monaco Dynamic Import Code Splitting**: Implemented in Phase 3 via `React.lazy(() => import("../components/CollaborativeEditor.js"))` with Suspense fallback in `RoomPage.tsx`. The collaborative editor, Monaco bindings, and editor workers are split into on-demand chunks (`dist/assets/CollaborativeEditor-*.js`: ~12.9 kB raw / ~5.2 kB gzip, `dist/assets/RoomPage-*.js`: ~47.5 kB raw / ~12.9 kB gzip, and separate web worker chunks ~154 kB raw / ~46 kB gzip) loaded exclusively upon room navigation. Route-level code-splitting guarantees that `/dashboard` and non-editor pages never download or evaluate Monaco. Future optimization (T15) may optionally dynamic-import extended language servers if full LSP support is added.
 
@@ -336,4 +356,3 @@ The following non-blocking technical debt items from Phase 2.2.5 and Phase 3 are
 #### Q: _"What happens when a user's internet drops while editing?"_
 
 > _"The browser fires a window `offline` event, which `useRoomSync` listens for, immediately updating `status` to `'offline'`. Because Yjs stores the document in local memory, the user can continue typing locally while the application session remains open in the browser tab (note: in-memory state is transient and not retained across page refreshes or tab closures unless paired with persistent client storage like IndexedDB). When network connectivity restores (`online` event), Hocuspocus attempts automatic reconnection, transitions `status` back to `'reconnecting'` and then `'connected'`, exchanges state vectors with the server, and merges all offline edits deterministically using Yjs CRDT convergence (resolving character-level concurrent operations deterministically, though semantic code logic conflicts may still require human inspection)."_
-

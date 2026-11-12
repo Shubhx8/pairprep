@@ -700,22 +700,53 @@ export function createSyncServer(
       }
     },
     async onStateless(data) {
+      if (typeof data.payload !== "string") {
+        return;
+      }
+      const byteLength = Buffer.byteLength(data.payload, "utf8");
+      if (byteLength === 0 || byteLength > 256) {
+        return;
+      }
+
+      const socketId = data.connection?.socketId;
+      if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
+        return;
+      }
+      const rateCheck = rateLimiter.consume(socketId, byteLength);
+      if (!rateCheck.allowed) {
+        return;
+      }
+
       try {
         const parsed = JSON.parse(data.payload);
-        if (
-          parsed &&
-          parsed.type === "latency_ping" &&
-          typeof parsed.nonce === "string"
-        ) {
-          data.connection.sendStateless(
-            JSON.stringify({
-              type: "latency_pong",
-              nonce: parsed.nonce,
-              sentAt: parsed.sentAt,
-              serverTime: Date.now(),
-            })
-          );
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return;
         }
+
+        const keys = Object.keys(parsed);
+        if (keys.length !== 3) {
+          return;
+        }
+
+        if (
+          parsed.type !== "latency_ping" ||
+          typeof parsed.nonce !== "string" ||
+          parsed.nonce.length === 0 ||
+          parsed.nonce.length > 128 ||
+          typeof parsed.sentAt !== "number" ||
+          !Number.isFinite(parsed.sentAt)
+        ) {
+          return;
+        }
+
+        data.connection.sendStateless(
+          JSON.stringify({
+            type: "latency_pong",
+            nonce: parsed.nonce,
+            sentAt: parsed.sentAt,
+            serverTime: Date.now(),
+          })
+        );
       } catch {
         // Ignore non-JSON or malformed stateless messages
       }

@@ -18,7 +18,7 @@
 > - **Utility & Validation Layer**: `syncUrl.ts`, `roomId.ts` (`apps/web/src/lib/`)
 > - **Hocuspocus Server Protocol & Security Layer**: `hocuspocus.ts` (`apps/server/src/sync/hocuspocus.ts`) with `beforeHandleMessage` read-only mutation dropping and minimal `onStateless` ping/pong relay
 > - **ED-2 Provider-Level 100-Trial Convergence Test Suite**: `apps/server/src/__tests__/sync/ed2Convergence.test.ts` (100 trials, Mulberry32 PRNG, dual Hocuspocus providers over WebSockets, deterministic same-line concurrent typing, zero divergence, zero character loss)
-> - **Stateless Relay Protocol & Security Test Suite**: `apps/server/src/__tests__/sync/statelessRelay.test.ts` (15 unit tests verifying schema, payload cap, nonce validation, rate limiting, and unicast delivery)
+> - **Stateless Relay Protocol & Security Test Suite**: `apps/server/src/__tests__/sync/statelessRelay.test.ts` (20 unit tests verifying schema, payload cap, nonce validation, rate limiting, and unicast delivery)
 > - **Real-Stack E2E & Monaco Sync Test Suite**: Real Two-Client Collaborative Monaco Test (`test/e2e/support/__tests__/monacoSync.test.ts`), Real Browser Monaco Collaboration Spec (`test/e2e/editor-collaboration.spec.ts`), Native Browser-to-Vite WebSocket Proxy Spec (`test/e2e/sync-proxy.spec.ts`), Real Two-Client Collaborative Smoke Test (`test/e2e/support/__tests__/syncSmoke.test.ts`), Session Cookie Injection Harness (`test/e2e/support/sessionHarness.ts`)
 > - **Dedicated Single-Clock ED-3 & ED-4 Latency Benchmark**: `test/e2e/ed3-ed4-latency.spec.ts` (Playwright benchmark sampling 200 text updates and 200 remote cursor updates across dual browser contexts with a single monotonic clock)
 > - **Remote Target Test Runner Configuration**: `playwright.config.ts` (`isRemoteTarget` conditional `webServer: undefined` suppressing local server processes and local port binding when `PAIRPREP_BASE_URL` is set)
@@ -36,7 +36,7 @@ Task T08 implements the client-side collaborative code editor for PairPrep. It c
 | **`ED-1`**     | **Monaco editor with syntax highlighting**: Python, C++ and JavaScript highlight correctly; language selectable per room. | `CodeEditor.tsx` built with `monaco-editor@0.52.2`, web worker lazy setup via `setupMonacoWorkers()`, custom `pairprep-dark` theme, ResizeObserver layout, and syntax highlighting for Python, C++, and JavaScript. Supported languages strictly validated with `isValidEditorLanguage` and synchronized across participants via `doc.getMap("roomConfig")`. Route-level lazy loading ensures Monaco is never loaded on `/dashboard`. | **DONE** — Verified in `CodeEditor.test.tsx`, `CollaborativeEditor.test.tsx`, and Playwright E2E `editor-collaboration.spec.ts`. |
 | **`ED-2`**     | **Conflict-free live editing**: Two users typing in the same line concurrently end with identical text on both screens, with neither user's characters lost, in 100 out of 100 automated trials. | `useMonacoBinding.ts` binds Monaco model to canonical `doc.getText("code")` via `y-monaco`. Tested with two real Hocuspocus providers connected over WebSockets to sync server in `ed2Convergence.test.ts` across 100 trials of concurrent same-line edits with deterministic pseudo-random interleaving. | **DONE** — Evidence: 100 automated trials, 100 converged, 0 divergent, 0 missing insertions in `ed2Convergence.test.ts`. |
 | **`ED-3`**     | **Live cursors and selections**: Each remote user's cursor and selection show in a distinct color with a name label, updating in under 200 ms at the 95th percentile. | `useMonacoBinding` propagates local selection and cursor to Yjs awareness with user name and safe color from `PARTICIPANT_PALETTE`. Injects scoped dynamic CSS with character sanitization (`escapeCssContent`) for remote cursors, selections, and name badges. Dedicated Playwright test `test/e2e/ed3-ed4-latency.spec.ts` measures 200 samples across dual browser contexts with a single test-process clock. | **PARTIAL** — Verified in unit/integration tests and local dual-browser Playwright suites. Kept PARTIAL until actual remote cursor latency measurements exist on the live target deployment. |
-| **`ED-4`**     | **Sync latency**: Remote edit visible in under 200 ms at the 95th percentile on a normal broadband connection (measured, see section 19). | Minimal, strictly validated stateless `latency_ping`/`pong` handler retained (256-byte cap, exactly three keys, nonce <= 128, token bucket rate limiting, unicast pong, read-only connections allowed). Dedicated Playwright test (`test/e2e/ed3-ed4-latency.spec.ts`) records 200 remote update samples using a single test-process clock. | **PARTIAL** — Minimal stateless ping/pong probe retained and verified in unit/integration suites. Kept PARTIAL until actual text propagation latency measurements exist on the live target deployment. |
+| **`ED-4`**     | **Sync latency**: Remote edit visible in under 200 ms at the 95th percentile on a normal broadband connection (measured, see section 19). | Minimal, strictly validated stateless `latency_ping`/`pong` handler retained (256-byte cap, exactly three keys, nonce <= 128, per-connection dual token-bucket rate limiting via `socketId`, unicast pong, read-only connections allowed). Dedicated Playwright test (`test/e2e/ed3-ed4-latency.spec.ts`) records 200 remote update samples using a single test-process monotonic clock, tracking P50 and P95 metrics against the authoritative PRD `< 200 ms at P95` threshold (with sub-100 ms median tracked as an internal benchmark target). | **PARTIAL** — Minimal stateless ping/pong probe retained and verified in unit/integration suites. Kept PARTIAL until actual text propagation latency measurements exist on the live target deployment. |
 | **`ED-5`**     | **Offline tolerance**: Disconnected edits stay in the local editor and merge on reconnect without data loss; a banner shows connection state. | Local edits continue in-memory while offline and merge deterministically upon reconnection via CRDT state vectors. Verified in Playwright E2E with browser context offline mode (`context.setOffline(true)`). Responsive status indicator reflects `Offline` and `Reconnecting` states. | **DONE** — Operates in-memory for the duration of the active browser tab session; does not persist across page reloads without IndexedDB persistent storage. |
 | **`ED-6`**     | **Read-only for viewers**: Viewers cannot modify the document; attempts are rejected by the server, not just the UI. | `RoomPage.tsx` and `CollaborativeEditor.tsx` enforce read-only UI for viewers and ended rooms (`editor.updateOptions({ readOnly: true })`), backed by server-side authorization in Hocuspocus `beforeHandleMessage` dropping update frames on `connection.readOnly` sockets. Verified in Playwright E2E by executing direct programmatic Yjs mutations over WebSocket and confirming server rejection and owner immunity. | **DONE** — Verified at both UI and server protocol layers with genuine forced-edit WebSocket tests. |
 | **`ROOM-4`**   | **Participant limit**: A room holds at most 6 participants; the 7th sees a _Room full_ message. | Strict capacity limits enforced at HTTP room admission, WebSocket connection authentication (`room_capacity_exceeded` / `room_member_limit_exceeded`), and web UI displaying friendly "Room is Full" empty state. Room ID validated with strict 24-character hexadecimal ObjectId regex. | **DONE** — Verified in server capacity unit tests and frontend error mapping tests. |
@@ -80,7 +80,7 @@ Task T08 implements the client-side collaborative code editor for PairPrep. It c
 |   Hocuspocus Sync Server (T07 Backend)                                                      |
 |   ├── Validates Cookie: pairprep.sid / pairprep.guest                                        |
 |   ├── Verifies Room ID & User Membership in MongoDB                                         |
-|   ├── Enforces Connection Rate Limiting & Room Capacity                                     |
+|   ├── Enforces Per-Connection Rate Limiting (ConnectionRateLimiter by socketId) & Capacity   |
 |   ├── Intercepts Unauthorized Mutations via beforeHandleMessage (readOnly drop)             |
 |   ├── Processes Stateless Latency Diagnostics via onStateless (256B cap, token-bucket)       |
 |   └── CRDT Synchronization & Decoupled Asynchronous Persistence (MongoDB)                   |
@@ -146,13 +146,13 @@ To provide true measurement integrity:
 3. **ED-3 Remote Cursor Propagation Measurement**: Host moves cursor or types. Context B's Monaco editor DOM is observed until Host's remote cursor widget decoration (`.monaco-remote-cursor`) reflects the updated column position, recording the monotonic delta.
 4. **Remote Target Mode (`isRemoteTarget`)**: In `playwright.config.ts`, when `PAIRPREP_BASE_URL` is set, `webServer` is set to `undefined`. This suppresses local Express and Vite processes, allowing tests to run directly against a deployed live environment without binding or probing local ports 3001 or 5174.
 
-### 2.5 Stateless Diagnostic Relay & Token-Bucket Rate Limiting (ED-4)
+### 2.5 Stateless Diagnostic Relay & Per-Connection Rate Limiting (ED-4)
 
 To support low-overhead transport latency diagnostics without polluting the CRDT document history:
-1. **Protocol Design**: Clients emit stateless message `{"type":"latency_ping","nonce":"...","sentAt":123456789}`. The server responds with `{"type":"latency_pong","nonce":"...","sentAt":123456789}`.
+1. **Protocol Design**: Clients emit stateless message `{"type":"latency_ping","nonce":"...","sentAt":123456789}`. The server responds with `{"type":"latency_pong","nonce":"...","sentAt":123456789,"serverTime":...}`.
 2. **Strict Schema & Payload Cap**: Payload is capped at 256 bytes UTF-8 length. Must be valid JSON containing exactly three keys (`type`, `nonce`, `sentAt`). Nonce must be a non-empty string `<= 128` characters. `sentAt` must be a finite number.
 3. **Unicast Delivery**: Sent exclusively to the originating socket via `connection.sendStateless(...)`. Broadcast is explicitly forbidden to prevent reflection amplification.
-4. **Token-Bucket Rate Limiting**: The server enforces a token-bucket rate limiter (120 requests/minute per connection/IP) on incoming stateless messages to prevent WebSocket flooding.
+4. **Per-Connection Dual Token-Bucket Rate Limiting**: The server enforces `rateLimiter.consume(socketId, rateCost)` inside `onStateless`, where `socketId` is the connection identifier. It consumes message tokens and byte tokens (`rateCost = Math.max(1, byteLength)`), defending against socket-level message floods. (Separately, per-IP rate limiting is applied during the initial HTTP WebSocket upgrade handshake).
 5. **Read-Only Permission**: Read-only connections (`connection.readOnly === true`) are permitted to execute latency pings since diagnostics do not mutate document state.
 
 ### 2.6 Scoped Dynamic CSS & Sanitization Architecture (ED-3)
@@ -201,14 +201,14 @@ Dedicated provider-level 100-trial automated concurrent editing convergence suit
 ### 5. `apps/server/src/sync/hocuspocus.ts` (`onStateless` & `beforeHandleMessage`)
 Core backend protocol and security hooks:
 - `beforeHandleMessage`: Checks `connection.readOnly`. Drops binary Yjs update frames from viewers, returning `false` to block mutations while allowing sync reads.
-- `onStateless`: Handles minimal latency ping/pong. Capped at 256 bytes UTF-8, exactly 3 keys, nonce `<= 128`, token bucket rate-limited, delivers unicast response via `connection.sendStateless`.
+- `onStateless`: Handles minimal latency ping/pong. Capped at 256 bytes UTF-8, exactly 3 keys, nonce `<= 128`, rate-limited per connection via `ConnectionRateLimiter.consume(socketId, ...)`, delivers unicast response via `connection.sendStateless`.
 
 ### 6. `apps/server/src/__tests__/sync/statelessRelay.test.ts`
-Comprehensive 15-test security suite for the stateless relay:
-- Validates `latency_ping` -> `latency_pong` response.
+Comprehensive 20-test security suite for the stateless relay:
+- Validates `latency_ping` -> `latency_pong` response and echo of `serverTime`.
 - Rejects oversized payloads (> 256 bytes).
 - Rejects malformed JSON, missing keys, extra keys, non-finite timestamps, and oversized nonces.
-- Enforces token-bucket rate limiting against flood attacks.
+- Enforces per-connection token-bucket rate limiting against flood attacks.
 - Validates unicast delivery without cross-client leakage.
 - Confirms read-only connections are permitted to ping.
 
@@ -295,7 +295,7 @@ All test suites and static analysis gates pass cleanly:
 # 1. ED-2 Provider-Level 100-Trial Automated Convergence Suite (100/100 passed)
 npx vitest run apps/server/src/__tests__/sync/ed2Convergence.test.ts
 
-# 2. Hocuspocus Stateless Latency Ping/Pong Handler Security Tests (15/15 passed)
+# 2. Hocuspocus Stateless Latency Ping/Pong Handler Security Tests (20/20 passed)
 npx vitest run apps/server/src/__tests__/sync/statelessRelay.test.ts
 
 # 3. Unit & Hook Lifecycle Tests (18/18 passed)
@@ -344,33 +344,41 @@ To master this architecture for placement interviews, you must understand the ma
 
 ### 7.1 CRDT vs. Operational Transformation (OT)
 
-When two users edit the same text concurrently, systems use one of two primary paradigms:
+When multiple users edit shared text concurrently, collaborative systems generally adopt either Operational Transformation (OT) or Conflict-Free Replicated Data Types (CRDTs):
 
-| Architectural Property | Operational Transformation (OT) (e.g. Google Docs) | Conflict-Free Replicated Data Types (CRDT) (e.g. Yjs / PairPrep) |
+| Architectural Property | Operational Transformation (OT) (e.g. Classical Client-Server / Google Docs) | Conflict-Free Replicated Data Types (CRDT) (e.g. Yjs / PairPrep) |
 | :--- | :--- | :--- |
-| **Central Authority** | **Mandatory**: Requires a central server to establish total operation order and transform concurrent operations against previous operations. | **Decentralized**: Operations are mathematically commutative and associative; can merge in any order without a central sequencer. |
-| **Offline Resilience** | Complex: Rebasing and transforming large batches of offline operations against remote server logs requires extensive server coordination. | Natural: Offline edits are stored as local CRDT operations; upon reconnection, exchanging state vectors immediately resolves differences. |
-| **P2P / Mesh Capable** | No: Requires central coordinator. | Yes: Any two peers exchanging update binaries will reach identical state. |
-| **Computational Model** | Transform matrix `T(op1, op2) -> (op1', op2')`. Exponential complexity as concurrent operations increase (`O(n^2)`). | Immutable item tree with unique identifiers `(client, clock)`. YATA algorithm achieves linear insertion time. |
+| **Coordination Model** | **Typically centralized**: Classical systems commonly employ an authoritative server (or shared serialization log) to assign a global sequence order and compute transformation functions between concurrent operations. | **Decentralized**: Operations commute mathematically over distributed state; updates can be applied in arbitrary order while guaranteeing identical convergence. |
+| **Algorithmic Structure** | Pairwise transformation functions `T(op1, op2) -> (op1', op2')`. While simple for basic insertions, handling concurrent deletes, formatting, and offline branches introduces complex combinatorial state spaces. | Distributed data structure (e.g. Sequence CRDT). Each character item is immutable with explicit causal dependencies and unique identifier. |
+| **Offline Synchronization** | Requires buffering and re-transforming client operations against all intervening server operations that occurred while disconnected. | Local edits accumulate as new CRDT items; upon reconnection, exchanging compact state vectors identifies missing operations and merges them directly. |
+| **Architectural Trade-off** | Minimal memory overhead (stores plain text buffer), but high algorithmic transformation complexity. | Slightly higher memory footprint per character (struct metadata), but mathematically provable Strong Eventual Consistency (SEC) without central serialization. |
 
 ### 7.2 The YATA Algorithm & Conflict Resolution
 
 Yjs implements the **YATA** (Yet Another Transformation Approach) algorithm for sequence CRDTs:
-- Every character inserted is represented as an **Item** struct with an ID consisting of `(client, clock)` where `client` is a unique 53-bit integer and `clock` is a monotonically increasing counter.
-- Each item stores references to its `left` and `right` neighbors at the time of creation.
-- **Concurrent Insertion Conflict**: If Client A and Client B concurrently insert characters between the same two existing characters:
-  - Both items have identical `origin` (left neighbor) and `rightOrigin` (right neighbor).
-  - To decide whether A's character or B's character appears first, YATA uses a deterministic rule: it compares the client identifiers (`clientA > clientB`) or origin traversal paths.
-  - Because all clients apply this identical deterministic rule, **every client arrives at the exact same character sequence**, guaranteeing Strong Eventual Consistency (SEC).
+- Every character or slice inserted is represented as an **Item** struct with an ID consisting of `(client, clock)` where `client` is a unique 53-bit integer and `clock` is a monotonically increasing counter.
+- Each item explicitly retains references to its `origin` (intended left neighbor) and `rightOrigin` (intended right neighbor) captured at creation time.
+- **Causal Graph Ordering**: When concurrent insertions happen between the same two existing characters, YATA does not simply rely on arbitrary sorting. It traverses the causal origin graph between `origin` and `rightOrigin`, ensuring that dependencies (e.g., character insertions that depend on previous concurrent insertions) maintain their causal relative order.
+- **Deterministic Tie-Breaking**: When two concurrent operations share identical origins and graph traversal cannot causally separate them, YATA uses a deterministic tie-breaker: comparing the unique client identifiers (`clientA > clientB`).
+- Because every peer applies this identical deterministic traversal and tie-breaking rule, **all clients arrive at the exact same character sequence**, guaranteeing Strong Eventual Consistency (SEC).
 
-### 7.3 Differential Synchronization & State Vectors
+### 7.3 State-vector-based Incremental Synchronization
 
-Rather than sending full document copies over WebSockets, Yjs uses a compact differential synchronization protocol:
-1. **State Vector**: A compact map of `{ [clientId]: maxClock }`. It summarizes every operation a specific client has seen.
-2. **Sync Step 1 (Offer)**: Client sends its local State Vector to the server.
-3. **Sync Step 2 (Diff)**: Server compares the client's State Vector against its local document and encodes only the missing item structs into a compact binary update (`Y.encodeStateAsUpdate(serverDoc, clientStateVector)`).
-4. **Application**: The client applies the update via `Y.applyUpdate(clientDoc, update)`.
-5. **Real-time Delta Streaming**: When a user types a character, only the incremental update struct is broadcasted to peers.
+Rather than transmitting full document copies or operation logs over WebSockets, Yjs uses a compact state-vector-based synchronization protocol:
+
+1. **State Vector Representation (`Y.encodeStateVector(doc)`)**:
+   - A State Vector represents a compact map of `{ [clientId]: maxContiguousClock }`.
+   - It summarizes every operation a specific client or server has observed to date across all participating client streams.
+2. **Incremental Update Generation (`Y.encodeStateAsUpdate(doc, targetStateVector)`)**:
+   - Given a remote peer's State Vector, this function compares the local document's item stores against the remote vector.
+   - It packages only the missing item structs (and tombstone markers) that the remote peer has not yet received into a compact, binary-encoded update payload.
+3. **The Two-Step Handshake**:
+   - **Step 1**: Client connects and transmits `Y.encodeStateVector(clientDoc)`.
+   - **Step 2**: Server evaluates the vector against `serverDoc`, computes `Y.encodeStateAsUpdate(serverDoc, clientVector)`, and transmits the diff to the client.
+   - Concurrently, the client computes and sends its own update diff to the server if the client possessed offline local edits.
+   - Both peers invoke `Y.applyUpdate(...)` to achieve identical state.
+4. **Real-time Keystroke Streaming**:
+   - Subsequent local keystrokes generate small incremental update binary chunks that are broadcasted immediately over the WebSocket to peers.
 
 ### 7.4 Bi-Directional Monaco-to-Yjs Synchronization (`y-monaco`)
 
@@ -392,9 +400,9 @@ Monaco Editor operates on a traditional string buffer with line/column coordinat
 In PairPrep, real-time data is split into two distinct tiers:
 1. **Persistent Document State (`Y.Doc`)**: Code text, room configurations, and durable content. Stored as CRDT structs, saved to MongoDB, and preserved across connections.
 2. **Ephemeral Awareness State (`provider.awareness`)**: Cursor positions, active selections, user display names, and presence colors.
-   - Awareness is **not** a CRDT; it is an in-memory key-value dictionary with client heartbeats.
-   - If a client disconnects or crashes, its awareness entry automatically expires after 30 seconds (or is immediately purged on clean WebSocket close).
-   - Awareness updates bypass database persistence completely, keeping the sync engine lean and fast.
+   - Awareness is **not** a CRDT; it is an in-memory key-value dictionary with client heartbeats managed over WebSockets.
+   - **Heartbeats & Stale Expiry**: Connected clients periodically rebroadcast awareness state to maintain presence. If no update or heartbeat is received from a client for approximately 30 seconds (`awareness.outdatedTime`), remote peers automatically mark that client's presence state as stale and remove it.
+   - **No Database Persistence**: Awareness is never written to MongoDB and does not use a database TTL index. On clean WebSocket disconnection, awareness state is immediately pruned in memory.
 
 ---
 
@@ -441,20 +449,23 @@ In PairPrep, real-time data is split into two distinct tiers:
 
 #### Q1: Why did you choose Yjs (a CRDT) instead of Operational Transformation (OT) like Google Docs?
 > **Answer**:  
-> "OT works well when you have a centralized, highly scalable server cluster (like Google's) that acts as the single source of truth to order and transform every operation. However, OT transformation functions are notoriously difficult to implement correctly for rich text and suffer from `O(n^2)` combinatorial explosion when handling complex concurrent offline edits.  
-> Yjs uses a Sequence CRDT based on the YATA algorithm. CRDT operations are mathematically commutative and associative, meaning edits can be merged in any order without an authoritative central sequencer. This made Yjs ideal for PairPrep because it provides out-of-the-box offline support, guaranteed convergence across network disconnects, and significantly lower server CPU overhead, fitting neatly within our 1 GB RAM deployment budget."
+> "Classical OT architectures (like Google Docs) generally rely on an authoritative central sequencer to establish a total order over all operations and evaluate transformation functions `T(op1, op2) -> (op1', op2')`. While this works effectively with a dedicated server fleet, writing and maintaining correct transformation functions for complex concurrent and offline branching edits is notoriously difficult.  
+> Yjs uses a Sequence CRDT based on the YATA algorithm. CRDT operations are commutative and associative over the distributed item graph, meaning peers can merge edits in any order and arrive at identical document states without central transformation logic. This provided PairPrep with natural offline tolerance, deterministic convergence across network reconnections, and low server CPU load suitable for our single-process 1 GB RAM deployment."
 
 #### Q2: How does Yjs resolve concurrent typing when two users type at the exact same index simultaneously?
 > **Answer**:  
-> "When two users insert text at the same index concurrently, both insertions reference the same `origin` (left neighbor) and `rightOrigin` (right neighbor). Yjs uses the YATA conflict resolution algorithm: it breaks ties deterministically by comparing the unique client identifiers (`clientA` vs. `clientB`) and origin traversal trees. Because this tie-breaking logic is purely mathematical and deterministic, every client independently executes the exact same resolution and arrives at the identical character order without needing server arbitration. We proved this in `ed2Convergence.test.ts`, where 100 out of 100 concurrent same-line edit trials converged with zero character loss."
+> "When two users insert text at the same position concurrently, both insertions share the same `origin` (left neighbor) and `rightOrigin` (right neighbor). Yjs uses the YATA algorithm:
+> 1. It navigates the causal origin graph between the left and right neighbors to preserve any causal dependencies between operations.
+> 2. If two concurrent items have identical origins and no causal ordering exists between them, YATA uses a deterministic tie-breaker: comparing the unique client identifiers (`clientA > clientB`).  
+> Because this traversal and tie-breaking rule is deterministic and executed identically across all peers, every client independently arrives at the exact same character sequence without server coordination. We verified this in `ed2Convergence.test.ts`, where 100 out of 100 concurrent same-line edit trials converged with zero character loss."
 
-#### Q3: How does differential synchronization work in Yjs to save bandwidth?
+#### Q3: How does state-vector-based synchronization work in Yjs to save bandwidth?
 > **Answer**:  
-> "Yjs uses State Vectors. A State Vector is a compact dictionary of `{ [clientId]: clock }`, representing the latest operation seen from each client. When a client connects to Hocuspocus:
-> 1. The client sends its State Vector to the server.
-> 2. The server compares the client's vector against its own document and computes a binary diff containing only the missing item structs (`Y.encodeStateAsUpdate(serverDoc, clientVector)`).
-> 3. The client applies that diff.
-> During active editing, only the incremental binary struct for the new keystroke is broadcasted over the WebSocket, minimizing bandwidth to tens of bytes per edit."
+> "Yjs uses State Vectors via `Y.encodeStateVector` and `Y.encodeStateAsUpdate`. A State Vector is a compact map of `{ [clientId]: maxClock }`, summarizing the latest contiguous operation observed from each participating client. When a client connects:
+> 1. The client sends `Y.encodeStateVector(clientDoc)` to the server.
+> 2. The server compares this vector against its local document and uses `Y.encodeStateAsUpdate(serverDoc, clientVector)` to package only the missing item structs into a compact binary diff.
+> 3. The client applies the update via `Y.applyUpdate(clientDoc, diff)`.
+> Concurrently, the client computes and transmits any local offline changes back to the server. During active typing, only the small incremental binary update for the newly inserted keystroke is broadcasted over WebSockets."
 
 ---
 
@@ -493,9 +504,9 @@ In PairPrep, real-time data is split into two distinct tiers:
 > "Our minimal `onStateless` handler implements multi-layered defense:
 > 1. **Payload Size Cap**: Strict UTF-8 byte length limit of 256 bytes.
 > 2. **Strict Schema**: Payload must be valid JSON containing exactly three keys (`type`, `nonce`, `sentAt`). Any extra keys or invalid types cause immediate rejection.
-> 3. **Token-Bucket Rate Limiter**: Enforces a limit of 120 requests per minute per connection and IP.
-> 4. **Unicast Responses**: Pongs are sent exclusively back to the requesting socket (`sendStateless`), preventing reflection attacks.
-> We verified all 15 boundary conditions in `statelessRelay.test.ts`."
+> 3. **Per-Connection Dual Token-Bucket Rate Limiter**: Enforces `rateLimiter.consume(socketId, rateCost)` keyed strictly by the connection's `socketId`, consuming message tokens and byte volume (`Math.max(1, byteLength)`). (IP-based limits are enforced during HTTP upgrade).
+> 4. **Unicast Responses**: Pongs are sent exclusively back to the requesting socket (`connection.sendStateless`), preventing reflection attacks.
+> We verified all 20 boundary conditions in `statelessRelay.test.ts`."
 
 ---
 
@@ -506,12 +517,14 @@ In PairPrep, real-time data is split into two distinct tiers:
 > "Because of clock skew. Real-world consumer machines and virtual machines synchronize their clocks via NTP, which commonly exhibits skews ranging from 5 ms to 200 ms. If Client A has a clock running 30 ms ahead of Client B, subtracting A's timestamp from B's timestamp could produce artificial latency spikes or even mathematically impossible negative latencies.  
 > To solve this, we measure latency using a single monotonic clock (`performance.now()`) inside an automated Playwright harness controlling both browser contexts on the same machine, timing the interval between keystroke dispatch in Context A and DOM/model observation in Context B."
 
-#### Q11: How do you prevent memory leaks when users rapidly enter, leave, and switch rooms?
+#### Q11: How does awareness state lifecycle work, and does it persist to MongoDB?
 > **Answer**:  
-> "We implement a strict resource lifecycle pattern:
-> 1. In React, `useRoomSync` uses an `isCurrent` generation flag to invalidate any pending asynchronous callbacks when a component unmounts.
-> 2. Effect cleanup explicitly destroys both the `HocuspocusProvider`, the `HocuspocusProviderWebsocket`, and the `Y.Doc`.
-> 3. On the server, Hocuspocus unloads the in-memory `Y.Doc` when the last participant disconnects (`onDisconnect`), writing final debounced updates to MongoDB and freeing server RAM."
+> "Awareness state is completely ephemeral and does not persist to MongoDB:
+> 1. Presence and cursor positions are stored in an in-memory key-value dictionary managed by Yjs awareness over active WebSockets.
+> 2. Clients periodically rebroadcast awareness state (heartbeats) while active.
+> 3. If a client terminates or stops sending updates, remote peers automatically mark that client's presence entry as stale and remove it after approximately 30 seconds (`awareness.outdatedTime`).
+> 4. Clean WebSocket disconnection immediately cleans up the client's awareness entry in memory.
+> Because awareness data is transient, keeping it out of MongoDB preserves database I/O and keeps our single Node process lightweight."
 
 #### Q12: Why does Hocuspocus debounce persistence to MongoDB instead of saving after every keystroke?
 > **Answer**:  

@@ -2,10 +2,14 @@ import { defineConfig, devices } from "@playwright/test";
 
 process.env["PAIRPREP_E2E"] = "1";
 
+const isRemoteTarget = Boolean(process.env["PAIRPREP_BASE_URL"]);
+
 const E2E_PORT = process.env["PORT"] || "3001";
 const E2E_WEB_PORT = "5174";
 const E2E_BASE_URL =
-  process.env["PLAYWRIGHT_BASE_URL"] || `http://localhost:${E2E_WEB_PORT}`;
+  process.env["PAIRPREP_BASE_URL"] ||
+  process.env["PLAYWRIGHT_BASE_URL"] ||
+  `http://localhost:${E2E_WEB_PORT}`;
 const E2E_MONGODB_URI =
   process.env["E2E_MONGODB_URI"] ||
   process.env["MONGODB_URI"] ||
@@ -30,33 +34,35 @@ export default defineConfig({
     baseURL: E2E_BASE_URL,
     trace: "on-first-retry",
   },
-  webServer: [
-    {
-      command: "npx tsx apps/server/src/index.ts",
-      url: `http://localhost:${E2E_PORT}/healthz`,
-      reuseExistingServer: !process.env["CI"],
-      timeout: 120000,
-      env: {
-        PORT: E2E_PORT,
-        CLIENT_ORIGIN: `http://localhost:${E2E_WEB_PORT}`,
-        MONGODB_URI: E2E_MONGODB_URI,
-        SESSION_SECRET: E2E_SESSION_SECRET,
-        PAIRPREP_E2E: "1",
-        RATE_LIMIT_MAX: process.env["RATE_LIMIT_MAX"] || "1000",
-      },
-    },
-    {
-      command: "npm run dev:web",
-      url: `http://localhost:${E2E_WEB_PORT}`,
-      reuseExistingServer: !process.env["CI"],
-      timeout: 120000,
-      env: {
-        VITE_PORT: E2E_WEB_PORT,
-        VITE_API_PROXY_TARGET: `http://localhost:${E2E_PORT}`,
-        VITE_PAIRPREP_E2E: "1",
-      },
-    },
-  ],
+  webServer: isRemoteTarget
+    ? undefined
+    : [
+        {
+          command: "npx tsx apps/server/src/index.ts",
+          url: `http://localhost:${E2E_PORT}/healthz`,
+          reuseExistingServer: !process.env["CI"],
+          timeout: 120000,
+          env: {
+            PORT: E2E_PORT,
+            CLIENT_ORIGIN: `http://localhost:${E2E_WEB_PORT}`,
+            MONGODB_URI: E2E_MONGODB_URI,
+            SESSION_SECRET: E2E_SESSION_SECRET,
+            PAIRPREP_E2E: "1",
+            RATE_LIMIT_MAX: process.env["RATE_LIMIT_MAX"] || "1000",
+          },
+        },
+        {
+          command: "npm run dev:web",
+          url: `http://localhost:${E2E_WEB_PORT}`,
+          reuseExistingServer: !process.env["CI"],
+          timeout: 120000,
+          env: {
+            VITE_PORT: E2E_WEB_PORT,
+            VITE_API_PROXY_TARGET: `http://localhost:${E2E_PORT}`,
+            VITE_PAIRPREP_E2E: "1",
+          },
+        },
+      ],
   projects: [
     {
       name: "chromium",

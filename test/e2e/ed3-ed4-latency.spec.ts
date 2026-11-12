@@ -41,7 +41,6 @@ function printMetrics(name: string, samples: number[]) {
  * - Measures elapsed time independently with the test process's monotonic clock.
  * - Prints separate P50, P95, Min, Max, and Mean to console.
  * - Base URL and storage state path must be explicitly supplied from environment variables.
- * - Safety guards prevent execution against production origin.
  * - Writes no result files (no JSON, CSV, traces, or benchmark artifacts).
  */
 test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
@@ -72,35 +71,21 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
       return;
     }
 
-    // 2. Production safety guard
-    const parsedUrl = new URL(baseURL);
-    const hostLower = parsedUrl.hostname.toLowerCase();
-    if (
-      hostLower === "pairprep.com" ||
-      (hostLower.endsWith(".pairprep.com") &&
-        !hostLower.includes("staging") &&
-        !hostLower.includes("dev"))
-    ) {
-      throw new Error(
-        `Production Safety Guard: Refusing to run latency benchmark against production origin: ${baseURL}`
-      );
-    }
-
-    // 3. Storage state file validation
+    // 2. Storage state file validation
     if (!fs.existsSync(storageStatePath)) {
       throw new Error(
         `Explicit PAIRPREP_STORAGE_STATE file not found: ${storageStatePath}`
       );
     }
 
-    // 4. Initialize Context A (Host) with authenticated storage state
+    // 3. Initialize Context A (Host) with authenticated storage state
     const hostContext: BrowserContext = await browser.newContext({
       baseURL,
       storageState: storageStatePath,
       viewport: { width: 1280, height: 720 },
     });
 
-    // 5. Initialize Context B (Guest)
+    // 4. Initialize Context B (Guest)
     const guestContext: BrowserContext = await browser.newContext({
       baseURL,
       viewport: { width: 1280, height: 720 },

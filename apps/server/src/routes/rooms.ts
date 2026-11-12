@@ -201,10 +201,27 @@ roomsRouter.get(
 
       const allMembers = await roomMemberRepo.listMembers(room.id);
 
+      const activeConns = syncRegistry.getActiveConnectionsForRoom(room.id);
+      const activeMemberIds = new Set<string>();
+      for (const conn of activeConns) {
+        if (conn.memberId) {
+          activeMemberIds.add(conn.memberId);
+        }
+      }
+
+      const onlineMemberCount = activeMemberIds.size;
+
       res.json({
         room: toRoomDto(room),
-        currentMember: toRoomMemberDto(member),
-        members: allMembers.map(toRoomMemberDto),
+        currentMember: toRoomMemberDto(member, {
+          isOnline: activeMemberIds.has(member.memberId),
+        }),
+        members: allMembers.map((m) =>
+          toRoomMemberDto(m, {
+            isOnline: activeMemberIds.has(m.memberId),
+          })
+        ),
+        onlineMemberCount,
       });
     } catch (err) {
       handleRouteError(err, req, res, next);

@@ -384,6 +384,7 @@ export const RoomMemberDetailDtoSchema = z
     isGuest: z.boolean(),
     joinedAt: z.string(),
     lastSeenAt: z.string().optional(),
+    isOnline: z.boolean().optional(),
   })
   .strict();
 
@@ -427,6 +428,7 @@ export const RoomResponseSchema = z.object({
   room: RoomDtoSchema,
   currentMember: RoomMemberDetailDtoSchema.optional(),
   members: z.array(RoomMemberDetailDtoSchema).max(6).optional(),
+  onlineMemberCount: z.number().int().min(0).max(6).optional(),
 });
 
 export type RoomResponse = z.infer<typeof RoomResponseSchema>;
@@ -555,15 +557,18 @@ export function toPublicRoomDto(room: {
   });
 }
 
-export function toRoomMemberDto(member: {
-  _id?: unknown;
-  id?: string;
-  displayName: string;
-  role: "owner" | "interviewer" | "candidate" | "editor" | "viewer";
-  isGuest: boolean;
-  joinedAt: string | Date;
-  lastSeenAt?: string | Date;
-}): RoomMemberDetailDto {
+export function toRoomMemberDto(
+  member: {
+    _id?: unknown;
+    id?: string;
+    displayName: string;
+    role: "owner" | "interviewer" | "candidate" | "editor" | "viewer";
+    isGuest: boolean;
+    joinedAt: string | Date;
+    lastSeenAt?: string | Date;
+  },
+  options?: { isOnline?: boolean }
+): RoomMemberDetailDto {
   const memberDocId = member._id ? String(member._id) : String(member.id ?? "");
   const dto: Record<string, unknown> = {
     id: memberDocId,
@@ -581,6 +586,10 @@ export function toRoomMemberDto(member: {
       typeof member.lastSeenAt === "string"
         ? member.lastSeenAt
         : member.lastSeenAt.toISOString();
+  }
+
+  if (options && typeof options.isOnline === "boolean") {
+    dto["isOnline"] = options.isOnline;
   }
 
   return RoomMemberDetailDtoSchema.parse(dto);

@@ -352,4 +352,50 @@ describe("RoomPage", () => {
     );
     expect(screen.queryByText("Room Closed")).not.toBeInTheDocument();
   });
+
+  it("only marks the member with matching currentMember.id as (You), even if another member shares the exact same displayName", async () => {
+    mockUseAuth("authenticated", {
+      id: "usr_alice",
+      provider: "github",
+      displayName: "Alice Dev",
+      role: "user",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      email: "alice@example.com",
+    });
+
+    const member1: RoomMemberDetailDto = {
+      id: "mbr_owner",
+      displayName: "Alice Dev",
+      role: "owner",
+      isGuest: false,
+      joinedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const member2: RoomMemberDetailDto = {
+      id: "mbr_guest",
+      displayName: "Alice Dev", // Duplicate name
+      role: "editor",
+      isGuest: true,
+      joinedAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    vi.spyOn(apiClient, "get").mockResolvedValue({
+      room: mockRoom,
+      currentMember: member1,
+      members: [member1, member2],
+    });
+
+    renderWithRoute();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("participant-mbr_owner")).toBeInTheDocument();
+      expect(screen.getByTestId("participant-mbr_guest")).toBeInTheDocument();
+    });
+
+    const ownerCard = screen.getByTestId("participant-mbr_owner");
+    const guestCard = screen.getByTestId("participant-mbr_guest");
+
+    expect(ownerCard).toHaveTextContent("(You)");
+    expect(guestCard).not.toHaveTextContent("(You)");
+  });
 });

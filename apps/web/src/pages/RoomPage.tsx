@@ -35,6 +35,7 @@ export default function RoomPage() {
   const [room, setRoom] = useState<RoomDto | PublicRoomDto | null>(null);
   const [currentMember, setCurrentMember] = useState<RoomMemberDetailDto | null>(null);
   const [members, setMembers] = useState<RoomMemberDetailDto[]>([]);
+  const [onlineMemberCount, setOnlineMemberCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<{
     code: string;
@@ -113,11 +114,15 @@ export default function RoomPage() {
         room: RoomDto | PublicRoomDto;
         currentMember?: RoomMemberDetailDto;
         members?: RoomMemberDetailDto[];
+        onlineMemberCount?: number;
       }>(`/rooms/${slug}`);
 
       setRoom(res.room);
       setCurrentMember(res.currentMember ?? null);
       setMembers(res.members ?? []);
+      if (typeof res.onlineMemberCount === "number") {
+        setOnlineMemberCount(res.onlineMemberCount);
+      }
       document.title = `${res.room.title} · PairPrep`;
     } catch (err) {
       if (err instanceof ApiClientError) {
@@ -152,11 +157,15 @@ export default function RoomPage() {
         room: RoomDto | PublicRoomDto;
         currentMember?: RoomMemberDetailDto;
         members?: RoomMemberDetailDto[];
+        onlineMemberCount?: number;
       }>(`/rooms/${slug}`);
 
       setRoom(res.room);
       setCurrentMember(res.currentMember ?? null);
       setMembers(res.members ?? []);
+      if (typeof res.onlineMemberCount === "number") {
+        setOnlineMemberCount(res.onlineMemberCount);
+      }
     } catch (err) {
       if (err instanceof ApiClientError && err.status === 429 && err.retryAfterSec) {
         setCountdown(err.retryAfterSec);
@@ -165,16 +174,23 @@ export default function RoomPage() {
     }
   }, [slug]);
 
-  // Event-driven participant synchronization with 30s fallback & 429 backoff (Finding 1 / ROOM-5)
+  // Event-driven participant synchronization with 10s fallback & 429 backoff (Finding 1 / ROOM-5)
   useParticipantSync({
     enabled: Boolean(currentMember && slug),
     slug: slug ?? null,
     provider: sync.provider,
     localClientId: sync.doc?.clientID,
     onRefresh: refreshRoom,
-    fallbackIntervalMs: import.meta.env["VITE_PAIRPREP_E2E"] === "1" ? 4000 : 30000,
+    fallbackIntervalMs: import.meta.env["VITE_PAIRPREP_E2E"] === "1" ? 4000 : 10000,
     debounceMs: 500,
   });
+
+  // When WebSocket connects, immediately refresh room to sync live presence without waiting
+  useEffect(() => {
+    if (sync.status === "connected") {
+      refreshRoom().catch(() => {});
+    }
+  }, [sync.status, refreshRoom]);
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -468,6 +484,22 @@ export default function RoomPage() {
 
   // 5. Active Room Shell (Member View)
   const fullRoom = room as RoomDto;
+  const totalMembersCount = members.length > 0 ? members.length : fullRoom.memberCount;
+
+  // Local connection state: current user is online immediately when WebSocket is connected
+  const isLocalConnected = sync.status === "connected";
+
+  const computedOnlineCount = members.filter((m) => {
+    const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+    return isCurrent ? isLocalConnected || Boolean(m.isOnline) : Boolean(m.isOnline);
+  }).length;
+
+  const onlineCount =
+    typeof onlineMemberCount === "number" && onlineMemberCount > 0
+      ? Math.max(onlineMemberCount, computedOnlineCount)
+      : isLocalConnected
+        ? Math.max(1, computedOnlineCount)
+        : computedOnlineCount;
 
   return (
     <div className="min-h-screen bg-canvas text-text-primary flex flex-col">
@@ -526,12 +558,13 @@ export default function RoomPage() {
             )}
           </Button>
 
-          {/* Participants Avatars */}
-          <div className="flex items-center gap-1 bg-surface-subtle border border-border-subtle rounded-lg px-2.5 py-1 text-xs">
+          {/* Room Capacity Badge */}
+          <div
+            className="flex items-center gap-1 bg-surface-subtle border border-border-subtle rounded-lg px-2.5 py-1 text-xs"
+            title={`${totalMembersCount} of 6 maximum room members`}
+          >
             <Users className="h-3.5 w-3.5 text-text-subtle mr-1" />
-            <span className="font-mono font-medium">
-              {members.length > 0 ? members.length : fullRoom.memberCount}/6
-            </span>
+            <span className="font-mono font-medium">{totalMembersCount}/6 members</span>
           </div>
         </div>
       </header>
@@ -541,15 +574,28 @@ export default function RoomPage() {
         {/* Sidebar: Participants & Room Info */}
         <aside className="border-r border-border-subtle bg-surface/50 p-4 space-y-6 hidden lg:block overflow-y-auto">
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-3">
-              Participants ({members.length > 0 ? members.length : fullRoom.memberCount})
-            </h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                Participants
+              </h2>
+              <span
+                data-testid="participant-counts"
+                className="text-[11px] font-mono text-text-subtle"
+              >
+                <span className="text-success font-medium">{onlineCount} online</span>
+                {" · "}
+                <span>
+                  {totalMembersCount} {totalMembersCount === 1 ? "member" : "members"}
+                </span>
+              </span>
+            </div>
             <div className="space-y-2">
               {members.length > 0 ? (
                 members.map((m, idx) => {
-                  const isCurrent =
-                    m.id === currentMember?.id ||
-                    m.displayName === (user?.displayName || guestName);
+                  const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+                  const isMemberOnline = isCurrent
+                    ? isLocalConnected || Boolean(m.isOnline)
+                    : Boolean(m.isOnline);
                   const participantColor =
                     PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
                     (PARTICIPANT_PALETTE[0] as string);
@@ -560,46 +606,80 @@ export default function RoomPage() {
                       data-testid={`participant-${m.id}`}
                       className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs"
                     >
-                      <div className="flex items-center gap-2 truncate">
-                        <div
-                          className="h-6 w-6 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0 border"
-                          style={{
-                            borderColor: participantColor,
-                            color: participantColor,
-                            backgroundColor: `${participantColor}22`,
-                          }}
-                        >
-                          {m.displayName.charAt(0).toUpperCase()}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="relative shrink-0 flex items-center justify-center">
+                          <div
+                            className="h-6 w-6 rounded-full flex items-center justify-center font-bold text-[10px] border"
+                            style={{
+                              borderColor: participantColor,
+                              color: participantColor,
+                              backgroundColor: `${participantColor}22`,
+                            }}
+                          >
+                            {m.displayName.charAt(0).toUpperCase()}
+                          </div>
+                          <span
+                            aria-label={isMemberOnline ? "Online" : "Offline"}
+                            title={isMemberOnline ? "Online" : "Offline"}
+                            className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
+                              isMemberOnline ? "bg-success" : "bg-text-subtle/40"
+                            }`}
+                          />
                         </div>
                         <span className="truncate font-medium text-text-primary">
                           {m.displayName}
                         </span>
                         {isCurrent && (
-                          <span className="text-[10px] text-primary font-mono ml-1 font-semibold">
+                          <span className="text-[10px] text-primary font-mono ml-1 font-semibold shrink-0">
                             (You)
                           </span>
                         )}
                       </div>
-                      <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
-                        {m.role}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                        <span
+                          data-testid={`participant-status-${m.id}`}
+                          className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border transition-colors ${
+                            isMemberOnline
+                              ? "bg-success/10 text-success border-success/20"
+                              : "bg-surface-subtle text-text-subtle border-border-subtle"
+                          }`}
+                        >
+                          {isMemberOnline ? "Online" : "Offline"}
+                        </span>
+                        <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
+                          {m.role}
+                        </span>
+                      </div>
                     </div>
                   );
                 })
               ) : (
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-surface border border-border-subtle text-xs">
-                  <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center font-bold text-[10px] text-primary">
-                    {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
+                <div className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="relative shrink-0 flex items-center justify-center">
+                      <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center font-bold text-[10px] text-primary">
+                        {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
+                      </div>
+                      <span
+                        aria-label="Online"
+                        className="absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface bg-success"
+                      />
+                    </div>
+                    <span className="font-medium text-text-primary truncate">
+                      {currentMember?.displayName || "You"}
+                    </span>
+                    <span className="text-[10px] text-primary font-mono font-semibold shrink-0">
+                      (You)
+                    </span>
                   </div>
-                  <span className="font-medium text-text-primary">
-                    {currentMember?.displayName || "You"}
-                  </span>
-                  <span className="text-[10px] text-primary font-mono font-semibold">
-                    (You)
-                  </span>
-                  <span className="text-[10px] font-mono text-text-subtle ml-auto uppercase">
-                    {currentMember?.role || "editor"}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                    <span className="text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border bg-success/10 text-success border-success/20">
+                      Online
+                    </span>
+                    <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
+                      {currentMember?.role || "editor"}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -645,12 +725,13 @@ export default function RoomPage() {
                     members.length > 0
                       ? Math.max(
                           0,
-                          members.findIndex(
-                            (m) =>
-                              m.displayName ===
-                              (user?.displayName ||
-                                currentMember?.displayName ||
-                                guestName)
+                          members.findIndex((m) =>
+                            currentMember?.id
+                              ? m.id === currentMember.id
+                              : m.displayName ===
+                                (user?.displayName ||
+                                  currentMember?.displayName ||
+                                  guestName)
                           )
                         ) % PARTICIPANT_PALETTE.length
                       : 0

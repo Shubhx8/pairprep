@@ -392,4 +392,111 @@ describe("Hocuspocus Stateless Latency Ping/Pong Handler", () => {
     });
     expect(connFlood.sendStateless).toHaveBeenCalledTimes(20);
   });
+
+  // 16. Empty nonce is rejected
+  it("rejects payload with empty string nonce", async () => {
+    const conn = createMockConnection("socket-empty-nonce-16");
+    const doc = createMockDocument();
+
+    await onStateless({
+      connection: conn,
+      document: doc,
+      documentName: "test-room",
+      payload: JSON.stringify({
+        type: "latency_ping",
+        nonce: "",
+        sentAt: 1000,
+      }),
+    });
+
+    expect(conn.sendStateless).not.toHaveBeenCalled();
+  });
+
+  // 17. Nonce exceeding 128 characters is rejected
+  it("rejects payload with nonce exceeding 128 characters", async () => {
+    const conn = createMockConnection("socket-oversized-nonce-17");
+    const doc = createMockDocument();
+
+    await onStateless({
+      connection: conn,
+      document: doc,
+      documentName: "test-room",
+      payload: JSON.stringify({
+        type: "latency_ping",
+        nonce: "x".repeat(129),
+        sentAt: 1000,
+      }),
+    });
+
+    expect(conn.sendStateless).not.toHaveBeenCalled();
+  });
+
+  // 18. Malformed messages consume per-connection rate limiter tokens
+  it("subjects malformed messages to the per-connection rate limiter", async () => {
+    const conn = createMockConnection("socket-malformed-rate-18");
+    const doc = createMockDocument();
+
+    // Send 20 malformed messages to exhaust message burst
+    for (let i = 0; i < 20; i++) {
+      await onStateless({
+        connection: conn,
+        document: doc,
+        documentName: "test-room",
+        payload: "{ invalid malformed json ",
+      });
+    }
+
+    // 21st message is valid but should be dropped due to rate limit exhaustion
+    await onStateless({
+      connection: conn,
+      document: doc,
+      documentName: "test-room",
+      payload: JSON.stringify({
+        type: "latency_ping",
+        nonce: "after-flood-nonce",
+        sentAt: 1000,
+      }),
+    });
+
+    expect(conn.sendStateless).not.toHaveBeenCalled();
+  });
+
+  // 19. Non-string socketId is safely rejected
+  it("rejects requests when socket ID is not a string", async () => {
+    const conn = createMockConnection(12345 as unknown as string);
+    const doc = createMockDocument();
+
+    await onStateless({
+      connection: conn,
+      document: doc,
+      documentName: "test-room",
+      payload: JSON.stringify({
+        type: "latency_ping",
+        nonce: "test-nonce",
+        sentAt: 1000,
+      }),
+    });
+
+    expect(conn.sendStateless).not.toHaveBeenCalled();
+  });
+
+  // 20. Latency ping produces zero Y.Doc mutations
+  it("does not mutate or modify Y.Doc contents", async () => {
+    const conn = createMockConnection("socket-no-mutation-20");
+    const doc = createMockDocument();
+
+    await onStateless({
+      connection: conn,
+      document: doc,
+      documentName: "test-room",
+      payload: JSON.stringify({
+        type: "latency_ping",
+        nonce: "no-mutation-nonce",
+        sentAt: 1000,
+      }),
+    });
+
+    expect(conn.sendStateless).toHaveBeenCalledTimes(1);
+    expect(doc.broadcastStateless).not.toHaveBeenCalled();
+  });
 });

@@ -700,20 +700,22 @@ export function createSyncServer(
       }
     },
     async onStateless(data) {
-      if (typeof data.payload !== "string") {
-        return;
-      }
-      const byteLength = Buffer.byteLength(data.payload, "utf8");
-      if (byteLength === 0 || byteLength > 256) {
-        return;
-      }
-
       const socketId = data.connection?.socketId;
       if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
         return;
       }
-      const rateCheck = rateLimiter.consume(socketId, byteLength);
+
+      const rawPayload = typeof data.payload === "string" ? data.payload : "";
+      const byteLength = Buffer.byteLength(rawPayload, "utf8");
+      // Subject every identifiable stateless message to per-connection rate limiting,
+      // including oversized, empty, or malformed messages
+      const rateCost = Math.max(1, byteLength);
+      const rateCheck = rateLimiter.consume(socketId, rateCost);
       if (!rateCheck.allowed) {
+        return;
+      }
+
+      if (typeof data.payload !== "string" || byteLength === 0 || byteLength > 256) {
         return;
       }
 
@@ -724,7 +726,12 @@ export function createSyncServer(
         }
 
         const keys = Object.keys(parsed);
-        if (keys.length !== 3) {
+        if (
+          keys.length !== 3 ||
+          !("type" in parsed) ||
+          !("nonce" in parsed) ||
+          !("sentAt" in parsed)
+        ) {
           return;
         }
 

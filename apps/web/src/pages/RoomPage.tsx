@@ -489,17 +489,18 @@ export default function RoomPage() {
   // Local connection state: current user is online immediately when WebSocket is connected
   const isLocalConnected = sync.status === "connected";
 
-  const computedOnlineCount = members.filter((m) => {
-    const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
-    return isCurrent ? isLocalConnected || Boolean(m.isOnline) : Boolean(m.isOnline);
-  }).length;
+  const computedOnlineCount = isLocalConnected
+    ? members.filter((m) => {
+        const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+        return isCurrent ? true : Boolean(m.isOnline);
+      }).length
+    : 0;
 
-  const onlineCount =
-    typeof onlineMemberCount === "number" && onlineMemberCount > 0
+  const onlineCount = isLocalConnected
+    ? typeof onlineMemberCount === "number" && onlineMemberCount > 0
       ? Math.max(onlineMemberCount, computedOnlineCount)
-      : isLocalConnected
-        ? Math.max(1, computedOnlineCount)
-        : computedOnlineCount;
+      : Math.max(1, computedOnlineCount)
+    : 0;
 
   return (
     <div className="min-h-screen bg-canvas text-text-primary flex flex-col">
@@ -593,9 +594,11 @@ export default function RoomPage() {
               {members.length > 0 ? (
                 members.map((m, idx) => {
                   const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
-                  const isMemberOnline = isCurrent
-                    ? isLocalConnected || Boolean(m.isOnline)
-                    : Boolean(m.isOnline);
+                  const isMemberOnline = isLocalConnected
+                    ? isCurrent
+                      ? true
+                      : Boolean(m.isOnline)
+                    : false;
                   const participantColor =
                     PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
                     (PARTICIPANT_PALETTE[0] as string);
@@ -661,8 +664,10 @@ export default function RoomPage() {
                         {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
                       </div>
                       <span
-                        aria-label="Online"
-                        className="absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface bg-success"
+                        aria-label={isLocalConnected ? "Online" : "Offline"}
+                        className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
+                          isLocalConnected ? "bg-success" : "bg-text-subtle/40"
+                        }`}
                       />
                     </div>
                     <span className="font-medium text-text-primary truncate">
@@ -673,8 +678,14 @@ export default function RoomPage() {
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    <span className="text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border bg-success/10 text-success border-success/20">
-                      Online
+                    <span
+                      className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border ${
+                        isLocalConnected
+                          ? "bg-success/10 text-success border-success/20"
+                          : "bg-surface-subtle text-text-subtle border-border-subtle"
+                      }`}
+                    >
+                      {isLocalConnected ? "Online" : "Offline"}
                     </span>
                     <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
                       {currentMember?.role || "editor"}

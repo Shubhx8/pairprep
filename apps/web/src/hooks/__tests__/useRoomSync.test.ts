@@ -83,6 +83,22 @@ const {
       this._isAttached = true;
     }
 
+    disconnect() {
+      this.status = "disconnected" as WebSocketStatus;
+      if (this.configuration.websocketProvider) {
+        (this.configuration.websocketProvider as { status: WebSocketStatus }).status =
+          "disconnected" as WebSocketStatus;
+      }
+    }
+
+    connect() {
+      this.status = "connecting" as WebSocketStatus;
+      if (this.configuration.websocketProvider) {
+        (this.configuration.websocketProvider as { status: WebSocketStatus }).status =
+          "connecting" as WebSocketStatus;
+      }
+    }
+
     destroy() {
       this.isDestroyed = true;
       destructionLog.push("activeProvider");

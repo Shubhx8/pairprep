@@ -204,8 +204,11 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
 
     const handleOnline = () => {
       if (!isCurrent) return;
+      if (typeof activeProvider?.connect === "function") {
+        activeProvider.connect();
+      }
       if (
-        activeProvider?.configuration.websocketProvider.status ===
+        activeProvider?.configuration?.websocketProvider?.status ===
         WebSocketStatus.Connected
       ) {
         setStatus("connected");
@@ -216,6 +219,9 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
 
     const handleOffline = () => {
       if (!isCurrent) return;
+      if (typeof activeProvider?.disconnect === "function") {
+        activeProvider.disconnect();
+      }
       setStatus("offline");
     };
 

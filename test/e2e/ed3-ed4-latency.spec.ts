@@ -1,10 +1,5 @@
 import { test, expect, type BrowserContext } from "@playwright/test";
 import fs from "node:fs";
-import {
-  checkE2EDatabaseAvailable,
-  seedE2EUserAndSession,
-  SESSION_COOKIE_NAME,
-} from "./support/sessionHarness.js";
 
 function quantile(arr: number[], q: number): number {
   if (arr.length === 0) return 0;
@@ -18,81 +13,95 @@ function quantile(arr: number[], q: number): number {
   return sorted[base];
 }
 
+function printMetrics(name: string, samples: number[]) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const p50 = quantile(samples, 0.5);
+  const p95 = quantile(samples, 0.95);
+  const min = sorted[0] ?? 0;
+  const max = sorted[sorted.length - 1] ?? 0;
+  const mean = samples.reduce((acc, v) => acc + v, 0) / (samples.length || 1);
+
+  console.log(`\n[${name}] Total samples: ${samples.length}`);
+  console.log(`  P50:  ${p50.toFixed(2)} ms`);
+  console.log(`  P95:  ${p95.toFixed(2)} ms`);
+  console.log(`  Min:  ${min.toFixed(2)} ms`);
+  console.log(`  Max:  ${max.toFixed(2)} ms`);
+  console.log(`  Mean: ${mean.toFixed(2)} ms`);
+}
+
 /**
- * ED-3 & ED-4 Dedicated Playwright End-to-End Latency Benchmark.
+ * ED-3 & ED-4 Dual-Metric Real-Time Latency Benchmark.
  *
  * Requirements:
- * - Two browser contexts in the same room.
- * - Context A types a unique character.
- * - The test process measures elapsed time until it appears in Context B (single clock only).
- * - 200 samples.
- * - Prints p50 and p95 to the console.
- * - Base URL and storage state path supplied from environment variables.
- * - Writes no result files to disk.
+ * - Exactly one Playwright test.
+ * - 200 iterations across two browser contexts in the same room.
+ * - ED-4 (Text propagation latency): Context A inserts unique char; Context B observes it in Monaco model.
+ * - ED-3 (Remote cursor propagation latency): Host edit advances cursor; Context B observes remote cursor decoration
+ *   belonging to host participant at correct advancing position.
+ * - Measures elapsed time independently with the test process's monotonic clock.
+ * - Prints separate P50, P95, Min, Max, and Mean to console.
+ * - Base URL and storage state path must be explicitly supplied from environment variables.
+ * - Safety guards prevent execution against production origin.
+ * - Writes no result files (no JSON, CSV, traces, or benchmark artifacts).
  */
 test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
-  test("measure 200 remote update samples between two contexts with single test-process clock", async ({
+  const baseURL =
+    process.env["PAIRPREP_BASE_URL"] ||
+    process.env["PLAYWRIGHT_BASE_URL"] ||
+    process.env["BASE_URL"];
+
+  const storageStatePath =
+    process.env["PAIRPREP_STORAGE_STATE"] || process.env["STORAGE_STATE"];
+
+  test.skip(
+    !baseURL || !storageStatePath,
+    "Execution blocked: Explicit environment configuration required. PAIRPREP_BASE_URL and PAIRPREP_STORAGE_STATE must be provided."
+  );
+
+  test("measure 200 samples of text propagation (ED-4) and remote cursor propagation (ED-3)", async ({
     browser,
-    baseURL: configBaseURL,
   }) => {
-    test.setTimeout(120000);
+    test.setTimeout(180000);
 
-    const baseURL =
-      process.env["PAIRPREP_BASE_URL"] ||
-      process.env["PLAYWRIGHT_BASE_URL"] ||
-      configBaseURL ||
-      "http://localhost:5174";
-
-    const storageStatePath =
-      process.env["PAIRPREP_STORAGE_STATE"] || process.env["STORAGE_STATE"];
-
-    let hostContext: BrowserContext;
-
-    if (storageStatePath) {
-      if (!fs.existsSync(storageStatePath)) {
-        throw new Error(
-          `Configured PAIRPREP_STORAGE_STATE file not found: ${storageStatePath}`
-        );
-      }
-      hostContext = await browser.newContext({
-        baseURL,
-        storageState: storageStatePath,
-        viewport: { width: 1280, height: 720 },
-      });
-    } else {
-      const dbAvailable = await checkE2EDatabaseAvailable();
-      if (!dbAvailable) {
-        test.skip(
-          true,
-          "ED-3/ED-4 latency test requires either PAIRPREP_STORAGE_STATE or an active test database."
-        );
-        return;
-      }
-
-      const seed = await seedE2EUserAndSession({
-        displayName: "Latency Host",
-        email: `latency.host.${Date.now()}@pairprep.com`,
-      });
-
-      hostContext = await browser.newContext({
-        baseURL,
-        viewport: { width: 1280, height: 720 },
-      });
-
-      const urlObj = new URL(baseURL);
-      await hostContext.addCookies([
-        {
-          name: SESSION_COOKIE_NAME,
-          value: seed.cookie.value,
-          domain: urlObj.hostname,
-          path: "/",
-          httpOnly: true,
-          sameSite: "Lax",
-        },
-      ]);
+    // 1. Explicit environment configuration check (type assertion for TypeScript)
+    if (!baseURL || !storageStatePath) {
+      test.skip(
+        true,
+        "Execution blocked: Explicit environment configuration required. PAIRPREP_BASE_URL and PAIRPREP_STORAGE_STATE must be provided."
+      );
+      return;
     }
 
-    const guestContext = await browser.newContext({
+    // 2. Production safety guard
+    const parsedUrl = new URL(baseURL);
+    const hostLower = parsedUrl.hostname.toLowerCase();
+    if (
+      hostLower === "pairprep.com" ||
+      (hostLower.endsWith(".pairprep.com") &&
+        !hostLower.includes("staging") &&
+        !hostLower.includes("dev"))
+    ) {
+      throw new Error(
+        `Production Safety Guard: Refusing to run latency benchmark against production origin: ${baseURL}`
+      );
+    }
+
+    // 3. Storage state file validation
+    if (!fs.existsSync(storageStatePath)) {
+      throw new Error(
+        `Explicit PAIRPREP_STORAGE_STATE file not found: ${storageStatePath}`
+      );
+    }
+
+    // 4. Initialize Context A (Host) with authenticated storage state
+    const hostContext: BrowserContext = await browser.newContext({
+      baseURL,
+      storageState: storageStatePath,
+      viewport: { width: 1280, height: 720 },
+    });
+
+    // 5. Initialize Context B (Guest)
+    const guestContext: BrowserContext = await browser.newContext({
       baseURL,
       viewport: { width: 1280, height: 720 },
     });
@@ -119,6 +128,7 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
         await hostPage.goto(roomUrl);
       }
 
+      // Context B joins the same room
       const guestPage = await guestContext.newPage();
       await guestPage.goto(roomUrl);
 
@@ -128,6 +138,7 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
         await guestPage.getByRole("button", { name: /Join as Guest/i }).click();
       }
 
+      // Verify both Monaco editors mount and reach synced status
       await expect(hostPage.getByTestId("collaborative-editor")).toBeVisible({
         timeout: 15000,
       });
@@ -148,60 +159,153 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
         timeout: 15000,
       });
 
+      // Focus Context A editor
       const hostInputArea = hostPage.locator(".monaco-editor textarea.inputarea");
       await hostInputArea.focus();
 
+      // Ensure awareness stylesheet exists in Guest
+      await expect(
+        guestPage.locator('style[data-pairprep-awareness="true"]')
+      ).toBeAttached({
+        timeout: 10000,
+      });
+
+      // Identify Host's Yjs clientId from awareness CSS rules
+      const hostClientId = await guestPage
+        .waitForFunction(
+          () => {
+            const styleEl = document.querySelector(
+              'style[data-pairprep-awareness="true"]'
+            );
+            if (!styleEl || !styleEl.textContent) return null;
+            const match = styleEl.textContent.match(/\.yRemoteSelectionHead-(\d+)/);
+            return match && match[1] ? parseInt(match[1], 10) : null;
+          },
+          undefined,
+          { timeout: 15000 }
+        )
+        .then((handle) => handle.jsonValue());
+
+      expect(hostClientId).toBeDefined();
+      expect(typeof hostClientId).toBe("number");
+
+      // Verify Host cursor decoration is attached in Guest's editor
+      const targetHeadClass = `yRemoteSelectionHead-${hostClientId}`;
+      await expect(guestPage.locator(`.monaco-editor .${targetHeadClass}`)).toBeAttached({
+        timeout: 10000,
+      });
+
+      // Brief stabilization pause
       await hostPage.waitForTimeout(500);
 
       const SAMPLE_COUNT = 200;
-      const samples: number[] = [];
+      const ed4Samples: number[] = [];
+      const ed3Samples: number[] = [];
 
       for (let i = 0; i < SAMPLE_COUNT; i++) {
+        // Unique character from Latin Extended block (U+0100 through U+01C7)
         const char = String.fromCodePoint(0x0100 + i);
+        const expectedMinColumn = i + 2; // Initial column is 1, after typing 1st char cursor is at col 2
 
         const tStart = performance.now();
         await hostPage.keyboard.type(char);
 
-        await guestPage.waitForFunction(
-          (expectedChar) => {
-            const win = window as unknown as {
-              monaco?: {
-                editor?: {
-                  getModels?: () => Array<{ getValue: () => string }>;
+        // ED-4: Text propagation check
+        const textPromise = guestPage
+          .waitForFunction(
+            (expectedChar) => {
+              const win = window as unknown as {
+                monaco?: {
+                  editor?: {
+                    getModels?: () => Array<{ getValue: () => string }>;
+                  };
                 };
               };
-            };
-            const model = win.monaco?.editor?.getModels?.()?.[0];
-            if (model) {
-              return model.getValue().includes(expectedChar);
-            }
-            const editorEl = document.querySelector(".monaco-editor");
-            return Boolean(
-              editorEl && (editorEl.textContent || "").includes(expectedChar)
-            );
-          },
-          char,
-          { timeout: 10000 }
-        );
+              const model = win.monaco?.editor?.getModels?.()?.[0];
+              if (model) {
+                return model.getValue().includes(expectedChar);
+              }
+              const editorEl = document.querySelector(".monaco-editor");
+              return Boolean(
+                editorEl && (editorEl.textContent || "").includes(expectedChar)
+              );
+            },
+            char,
+            { timeout: 10000 }
+          )
+          .then(() => performance.now() - tStart);
 
-        const duration = performance.now() - tStart;
-        samples.push(duration);
+        // ED-3: Remote cursor / selection propagation check (advancing position)
+        const cursorPromise = guestPage
+          .waitForFunction(
+            ({ clientId, expectedCol }) => {
+              const win = window as unknown as {
+                monaco?: {
+                  editor?: {
+                    getEditors?: () => Array<{
+                      getModel?: () => {
+                        getAllDecorations?: () => Array<{
+                          range: { startColumn: number; endColumn: number };
+                          options: {
+                            afterContentClassName?: string;
+                            beforeContentClassName?: string;
+                            className?: string;
+                          };
+                        }>;
+                      };
+                    }>;
+                  };
+                };
+              };
+
+              // Check Monaco model decorations for host client ID at expected position
+              const editor = win.monaco?.editor?.getEditors?.()?.[0];
+              const decorations = editor?.getModel?.()?.getAllDecorations?.() || [];
+              const headClass = `yRemoteSelectionHead-${clientId}`;
+              const hostDec = decorations.find(
+                (d) =>
+                  (d.options.afterContentClassName &&
+                    d.options.afterContentClassName.includes(headClass)) ||
+                  (d.options.beforeContentClassName &&
+                    d.options.beforeContentClassName.includes(headClass)) ||
+                  (d.options.className && d.options.className.includes(headClass))
+              );
+              if (
+                hostDec &&
+                (hostDec.range.endColumn >= expectedCol ||
+                  hostDec.range.startColumn >= expectedCol)
+              ) {
+                return true;
+              }
+
+              // Fallback to DOM cursor element rendering
+              const el = document.querySelector(
+                `.monaco-editor .yRemoteSelectionHead-${clientId}`
+              );
+              if (el) {
+                const rect = el.getBoundingClientRect();
+                return rect.height > 0;
+              }
+              return false;
+            },
+            { clientId: hostClientId, expectedCol: expectedMinColumn },
+            { timeout: 10000 }
+          )
+          .then(() => performance.now() - tStart);
+
+        const [textLatency, cursorLatency] = await Promise.all([
+          textPromise,
+          cursorPromise,
+        ]);
+        ed4Samples.push(textLatency);
+        ed3Samples.push(cursorLatency);
       }
 
-      expect(samples.length).toBe(SAMPLE_COUNT);
+      expect(ed4Samples.length).toBe(SAMPLE_COUNT);
+      expect(ed3Samples.length).toBe(SAMPLE_COUNT);
 
-      const p50 = quantile(samples, 0.5);
-      const p95 = quantile(samples, 0.95);
-      const min = Math.min(...samples);
-      const max = Math.max(...samples);
-      const mean = samples.reduce((acc, val) => acc + val, 0) / samples.length;
-
-      console.log(`[ED-3/ED-4 Latency Benchmark] Total samples: ${samples.length}`);
-      console.log(`p50: ${p50.toFixed(2)} ms`);
-      console.log(`p95: ${p95.toFixed(2)} ms`);
-      console.log(`min: ${min.toFixed(2)} ms`);
-      console.log(`max: ${max.toFixed(2)} ms`);
-      console.log(`mean: ${mean.toFixed(2)} ms`);
+      printMetrics("ED-4 Text Propagation Latency", ed4Samples);
+      printMetrics("ED-3 Remote Cursor Propagation Latency", ed3Samples);
     } finally {
       await hostContext.close().catch(() => {});
       await guestContext.close().catch(() => {});

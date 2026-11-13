@@ -217,6 +217,42 @@ jobs:
             echo "Previous API image: '$PREV_IMAGE'"
             echo "Previous Web directory: '$PREV_WEB_DIR'"
 
+            # Validate previous deployment references before proceeding
+            if [ -z "$PREV_IMAGE" ] || ! docker image inspect "$PREV_IMAGE" >/dev/null 2>&1; then
+              echo "Error: Cannot determine or verify previous API image ('$PREV_IMAGE'). Aborting to protect production."
+              exit 1
+            fi
+
+            if [ -z "$PREV_WEB_DIR" ] || [ ! -d "$PREV_WEB_DIR" ] || [ ! -f "$PREV_WEB_DIR/index.html" ]; then
+              echo "Error: Cannot determine or verify previous frontend directory ('$PREV_WEB_DIR'). Aborting to protect production."
+              exit 1
+            fi
+
+            # Set up guarded rollback handler
+            DEPLOYMENT_MUTATED=false
+
+            rollback_handler() {
+              ORIG_EXIT=$?
+              set +e
+              trap - EXIT
+              if [ "$DEPLOYMENT_MUTATED" = "true" ] && [ "$ORIG_EXIT" -ne 0 ]; then
+                echo "========================================================"
+                echo "DEPLOYMENT FAILURE DETECTED (exit code: $ORIG_EXIT)."
+                echo "Initiating automatic rollback to previous verified state:"
+                echo "  SERVER_IMAGE='$PREV_IMAGE'"
+                echo "  WEB_DIR='$PREV_WEB_DIR'"
+                echo "========================================================"
+                if SERVER_IMAGE="$PREV_IMAGE" WEB_DIR="$PREV_WEB_DIR" $DOCKER_COMPOSE -f infra/docker-compose.prod.yml up -d; then
+                  echo "Rollback successfully restored previous containers and mount."
+                else
+                  echo "CRITICAL ERROR: Rollback command failed to restore previous containers."
+                fi
+              fi
+              exit "$ORIG_EXIT"
+            }
+
+            trap rollback_handler EXIT
+
             # Locate and extract prebuilt frontend release artifact
             ARCHIVE_FILE="pairprep-web-dist-${{ github.sha }}.tar.gz"
             if [ -f "/tmp/$ARCHIVE_FILE" ]; then
@@ -255,6 +291,10 @@ jobs:
             export ENV_FILE="/opt/pairprep/.env"
             export WEB_DIR="$RELEASE_DIR"
 
+            # Arm rollback immediately before the first mutating operation
+            DEPLOYMENT_MUTATED=true
+            echo "Production mutation armed: rollback trap active."
+
             # Stop standalone PM2 server if running so port 3000 is managed exclusively by docker compose
             pm2 stop pairprep-backend 2>/dev/null || true
 
@@ -287,11 +327,13 @@ jobs:
               sleep $RETRY_INTERVAL
             done
 
-            if [ "$SMOKE_SUCCESS" != "true" ]; then
-              echo "Smoke checks failed after $MAX_RETRIES attempts. Rolling back..."
-              if [ -n "$PREV_IMAGE" ]; then
-                SERVER_IMAGE="$PREV_IMAGE" WEB_DIR="$PREV_WEB_DIR" $DOCKER_COMPOSE -f infra/docker-compose.prod.yml up -d
-              fi
+            if [ "$SMOKE_SUCCESS" = "true" ]; then
+              # Disarm rollback only after successful verification
+              DEPLOYMENT_MUTATED=false
+              trap - EXIT
+              echo "One-origin hosting deployment verified successfully: https://${SITE_ADDRESS}/ and /healthz both returned 200 with db: ok."
+            else
+              echo "Smoke checks failed after $MAX_RETRIES attempts."
               exit 1
             fi
 

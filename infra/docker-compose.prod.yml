@@ -13,7 +13,8 @@ services:
     expose:
       - "3000"
     networks:
-      proxy_net: {}
+      proxy_net:
+        ipv4_address: ${API_IPV4:-172.28.0.3}
     deploy:
       resources:
         limits:

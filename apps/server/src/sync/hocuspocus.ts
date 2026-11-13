@@ -30,7 +30,11 @@ import {
   stopAllSnapshotIntervals,
   drainPersistenceAndSnapshot,
   getPendingPersistenceStats,
+  registerLoadedDocument,
   unregisterLoadedDocument,
+  setDocumentFinalizeHook,
+  isRoomPersistencePending,
+  hasSnapshotInterval,
   tryReserveAdmission,
   releaseAdmissionReservation,
   clearAdmissionReservations,
@@ -503,35 +507,75 @@ export function createSyncServer(
         }
         return;
       }
+
+      // Ensure the document is registered as loaded in persistence registry
+      const loadedDoc =
+        (data as unknown as { document?: Y.Doc }).document ??
+        data.instance.documents?.get(data.documentName);
+      if (loadedDoc) {
+        registerLoadedDocument(data.documentName, loadedDoc);
+        if (!hasSnapshotInterval(data.documentName)) {
+          startSnapshotInterval(data.documentName, loadedDoc);
+        }
+      }
     },
     async onDisconnect(data) {
       const roomId = data.documentName;
-      const isRoomEmpty = !data.clientsCount || data.clientsCount === 0;
 
-      // 1. Flush pending updates. If room is now empty, take a consistent final snapshot.
-      // If other participants remain, only flush updates without taking a snapshot.
-      await flushRoom(roomId, isRoomEmpty);
+      // 1. Immediately unregister connection from sync registry and clean up rate limiter & admission reservations.
+      // Physical connection capacity must be released synchronously/immediately upon disconnect so stats and capacity reflect reality without waiting on persistence drain.
+      syncRegistry.unregisterConnection(roomId, data.socketId);
+      rateLimiter.cleanup(data.socketId);
+      clearAdmissionReservations(data.socketId, roomId);
+
+      const initialCount = syncRegistry.getActiveConnectionCount(roomId);
+      const isRoomEmpty = initialCount === 0;
 
       // 2. Stop snapshot interval when room is empty
       if (isRoomEmpty) {
         stopSnapshotInterval(roomId);
       }
 
-      // 3. Unregister connection from sync registry and clean up rate limiter & admission reservations
-      syncRegistry.unregisterConnection(roomId, data.socketId);
-      rateLimiter.cleanup(data.socketId);
-      clearAdmissionReservations(data.socketId, roomId);
+      // 3. Flush pending updates. If room is now empty, take a consistent final snapshot.
+      // If other participants remain, only flush updates without taking a snapshot.
+      let flushSuccess = false;
+      try {
+        await flushRoom(roomId, isRoomEmpty);
+        flushSuccess = true;
+      } catch (err) {
+        rootLogger.error({ roomId, err }, "Failed to flush room on disconnect");
+      }
 
-      // 4. When data.clientsCount === 0, unload the document from Hocuspocus memory
-      if (isRoomEmpty) {
-        unregisterLoadedDocument(roomId);
+      // 4. Re-check active connection count after the async flush!
+      // A participant may have reconnected while flushRoom was executing/awaiting.
+      const currentActiveCount = syncRegistry.getActiveConnectionCount(roomId);
+      if (currentActiveCount > 0) {
+        // Participant reconnected during flush! Restore registration and snapshot timer
+        registerLoadedDocument(roomId, data.document);
+        if (!hasSnapshotInterval(roomId)) {
+          startSnapshotInterval(roomId, data.document);
+        }
+        return;
+      }
 
+      // 5. When room is genuinely still empty and flush succeeded, attempt unload from Hocuspocus memory.
+      // If the flush failed (e.g. transient database failure), do NOT unload the document while updates
+      // are still queued for retry in memory; the persistence layer will finalize and unload the document
+      // once the retry flush completes successfully.
+      if (flushSuccess) {
         const hocuspocusInstance =
-          (data.instance as
-            { unloadDocument?: (doc: unknown) => Promise<void> } | undefined) ??
+          (data.instance as unknown as
+            | {
+                documents?: Map<string, unknown>;
+                unloadDocument?: (doc: unknown) => Promise<void>;
+              }
+            | undefined) ??
           (
             server as unknown as {
-              hocuspocus?: { unloadDocument?: (doc: unknown) => Promise<void> };
+              hocuspocus?: {
+                documents?: Map<string, unknown>;
+                unloadDocument?: (doc: unknown) => Promise<void>;
+              };
             }
           ).hocuspocus;
 
@@ -539,7 +583,26 @@ export function createSyncServer(
           hocuspocusInstance &&
           typeof hocuspocusInstance.unloadDocument === "function"
         ) {
-          await hocuspocusInstance.unloadDocument(data.document);
+          try {
+            await hocuspocusInstance.unloadDocument(data.document);
+          } catch (unloadErr) {
+            rootLogger.warn(
+              { roomId, err: unloadErr },
+              "Failed to unload document on disconnect"
+            );
+          }
+          const stillHas = hocuspocusInstance.documents?.has(roomId) ?? false;
+          if (!stillHas) {
+            unregisterLoadedDocument(roomId);
+          } else {
+            registerLoadedDocument(roomId, data.document);
+            if (
+              syncRegistry.getActiveConnectionCount(roomId) > 0 &&
+              !hasSnapshotInterval(roomId)
+            ) {
+              startSnapshotInterval(roomId, data.document);
+            }
+          }
         }
       }
     },
@@ -580,7 +643,7 @@ export function createSyncServer(
           cleanupFailedLoad();
           throw new Error("Reservation expired before document load");
         }
-        await loadDocument(roomId, data.document);
+        await loadDocument(roomId, data.document, { readOnly: ctx?.readOnly });
         if (isShuttingDown) {
           throw new Error("Server is shutting down");
         }
@@ -634,6 +697,65 @@ export function createSyncServer(
         } catch {
           // Ignore registration errors during socket closure or db disconnection
         }
+      }
+    },
+    async onStateless(data) {
+      const socketId = data.connection?.socketId;
+      if (!socketId || typeof socketId !== "string" || !socketId.trim()) {
+        return;
+      }
+
+      const rawPayload = typeof data.payload === "string" ? data.payload : "";
+      const byteLength = Buffer.byteLength(rawPayload, "utf8");
+      // Subject every identifiable stateless message to per-connection rate limiting,
+      // including oversized, empty, or malformed messages
+      const rateCost = Math.max(1, byteLength);
+      const rateCheck = rateLimiter.consume(socketId, rateCost);
+      if (!rateCheck.allowed) {
+        return;
+      }
+
+      if (typeof data.payload !== "string" || byteLength === 0 || byteLength > 256) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(data.payload);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return;
+        }
+
+        const keys = Object.keys(parsed);
+        if (
+          keys.length !== 3 ||
+          !("type" in parsed) ||
+          !("nonce" in parsed) ||
+          !("sentAt" in parsed)
+        ) {
+          return;
+        }
+
+        if (
+          parsed.type !== "latency_ping" ||
+          typeof parsed.nonce !== "string" ||
+          parsed.nonce.length === 0 ||
+          parsed.nonce.length > 128 ||
+          typeof parsed.sentAt !== "number" ||
+          !Number.isFinite(parsed.sentAt)
+        ) {
+          return;
+        }
+
+        data.connection.sendStateless(
+          JSON.stringify({
+            type: "latency_pong",
+            nonce: parsed.nonce,
+            sentAt: parsed.sentAt,
+            serverTime: Date.now(),
+          })
+        );
+      } catch {
+        // Ignore non-JSON or malformed stateless messages
       }
     },
     async onChange(data) {
@@ -755,6 +877,43 @@ export function createSyncServer(
         return;
       }
     },
+    async beforeUnloadDocument(data) {
+      if (isShuttingDown) {
+        return;
+      }
+      const roomId = data.documentName;
+      if (isRoomPersistencePending(roomId)) {
+        throw new Error(`Cannot unload document ${roomId}: persistence pending`);
+      }
+    },
+  });
+
+  setDocumentFinalizeHook(async (roomId, doc) => {
+    const hocuspocusInstance = (
+      server as unknown as {
+        hocuspocus?: {
+          documents?: Map<string, unknown>;
+          unloadDocument?: (doc: unknown) => Promise<void>;
+        };
+      }
+    ).hocuspocus;
+
+    if (hocuspocusInstance && typeof hocuspocusInstance.unloadDocument === "function") {
+      const docToUnload = doc ?? hocuspocusInstance.documents?.get(roomId);
+      if (docToUnload) {
+        try {
+          await hocuspocusInstance.unloadDocument(docToUnload);
+        } catch (unloadErr) {
+          rootLogger.warn(
+            { roomId, err: unloadErr },
+            "Failed to unload document on finalization"
+          );
+        }
+      }
+      const stillHas = hocuspocusInstance.documents?.has(roomId) ?? false;
+      return !stillHas;
+    }
+    return true;
   });
 
   const drainAndShutdown = (opts: ShutdownOptions = {}): Promise<void> => {
@@ -822,6 +981,7 @@ export function createSyncServer(
 
       // Phase E: Destroy server and reset state
       await server.destroy();
+      setDocumentFinalizeHook(null);
       syncRegistry.resetAll();
       rateLimiter.resetAll();
       documentLoadWaiters.resetAll();

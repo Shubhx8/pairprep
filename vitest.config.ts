@@ -44,6 +44,11 @@ export default defineConfig({
             "test/e2e/**",
             "**/*.spec.ts",
           ],
+          server: {
+            deps: {
+              inline: ["monaco-editor", "y-monaco"],
+            },
+          },
         },
         extends: true,
       },
@@ -51,8 +56,14 @@ export default defineConfig({
         test: {
           name: "e2e-support",
           environment: "node",
+          setupFiles: ["apps/web/src/test/setup.ts"],
           include: ["test/e2e/support/**/*.test.ts"],
           exclude: ["**/node_modules/**", "**/*.spec.ts"],
+          server: {
+            deps: {
+              inline: ["monaco-editor", "y-monaco"],
+            },
+          },
         },
         extends: true,
       },

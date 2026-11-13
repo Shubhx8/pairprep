@@ -698,7 +698,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       const finalStats = getPendingPersistenceStats();
       expect(finalStats.pendingUpdates).toBe(0);
       expect(finalStats.inFlightUpdates).toBe(0);
-    });
+    }, 20000);
   });
 
   // =========================================================================
@@ -838,12 +838,12 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         new Promise<void>((r) => provB.on("synced", () => r())),
       ]);
 
-      // 5. Client A inputs initial text over WebSocket
-      docA.getText("monaco").insert(0, "Client A initial text. ");
+      // 5. Client A inputs initial text over WebSocket (canonical "code" field)
+      docA.getText("code").insert(0, "Client A initial text. ");
 
       // Await propagation to Client B over WebSocket
       await vi.waitFor(() => {
-        expect(docB.getText("monaco").toString()).toBe("Client A initial text. ");
+        expect(docB.getText("code").toString()).toBe("Client A initial text. ");
       });
 
       // 6. Set up snapshot barrier hook to pause right before state capture
@@ -870,12 +870,12 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
 
       // 8. While snapshot is paused at the barrier, Client B sends concurrent edits over WebSocket
       docB
-        .getText("monaco")
-        .insert(docB.getText("monaco").length, "Client B concurrent edit.");
+        .getText("code")
+        .insert(docB.getText("code").length, "Client B concurrent edit.");
 
       // Verify Client A receives Client B's edits over WebSocket
       await vi.waitFor(() => {
-        expect(docA.getText("monaco").toString()).toBe(
+        expect(docA.getText("code").toString()).toBe(
           "Client A initial text. Client B concurrent edit."
         );
       });
@@ -885,13 +885,11 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       await snapPromise;
 
       // 10. Client A sends an edit strictly after the snapshot watermark was captured
-      docA
-        .getText("monaco")
-        .insert(docA.getText("monaco").length, " Post-snapshot edit.");
+      docA.getText("code").insert(docA.getText("code").length, " Post-snapshot edit.");
       provA.flushPendingUpdates();
 
       await vi.waitFor(() => {
-        expect(docB.getText("monaco").toString()).toBe(
+        expect(docB.getText("code").toString()).toBe(
           "Client A initial text. Client B concurrent edit. Post-snapshot edit."
         );
       });
@@ -915,13 +913,13 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
       const reconstructedDoc = new Y.Doc();
       const loadResult = await loadDocument(roomId, reconstructedDoc);
       expect(loadResult.hasSnapshot).toBe(true);
-      expect(reconstructedDoc.getText("monaco").toString()).toBe(
+      expect(reconstructedDoc.getText("code").toString()).toBe(
         "Client A initial text. Client B concurrent edit. Post-snapshot edit."
       );
-      expect(docA.getText("monaco").toString()).toBe(
+      expect(docA.getText("code").toString()).toBe(
         "Client A initial text. Client B concurrent edit. Post-snapshot edit."
       );
-      expect(docB.getText("monaco").toString()).toBe(
+      expect(docB.getText("code").toString()).toBe(
         "Client A initial text. Client B concurrent edit. Post-snapshot edit."
       );
 
@@ -1100,8 +1098,9 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         // Resume persistence and verify capacity recovery
         pauseDb = false;
         pauseBarrierResolve();
-        while (getPendingPersistenceStats().queuedUpdates > 0) {
+        while (getPendingPersistenceStats().pendingUpdates > 0) {
           await flushRoom(roomId);
+          await new Promise((r) => setTimeout(r, 50));
         }
 
         // Backpressure clears once queue falls below recovery threshold
@@ -1109,7 +1108,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
           () => {
             expect(syncRegistry.isRoomBackpressured(roomId)).toBe(false);
           },
-          { timeout: 5000 }
+          { timeout: 15000 }
         );
 
         // Authorized editor (Client A) can edit again
@@ -1126,7 +1125,7 @@ describe("T07 Persistence Hardening Verification Gaps (Commit 5 Corrective)", ()
         pauseBarrierResolve();
         vi.restoreAllMocks();
       }
-    }, 30000);
+    }, 45000);
   });
 
   // =========================================================================

@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { useState } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import RoomPage from "../RoomPage.js";
 import { apiClient, ApiClientError } from "../../lib/apiClient.js";
 import * as authContextModule from "../../lib/authContext.js";
+import * as roomSyncModule from "../../hooks/useRoomSync.js";
 import type {
   RoomDto,
   PublicRoomDto,
   RoomMemberDetailDto,
   UserPrivateDto,
 } from "@pairprep/shared";
+import "../../components/CollaborativeEditor.js";
 
 describe("RoomPage", () => {
   const mockRoom: RoomDto = {
@@ -94,9 +97,12 @@ describe("RoomPage", () => {
 
     renderWithRoute();
 
-    await waitFor(() => {
-      expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
+      },
+      { timeout: 5000 }
+    );
 
     expect(screen.getByText("Dynamic Programming Practice")).toBeInTheDocument();
     expect(screen.getByText("python")).toBeInTheDocument();
@@ -340,9 +346,268 @@ describe("RoomPage", () => {
 
     renderWithRoute();
 
-    await waitFor(() => {
-      expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText("Collaborative Code Editor")).toBeInTheDocument();
+      },
+      { timeout: 5000 }
+    );
     expect(screen.queryByText("Room Closed")).not.toBeInTheDocument();
+  });
+
+  it("only marks the member with matching currentMember.id as (You), even if another member shares the exact same displayName", async () => {
+    mockUseAuth("authenticated", {
+      id: "usr_alice",
+      provider: "github",
+      displayName: "Alice Dev",
+      role: "user",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      email: "alice@example.com",
+    });
+
+    const member1: RoomMemberDetailDto = {
+      id: "mbr_owner",
+      displayName: "Alice Dev",
+      role: "owner",
+      isGuest: false,
+      joinedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const member2: RoomMemberDetailDto = {
+      id: "mbr_guest",
+      displayName: "Alice Dev", // Duplicate name
+      role: "editor",
+      isGuest: true,
+      joinedAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    vi.spyOn(apiClient, "get").mockResolvedValue({
+      room: mockRoom,
+      currentMember: member1,
+      members: [member1, member2],
+    });
+
+    renderWithRoute();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("participant-mbr_owner")).toBeInTheDocument();
+      expect(screen.getByTestId("participant-mbr_guest")).toBeInTheDocument();
+    });
+
+    const ownerCard = screen.getByTestId("participant-mbr_owner");
+    const guestCard = screen.getByTestId("participant-mbr_guest");
+
+    expect(ownerCard).toHaveTextContent("(You)");
+    expect(guestCard).not.toHaveTextContent("(You)");
+  });
+
+  describe("Participant presence and connection lifecycle", () => {
+    const validRoom: RoomDto = {
+      id: "507f1f77bcf86cd799439011",
+      slug: "dynamic-prog-9876",
+      title: "Dynamic Programming Practice",
+      type: "practice",
+      language: "python",
+      status: "open",
+      ownerId: "usr_alice",
+      memberCount: 2,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const aliceMember: RoomMemberDetailDto = {
+      id: "mbr_alice",
+      displayName: "Alice Dev",
+      role: "owner",
+      isGuest: false,
+      joinedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const bobMember: RoomMemberDetailDto = {
+      id: "mbr_bob",
+      displayName: "Bob Coder",
+      role: "editor",
+      isGuest: false,
+      isOnline: true,
+      joinedAt: "2026-01-01T00:01:00.000Z",
+    };
+
+    beforeEach(() => {
+      mockUseAuth("authenticated", {
+        id: "usr_alice",
+        provider: "github",
+        displayName: "Alice Dev",
+        role: "user",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        email: "alice@example.com",
+      });
+    });
+
+    it("displays Online badges, green indicators, and positive online count when connected", async () => {
+      vi.spyOn(roomSyncModule, "useRoomSync").mockReturnValue({
+        doc: null,
+        provider: null,
+        status: "connected",
+        isSynced: true,
+        error: null,
+      });
+
+      vi.spyOn(apiClient, "get").mockResolvedValue({
+        room: validRoom,
+        currentMember: aliceMember,
+        members: [aliceMember, bobMember],
+        onlineMemberCount: 2,
+      });
+
+      renderWithRoute();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("participant-counts")).toHaveTextContent(
+          "2 online · 2 members"
+        );
+      });
+
+      const aliceStatus = screen.getByTestId("participant-status-mbr_alice");
+      const bobStatus = screen.getByTestId("participant-status-mbr_bob");
+
+      expect(aliceStatus).toHaveTextContent("Online");
+      expect(aliceStatus).toHaveClass("text-success");
+      expect(bobStatus).toHaveTextContent("Online");
+      expect(bobStatus).toHaveClass("text-success");
+    });
+
+    it.each([
+      ["offline", "offline"],
+      ["reconnecting", "reconnecting"],
+      ["disconnected", "disconnected"],
+      ["error", "error"],
+    ] as const)(
+      "displays 0 online · Y members and Offline badges when connection is %s",
+      async (_statusName, syncStatus) => {
+        vi.spyOn(roomSyncModule, "useRoomSync").mockReturnValue({
+          doc: null,
+          provider: null,
+          status: syncStatus,
+          isSynced: false,
+          error: syncStatus === "error" ? new Error("Test error") : null,
+        });
+
+        vi.spyOn(apiClient, "get").mockResolvedValue({
+          room: validRoom,
+          currentMember: aliceMember,
+          members: [aliceMember, bobMember],
+          onlineMemberCount: 2,
+        });
+
+        renderWithRoute();
+
+        await waitFor(() => {
+          expect(screen.getByTestId("participant-counts")).toHaveTextContent(
+            "0 online · 2 members"
+          );
+        });
+
+        const aliceStatus = screen.getByTestId("participant-status-mbr_alice");
+        const bobStatus = screen.getByTestId("participant-status-mbr_bob");
+
+        // Current participant shows Offline; remote participants show Unavailable
+        expect(aliceStatus).toHaveTextContent("Offline");
+        expect(aliceStatus).toHaveClass("text-text-subtle");
+        expect(bobStatus).toHaveTextContent("Unavailable");
+        expect(bobStatus).toHaveClass("text-text-subtle");
+
+        // Indicators show neutral grey dot
+        const aliceDot = screen.getByLabelText("Offline");
+        const bobDot = screen.getByLabelText("Unavailable");
+        expect(aliceDot).toHaveClass("bg-text-subtle/40");
+        expect(bobDot).toHaveClass("bg-text-subtle/40");
+
+        // Persistent memberCount is not altered
+        expect(screen.getByTitle("2 of 6 maximum room members")).toHaveTextContent(
+          "2/6 members"
+        );
+      }
+    );
+
+    it("reflects local connection state on fallback row when members list is empty", async () => {
+      // 1. Connected
+      const syncSpy = vi.spyOn(roomSyncModule, "useRoomSync").mockReturnValue({
+        doc: null,
+        provider: null,
+        status: "connected",
+        isSynced: true,
+        error: null,
+      });
+
+      vi.spyOn(apiClient, "get").mockResolvedValue({
+        room: validRoom,
+        currentMember: aliceMember,
+        members: [], // empty members triggers fallback row
+      });
+
+      const { unmount } = renderWithRoute();
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Online")).toBeInTheDocument();
+      });
+
+      unmount();
+
+      // 2. Disconnected
+      syncSpy.mockReturnValue({
+        doc: null,
+        provider: null,
+        status: "offline",
+        isSynced: false,
+        error: null,
+      });
+
+      renderWithRoute();
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Offline")).toBeInTheDocument();
+      });
+    });
+
+    it("triggers refreshRoom to re-fetch room metadata when transitioning to connected", async () => {
+      let updateSyncStatus: ((s: "offline" | "connected") => void) | null = null;
+
+      vi.spyOn(roomSyncModule, "useRoomSync").mockImplementation(() => {
+        const [status, setStatus] = useState<"offline" | "connected">("offline");
+        updateSyncStatus = setStatus;
+        return {
+          doc: null,
+          provider: null,
+          status,
+          isSynced: status === "connected",
+          error: null,
+        };
+      });
+
+      const getSpy = vi.spyOn(apiClient, "get").mockResolvedValue({
+        room: validRoom,
+        currentMember: aliceMember,
+        members: [aliceMember],
+        onlineMemberCount: 1,
+      });
+
+      renderWithRoute();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("participant-counts")).toHaveTextContent(
+          "0 online · 1 member"
+        );
+      });
+
+      expect(getSpy).toHaveBeenCalledTimes(1);
+
+      // Transition hook state to "connected"
+      act(() => {
+        updateSyncStatus?.("connected");
+      });
+
+      await waitFor(() => {
+        expect(getSpy).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 });

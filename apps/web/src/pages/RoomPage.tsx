@@ -1,13 +1,29 @@
-import { useState, useEffect, useCallback, type FormEvent } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  lazy,
+  Suspense,
+  type FormEvent,
+} from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../lib/authContext.js";
 import { apiClient, ApiClientError } from "../lib/apiClient.js";
 import type { RoomDto, PublicRoomDto, RoomMemberDetailDto } from "@pairprep/shared";
+import { PARTICIPANT_PALETTE } from "@pairprep/shared";
 import { Button } from "../components/ui/Button.js";
 import { Input } from "../components/ui/Input.js";
 import { Skeleton } from "../components/ui/Skeleton.js";
 import { EmptyState } from "../components/ui/EmptyState.js";
 import { ErrorState } from "../components/ui/ErrorState.js";
+import type { SupportedEditorLanguage } from "../components/CodeEditor.js";
+import { useRoomSync } from "../hooks/useRoomSync.js";
+import { useParticipantSync } from "../hooks/useParticipantSync.js";
+import { isValidRoomId } from "../lib/roomId.js";
+
+// PRD Performance & Section 14: Dynamic lazy-loading boundary for Monaco collaborative editor
+const CollaborativeEditor = lazy(() => import("../components/CollaborativeEditor.js"));
 import {
   Code2,
   Users,
@@ -18,7 +34,6 @@ import {
   ArrowLeft,
   Sparkles,
   Terminal,
-  FileCode,
 } from "lucide-react";
 
 export default function RoomPage() {
@@ -28,6 +43,7 @@ export default function RoomPage() {
   const [room, setRoom] = useState<RoomDto | PublicRoomDto | null>(null);
   const [currentMember, setCurrentMember] = useState<RoomMemberDetailDto | null>(null);
   const [members, setMembers] = useState<RoomMemberDetailDto[]>([]);
+  const [onlineMemberCount, setOnlineMemberCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<{
     code: string;
@@ -40,6 +56,34 @@ export default function RoomPage() {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [selectedLanguage, setSelectedLanguage] =
+    useState<SupportedEditorLanguage | null>(null);
+
+  // Sync client hook: only enabled when visitor is an active room member with valid 24-char ObjectId
+  const roomId = room && "id" in room && isValidRoomId(room.id) ? room.id : null;
+  const isSyncEnabled = Boolean(currentMember && roomId);
+  const sync = useRoomSync({ roomId, enabled: isSyncEnabled });
+
+  // Expose sync handle for integration and E2E collaboration testing ONLY in DEV/test and when VITE_PAIRPREP_E2E=1
+  useEffect(() => {
+    if (
+      import.meta.env.DEV &&
+      import.meta.env["VITE_PAIRPREP_E2E"] === "1" &&
+      typeof window !== "undefined"
+    ) {
+      (window as unknown as { __pairprep_sync?: unknown }).__pairprep_sync = {
+        doc: sync.doc,
+        provider: sync.provider,
+        status: sync.status,
+        isSynced: sync.isSynced,
+        error: sync.error,
+      };
+      return () => {
+        delete (window as unknown as { __pairprep_sync?: unknown }).__pairprep_sync;
+      };
+    }
+    return undefined;
+  }, [sync.doc, sync.provider, sync.status, sync.isSynced, sync.error]);
 
   // Rate limit countdown effect
   useEffect(() => {
@@ -78,11 +122,15 @@ export default function RoomPage() {
         room: RoomDto | PublicRoomDto;
         currentMember?: RoomMemberDetailDto;
         members?: RoomMemberDetailDto[];
+        onlineMemberCount?: number;
       }>(`/rooms/${slug}`);
 
       setRoom(res.room);
       setCurrentMember(res.currentMember ?? null);
       setMembers(res.members ?? []);
+      if (typeof res.onlineMemberCount === "number") {
+        setOnlineMemberCount(res.onlineMemberCount);
+      }
       document.title = `${res.room.title} · PairPrep`;
     } catch (err) {
       if (err instanceof ApiClientError) {
@@ -108,6 +156,51 @@ export default function RoomPage() {
   useEffect(() => {
     fetchRoom();
   }, [fetchRoom]);
+
+  // Background participant refresh helper (silent refresh without loading skeletons)
+  const refreshRoom = useCallback(async () => {
+    if (!slug) return;
+    try {
+      const res = await apiClient.get<{
+        room: RoomDto | PublicRoomDto;
+        currentMember?: RoomMemberDetailDto;
+        members?: RoomMemberDetailDto[];
+        onlineMemberCount?: number;
+      }>(`/rooms/${slug}`);
+
+      setRoom(res.room);
+      setCurrentMember(res.currentMember ?? null);
+      setMembers(res.members ?? []);
+      if (typeof res.onlineMemberCount === "number") {
+        setOnlineMemberCount(res.onlineMemberCount);
+      }
+    } catch (err) {
+      if (err instanceof ApiClientError && err.status === 429 && err.retryAfterSec) {
+        setCountdown(err.retryAfterSec);
+      }
+      throw err;
+    }
+  }, [slug]);
+
+  // Event-driven participant synchronization with 10s fallback & 429 backoff (Finding 1 / ROOM-5)
+  useParticipantSync({
+    enabled: Boolean(currentMember && slug),
+    slug: slug ?? null,
+    provider: sync.provider,
+    localClientId: sync.doc?.clientID,
+    onRefresh: refreshRoom,
+    fallbackIntervalMs: import.meta.env["VITE_PAIRPREP_E2E"] === "1" ? 4000 : 10000,
+    debounceMs: 500,
+  });
+
+  // When WebSocket connects or reconnects, immediately refresh room to sync live presence without waiting (Phase 4.3)
+  const prevSyncStatusRef = useRef(sync.status);
+  useEffect(() => {
+    if (prevSyncStatusRef.current !== "connected" && sync.status === "connected") {
+      void refreshRoom().catch(() => {});
+    }
+    prevSyncStatusRef.current = sync.status;
+  }, [sync.status, refreshRoom]);
 
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -401,6 +494,23 @@ export default function RoomPage() {
 
   // 5. Active Room Shell (Member View)
   const fullRoom = room as RoomDto;
+  const totalMembersCount = members.length > 0 ? members.length : fullRoom.memberCount;
+
+  // Local connection state: current user is online immediately when WebSocket is connected
+  const isLocalConnected = sync.status === "connected";
+
+  const computedOnlineCount = isLocalConnected
+    ? members.filter((m) => {
+        const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+        return isCurrent ? true : Boolean(m.isOnline);
+      }).length
+    : 0;
+
+  const onlineCount = isLocalConnected
+    ? typeof onlineMemberCount === "number" && onlineMemberCount > 0
+      ? Math.max(onlineMemberCount, computedOnlineCount)
+      : Math.max(1, computedOnlineCount)
+    : 0;
 
   return (
     <div className="min-h-screen bg-canvas text-text-primary flex flex-col">
@@ -459,12 +569,13 @@ export default function RoomPage() {
             )}
           </Button>
 
-          {/* Participants Avatars */}
-          <div className="flex items-center gap-1 bg-surface-subtle border border-border-subtle rounded-lg px-2.5 py-1 text-xs">
+          {/* Room Capacity Badge */}
+          <div
+            className="flex items-center gap-1 bg-surface-subtle border border-border-subtle rounded-lg px-2.5 py-1 text-xs"
+            title={`${totalMembersCount} of 6 maximum room members`}
+          >
             <Users className="h-3.5 w-3.5 text-text-subtle mr-1" />
-            <span className="font-mono font-medium">
-              {members.length > 0 ? members.length : fullRoom.memberCount}/6
-            </span>
+            <span className="font-mono font-medium">{totalMembersCount}/6 members</span>
           </div>
         </div>
       </header>
@@ -474,38 +585,130 @@ export default function RoomPage() {
         {/* Sidebar: Participants & Room Info */}
         <aside className="border-r border-border-subtle bg-surface/50 p-4 space-y-6 hidden lg:block overflow-y-auto">
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-3">
-              Participants ({members.length > 0 ? members.length : fullRoom.memberCount})
-            </h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                Participants
+              </h2>
+              <span
+                data-testid="participant-counts"
+                className="text-[11px] font-mono text-text-subtle"
+              >
+                <span className="text-success font-medium">{onlineCount} online</span>
+                {" · "}
+                <span>
+                  {totalMembersCount} {totalMembersCount === 1 ? "member" : "members"}
+                </span>
+              </span>
+            </div>
             <div className="space-y-2">
               {members.length > 0 ? (
-                members.map((m) => (
-                  <div
-                    key={m.id}
-                    className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs"
-                  >
-                    <div className="flex items-center gap-2 truncate">
-                      <div className="h-6 w-6 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center font-bold text-[10px] text-primary shrink-0">
-                        {m.displayName.charAt(0).toUpperCase()}
+                members.map((m, idx) => {
+                  const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+                  const isMemberOnline = isLocalConnected
+                    ? isCurrent
+                      ? true
+                      : Boolean(m.isOnline)
+                    : false;
+
+                  const statusLabel = isLocalConnected
+                    ? isMemberOnline
+                      ? "Online"
+                      : "Offline"
+                    : isCurrent
+                      ? "Offline"
+                      : "Unavailable";
+                  const participantColor =
+                    PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
+                    (PARTICIPANT_PALETTE[0] as string);
+
+                  return (
+                    <div
+                      key={m.id}
+                      data-testid={`participant-${m.id}`}
+                      className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="relative shrink-0 flex items-center justify-center">
+                          <div
+                            className="h-6 w-6 rounded-full flex items-center justify-center font-bold text-[10px] border"
+                            style={{
+                              borderColor: participantColor,
+                              color: participantColor,
+                              backgroundColor: `${participantColor}22`,
+                            }}
+                          >
+                            {m.displayName.charAt(0).toUpperCase()}
+                          </div>
+                          <span
+                            aria-label={statusLabel}
+                            title={statusLabel}
+                            className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
+                              isMemberOnline ? "bg-success" : "bg-text-subtle/40"
+                            }`}
+                          />
+                        </div>
+                        <span className="truncate font-medium text-text-primary">
+                          {m.displayName}
+                        </span>
+                        {isCurrent && (
+                          <span className="text-[10px] text-primary font-mono ml-1 font-semibold shrink-0">
+                            (You)
+                          </span>
+                        )}
                       </div>
-                      <span className="truncate font-medium">{m.displayName}</span>
+                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                        <span
+                          data-testid={`participant-status-${m.id}`}
+                          className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border transition-colors ${
+                            isMemberOnline
+                              ? "bg-success/10 text-success border-success/20"
+                              : "bg-surface-subtle text-text-subtle border-border-subtle"
+                          }`}
+                        >
+                          {statusLabel}
+                        </span>
+                        <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
+                          {m.role}
+                        </span>
+                      </div>
                     </div>
-                    <span className="text-[10px] font-mono text-text-subtle uppercase">
-                      {m.role}
+                  );
+                })
+              ) : (
+                <div className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="relative shrink-0 flex items-center justify-center">
+                      <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center font-bold text-[10px] text-primary">
+                        {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
+                      </div>
+                      <span
+                        aria-label={isLocalConnected ? "Online" : "Offline"}
+                        className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
+                          isLocalConnected ? "bg-success" : "bg-text-subtle/40"
+                        }`}
+                      />
+                    </div>
+                    <span className="font-medium text-text-primary truncate">
+                      {currentMember?.displayName || "You"}
+                    </span>
+                    <span className="text-[10px] text-primary font-mono font-semibold shrink-0">
+                      (You)
                     </span>
                   </div>
-                ))
-              ) : (
-                <div className="flex items-center gap-2 p-2 rounded-lg bg-surface border border-border-subtle text-xs">
-                  <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center font-bold text-[10px] text-primary">
-                    {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
+                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                    <span
+                      className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border ${
+                        isLocalConnected
+                          ? "bg-success/10 text-success border-success/20"
+                          : "bg-surface-subtle text-text-subtle border-border-subtle"
+                      }`}
+                    >
+                      {isLocalConnected ? "Online" : "Offline"}
+                    </span>
+                    <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
+                      {currentMember?.role || "editor"}
+                    </span>
                   </div>
-                  <span className="font-medium">
-                    {currentMember?.displayName || "You"}
-                  </span>
-                  <span className="text-[10px] font-mono text-text-subtle ml-auto">
-                    {currentMember?.role || "editor"}
-                  </span>
                 </div>
               )}
             </div>
@@ -519,40 +722,52 @@ export default function RoomPage() {
           </div>
         </aside>
 
-        {/* Center: Collaborative Workspace Placeholder */}
+        {/* Center: Collaborative Workspace */}
         <section className="flex flex-col bg-canvas p-4 sm:p-6 overflow-hidden space-y-4">
-          <div className="flex-1 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden shadow-inner">
-            <div className="border-b border-border-subtle bg-surface-subtle px-4 py-2.5 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs font-mono text-text-secondary">
-                <FileCode className="h-4 w-4 text-primary" />
-                <span>
-                  main.
-                  {fullRoom.language === "python"
-                    ? "py"
-                    : fullRoom.language === "cpp"
-                      ? "cpp"
-                      : "js"}
-                </span>
+          <Suspense
+            fallback={
+              <div
+                data-testid="editor-loading-fallback"
+                className="flex flex-1 items-center justify-center min-h-[400px] bg-canvas-subtle border border-border rounded-lg text-text-muted text-sm font-mono"
+              >
+                Loading collaborative editor...
               </div>
-              <span className="flex items-center gap-1.5 text-xs text-success font-medium">
-                <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
-                Collaborative Session Active
-              </span>
-            </div>
-
-            <div className="flex-1 flex flex-col justify-center items-center p-8 text-center space-y-3">
-              <div className="p-3 rounded-2xl bg-primary/10 border border-primary/20 text-primary">
-                <Code2 className="h-8 w-8" />
-              </div>
-              <h2 className="text-base font-semibold text-text-primary">
-                Collaborative Code Editor
-              </h2>
-              <p className="text-xs text-text-secondary max-w-sm">
-                Real-time Monaco editor, Yjs CRDT synchronization, and sandbox container
-                execution will mount here.
-              </p>
-            </div>
-          </div>
+            }
+          >
+            <CollaborativeEditor
+              doc={sync.doc}
+              provider={sync.provider}
+              status={sync.status}
+              isSynced={sync.isSynced}
+              error={sync.error}
+              language={selectedLanguage ?? fullRoom.language}
+              onLanguageChange={setSelectedLanguage}
+              readOnly={isEnded || currentMember?.role === "viewer"}
+              user={{
+                name:
+                  user?.displayName ||
+                  currentMember?.displayName ||
+                  guestName ||
+                  "Participant",
+                color:
+                  PARTICIPANT_PALETTE[
+                    members.length > 0
+                      ? Math.max(
+                          0,
+                          members.findIndex((m) =>
+                            currentMember?.id
+                              ? m.id === currentMember.id
+                              : m.displayName ===
+                                (user?.displayName ||
+                                  currentMember?.displayName ||
+                                  guestName)
+                          )
+                        ) % PARTICIPANT_PALETTE.length
+                      : 0
+                  ] || (PARTICIPANT_PALETTE[0] as string),
+              }}
+            />
+          </Suspense>
 
           {/* Terminal / Output Placeholder */}
           <div className="h-40 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">

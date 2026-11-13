@@ -303,16 +303,18 @@ jobs:
             $DOCKER_COMPOSE -f infra/docker-compose.prod.yml up -d
 
             # Bounded retry smoke checks for /healthz ('db': 'ok') and / (HTTP 200)
+            # Timeout limits per request: --connect-timeout 3, --max-time 5
+            # Retry schedule: 12 attempts with 5s interval (sleep skipped after final attempt)
             MAX_RETRIES=12
             RETRY_INTERVAL=5
             SMOKE_SUCCESS=false
 
             for i in $(seq 1 $MAX_RETRIES); do
               echo "Production smoke check attempt $i of $MAX_RETRIES..."
-              HEALTH_RESP=$(curl -k -s -w "\n%{http_code}" https://${SITE_ADDRESS}/healthz 2>/dev/null || printf "error\n000\n")
+              HEALTH_RESP=$(curl -k -s --connect-timeout 3 --max-time 5 -w "\n%{http_code}" https://${SITE_ADDRESS}/healthz 2>/dev/null || printf "error\n000\n")
               HEALTH_BODY=$(echo "$HEALTH_RESP" | head -n -1)
               HEALTH_CODE=$(echo "$HEALTH_RESP" | tail -n 1)
-              WEB_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" https://${SITE_ADDRESS}/ 2>/dev/null || echo "000")
+              WEB_CODE=$(curl -k -s --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" https://${SITE_ADDRESS}/ 2>/dev/null || echo "000")
 
               echo "Attempt $i: healthz code=$HEALTH_CODE, web code=$WEB_CODE"
               if [ "$HEALTH_CODE" = "200" ] && [ "$WEB_CODE" = "200" ]; then
@@ -324,7 +326,9 @@ jobs:
                   echo "Healthz code 200 but db is not ok yet: $HEALTH_BODY"
                 fi
               fi
-              sleep $RETRY_INTERVAL
+              if [ "$i" -lt "$MAX_RETRIES" ]; then
+                sleep $RETRY_INTERVAL
+              fi
             done
 
             if [ "$SMOKE_SUCCESS" = "true" ]; then
@@ -336,5 +340,3 @@ jobs:
               echo "Smoke checks failed after $MAX_RETRIES attempts."
               exit 1
             fi
-
-            echo "One-origin hosting deployment verified successfully: https://${SITE_ADDRESS}/ and /healthz both returned 200 with db: ok."

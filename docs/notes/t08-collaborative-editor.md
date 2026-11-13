@@ -831,7 +831,7 @@ In our production measurements, ED-3 remote cursor propagation achieved a P95 of
 
 1. **Two Fundamentally Different Pipelines**:
    - **Cursor/Selection (Awareness Pipeline)**: Operates as an ephemeral presence broadcast. A cursor move simply updates a coordinate in memory, serializes a tiny awareness packet, broadcasts it over the socket, and renders a CSS decoration in Monaco. It completely bypasses document parsing, CRDT graphs, and persistence checks.
-   - **Text Synchronization (Document Update Pipeline)**: Every text keystroke must construct a CRDT item with causal origins, calculate state vectors, generate binary update frames, pass through server-side message inspection and authorization hooks, merge into the receiver's CRDT graph, resolve any concurrent interleaving, execute a model edit in Monaco, and trigger tokenizer re-evaluation.
+   - **Text Synchronization (Document Update Pipeline)**: Yjs creates and encodes document updates as edits occur, constructing CRDT items with causal origins and serializing binary update frames. (State vectors are not calculated on every keystroke; instead, state vectors summarize which operations a replica has observed and are used during synchronization to identify missing updates and exchange the differences). The update frame must travel over the network, pass through server-side message inspection and authorization hooks, merge into the receiver's CRDT graph, resolve any concurrent interleaving, execute a model edit in Monaco, and trigger tokenizer re-evaluation.
 
 2. **Cross-Region Geographic Network Routing**:
    - Our test runner was executed from **India (IST timezone)**, while the Azure production VM is hosted in the **East Asia (Hong Kong)** region.
@@ -860,7 +860,7 @@ Here is a natural, conversational response you can speak aloud in an interview:
 >
 > *To verify performance, I built an automated benchmark using dual authenticated browser contexts connected to our live Azure East Asia production server over the public internet. Cursor and selection updates were exceptionally responsive, achieving a P95 latency of 23 ms and 80 ms respectively.*
 >
-> *For collaborative text synchronization, we recorded a P95 of 219 ms. Because the test client was in India and the server was in Hong Kong, cross-region WAN routing pushed latency just past our original 200 ms target. While our local baseline confirmed sub-30 ms application overhead, in production we honestly report that text synchronization exceeds the original target by about 20 ms due to international network transit."*
+> *For collaborative text synchronization, we recorded a P95 of 219 ms, which exceeds our original 200 ms target. Geographic network transit between India and Hong Kong is a plausible contributor, but network and application processing were not independently measured during the production benchmark. By comparison, the local development benchmark measured text synchronization P95 at 25.72 ms and cursor propagation P95 at 23.27 ms. These are local end-to-end measurements, not isolated application-processing measurements."*
 
 ---
 
@@ -882,7 +882,7 @@ A Conflict-Free Replicated Data Type (CRDT) is a distributed data structure that
 Hocuspocus is a lightweight, headless WebSocket synchronization backend built specifically for Yjs. It handles connection pooling, room multiplexing, binary update broadcasting, session authentication, and hook points (`beforeHandleMessage`, `onStateless`) for custom authorization and document persistence.
 
 #### 6. What is the role of WebSockets?
-WebSockets provide a persistent, full-duplex TCP connection between the client browser and the Hocuspocus server. Unlike HTTP polling, WebSockets allow binary CRDT update packets and presence awareness frames to be pushed bi-directionally with minimal framing overhead and zero HTTP handshake latency.
+A WebSocket connection begins with an HTTP Upgrade handshake. Once established, it provides a persistent, full-duplex connection between the client browser and the Hocuspocus server. Subsequent document and awareness updates travel over the existing connection without a new HTTP request/response cycle for every update.
 
 #### 7. How are text changes synchronized?
 When a user types, `y-monaco` translates Monaco model content changes into a Yjs text transaction. Yjs packages the inserted or deleted items into a compact binary update. This binary packet travels over the WebSocket to Hocuspocus, which broadcasts it to the room. The remote client applies the binary update to its local Yjs document, which `y-monaco` reflects into Monaco's text model.
@@ -891,10 +891,10 @@ When a user types, `y-monaco` translates Monaco model content changes into a Yjs
 Cursor and selection coordinates are managed through the Yjs Awareness protocol. When the local cursor moves, `useMonacoBinding` updates the local awareness state with the line number, column, user name, and color. This ephemeral state is broadcast over the WebSocket. Remote clients receive the awareness update and render Monaco decorations via CSS rules targeting `.yRemoteSelectionHead-${clientId}` and `.yRemoteSelection-${clientId}`.
 
 #### 9. What is the difference between Awareness and Y.Doc?
-`Y.Doc` represents persistent, authoritative document state managed by the CRDT causal graph and saved to durable storage. `Awareness` represents transient, ephemeral presence state (where cursors are, who is active) that changes continuously, does not require conflict resolution, and is never saved to the database.
+A `Y.Doc` maintains collaborative document state in client and server memory using the CRDT causal graph. MongoDB persistence is handled separately by the backend persistence layer (asynchronously flushing document snapshots). `Awareness` maintains transient, ephemeral presence information (cursor and selection positions, participant display names and colors) in memory; it changes continuously, does not require conflict resolution, and remains ephemeral without being stored as document history.
 
 #### 10. Why is text synchronization slower than cursor propagation?
-Text synchronization goes through a full document CRDT pipeline: item creation, causal graph tracking, binary state-vector encoding, server permission checks, receiver graph merging, and Monaco model mutations with tokenizer re-indexing. Cursor updates use lightweight awareness messages that bypass document models entirely and render directly as DOM CSS decorations.
+Text synchronization goes through a full document CRDT pipeline: creating and encoding document updates as edits occur, verifying authorization on the server, merging updates into the remote CRDT graph, and executing Monaco model mutations with tokenizer re-indexing. (State vectors summarize which operations a replica has observed and are used during synchronization to exchange missing updates, rather than computed per keystroke). Cursor updates use lightweight awareness messages that bypass document models entirely and render directly as DOM CSS decorations.
 
 #### 11. What do P50 and P95 mean?
 P50 is the median: 50% of operations were faster, and 50% were slower. P95 is the 95th percentile tail latency: 95% of operations finished faster, and only the slowest 5% took longer. P95 is essential because it reveals network jitter and worst-case user experience that averages conceal.

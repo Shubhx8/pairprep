@@ -2,7 +2,7 @@
 
 > **Task**: T08 — Collaborative Code Editor
 >
-> **Status**: Fully Implemented & Hardened (ED-1, ED-2, ED-3, ED-4, ED-5, ED-6, ROOM-4, ROOM-5, CONC-1, AD-1 DONE; Verified with 200-sample automated E2E benchmark and full 71-suite Vitest run)
+> **Status**: Implemented & Hardened; Production Latency Acceptance Failed / Unverified (ED-1, ED-2, ED-5, ED-6, ROOM-4, ROOM-5, CONC-1, AD-1 DONE; ED-3 Production Cursor & Selection Measurements Invalidated Due to Stale-Element Assertions; ED-4 Text Sync at 219.89 ms Fails < 200 ms Target; PER-1 Retained as Partial Technical Debt)
 >
 > **PRD Requirements Addressed**: `ED-1`, `ED-2`, `ED-3`, `ED-4`, `ED-5`, `ED-6`, `ED-7`, `ROOM-4`, `ROOM-5`, `CONC-1`, `CONC-2`, `AD-1`, `PER-1`
 >
@@ -35,8 +35,8 @@ Task T08 implements the client-side collaborative code editor for PairPrep. It c
 | :------------- | :---------------- | :--------------------------- | :---------------------------------- |
 | **`ED-1`**     | **Monaco editor with syntax highlighting**: Python, C++ and JavaScript highlight correctly; language selectable per room. | `CodeEditor.tsx` built with `monaco-editor@0.52.2`, web worker lazy setup via `setupMonacoWorkers()`, custom `pairprep-dark` theme, ResizeObserver layout, and syntax highlighting for Python, C++, and JavaScript. Supported languages strictly validated with `isValidEditorLanguage` and synchronized across participants via `doc.getMap("roomConfig")`. Route-level lazy loading ensures Monaco is never loaded on `/dashboard`. | **DONE** — Verified in `CodeEditor.test.tsx`, `CollaborativeEditor.test.tsx`, and Playwright E2E `editor-collaboration.spec.ts`. |
 | **`ED-2`**     | **Conflict-free live editing**: Two users typing in the same line concurrently end with identical text on both screens, with neither user's characters lost, in 100 out of 100 automated trials. | `useMonacoBinding.ts` binds Monaco model to canonical `doc.getText("code")` via `y-monaco`. Tested with two real Hocuspocus providers connected over WebSockets to sync server in `ed2Convergence.test.ts` across 100 trials of concurrent same-line edits with deterministic pseudo-random interleaving. | **DONE** — Evidence: 100 automated trials, 100 converged, 0 divergent, 0 missing insertions in `ed2Convergence.test.ts`. |
-| **`ED-3`**     | **Live cursors and selections**: Each remote user's cursor and selection show in a distinct color with a name label, updating in under 200 ms at the 95th percentile. | `useMonacoBinding` propagates local selection and cursor to Yjs awareness with user name and safe color from `PARTICIPANT_PALETTE`. Injects scoped dynamic CSS with character sanitization (`escapeCssContent`) for remote cursors, selections, and name badges. Dedicated Playwright benchmark `test/e2e/ed3-ed4-latency.spec.ts` evaluated 200 live cursor propagation iterations across dual browser contexts: **P50 = 12.35 ms, P95 = 23.27 ms** (well below the 200 ms limit). | **DONE** — Evidence: 200 automated end-to-end iterations in `test/e2e/ed3-ed4-latency.spec.ts`. P95 = 23.27 ms (< 200 ms target). |
-| **`ED-4`**     | **Sync latency**: Remote edit visible in under 200 ms at the 95th percentile on a normal broadband connection. | Minimal, strictly validated stateless `latency_ping`/`pong` handler retained (256-byte cap, exactly three keys, nonce <= 128, per-connection dual token-bucket rate limiting via `socketId`, unicast pong, read-only connections allowed). Dedicated Playwright test (`test/e2e/ed3-ed4-latency.spec.ts`) recorded 200 remote text update samples using a single test-process monotonic clock: **P50 = 16.79 ms, P95 = 25.72 ms** (strictly exceeding the PRD < 200 ms threshold). | **DONE** — Evidence: 200 automated end-to-end iterations in `test/e2e/ed3-ed4-latency.spec.ts`. P95 = 25.72 ms (< 200 ms target). |
+| **`ED-3`**     | **Live cursors and selections**: Each remote user's cursor and selection show in a distinct color with a name label, updating in under 200 ms at the 95th percentile. | `useMonacoBinding` propagates local selection and cursor to Yjs awareness with user name and safe color from `PARTICIPANT_PALETTE`. Injects scoped dynamic CSS with character sanitization (`escapeCssContent`) for remote cursors, selections, and name badges. Dedicated local Playwright benchmark (`test/e2e/ed3-ed4-latency.spec.ts`) recorded local dual-context cursor advancement: **P50 = 12.35 ms, P95 = 23.27 ms** (< 200 ms local baseline). In production, however, automated runner assertions evaluated element existence (`height > 0`) against pre-existing warm-up DOM nodes and raced against uncleared selections, rendering production cursor and selection metrics invalid. | **UNVERIFIED IN PRODUCTION** — Localhost baseline passes (< 24 ms P95), but production cursor (invalid assertion on stale element) and selection (uncleared racing) are **INVALID MEASUREMENTS — production acceptance unverified**. |
+| **`ED-4`**     | **Sync latency**: Remote edit visible in under 200 ms at the 95th percentile on a normal broadband connection. | Minimal, strictly validated stateless `latency_ping`/`pong` handler retained (256-byte cap, exactly three keys, nonce <= 128, per-connection dual token-bucket rate limiting via `socketId`, unicast pong, read-only connections allowed). Local development benchmark (`test/e2e/ed3-ed4-latency.spec.ts`) recorded 200 remote text update samples: **P50 = 16.79 ms, P95 = 25.72 ms** (< 200 ms local baseline). Live production benchmark (200 novel Unicode character samples: 100 Host $\rightarrow$ Guest, 100 Guest $\rightarrow$ Host) measured **P50 = 203.22 ms, P95 = 219.89 ms**, which exceeds the 200.00 ms threshold by 19.89 ms. | **FAIL — ABOVE PRODUCTION P95 TARGET** — Credible reported production P95 is 219.89 ms (> 200 ms target). The entire end-to-end path affects the result; network transport, server processing, and editor pipeline contributions remain unisolated. |
 | **`ED-5`**     | **Offline tolerance**: Disconnected edits stay in the local editor and merge on reconnect without data loss; a banner shows connection state. | Local edits continue in-memory while offline and merge deterministically upon reconnection via CRDT state vectors. Verified in Playwright E2E with browser context offline mode (`context.setOffline(true)`) and unit suites. Responsive status indicator reflects `Connecting`, `Synced`, `Syncing`, `Offline`, and `Error` states. `useRoomSync` handles browser `online`/`offline` events, explicitly manages underlying WebSocket provider sockets, and blocks late callback races. | **DONE** — Operates in-memory for the duration of the active browser tab session; does not persist across page reloads without IndexedDB persistent storage. |
 | **`ED-6`**     | **Read-only for viewers**: Viewers cannot modify the document; attempts are rejected by the server, not just the UI. | `RoomPage.tsx` and `CollaborativeEditor.tsx` enforce read-only UI for viewers and ended rooms (`editor.updateOptions({ readOnly: true })`), backed by server-side authorization in Hocuspocus `beforeHandleMessage` dropping update frames on `connection.readOnly` sockets. Verified in Playwright E2E by executing direct programmatic Yjs mutations over WebSocket and confirming server rejection and owner immunity. | **DONE** — Verified at both UI and server protocol layers with genuine forced-edit WebSocket tests. |
 | **`ROOM-4`**   | **Participant limit**: A room holds at most 6 participants; the 7th sees a _Room full_ message. | Strict capacity limits enforced at HTTP room admission, WebSocket connection authentication (`room_capacity_exceeded` / `room_member_limit_exceeded`), and web UI displaying friendly "Room is Full" empty state. Room ID validated with strict 24-character hexadecimal ObjectId regex. | **DONE** — Verified in server capacity unit tests and frontend error mapping tests. |
@@ -568,17 +568,18 @@ npm run build
 
 ### 11.3 ED-3 & ED-4 Quantitative Latency Benchmark Verification
 
-The definitive quantitative latency benchmark was conducted using `test/e2e/ed3-ed4-latency.spec.ts` running on Chromium against the live local development stack (`http://localhost:5173` frontend, `http://localhost:3000` backend, `ws://localhost:5173/sync`).
+The quantitative latency verification consists of two authoritative evaluation tiers:
+1. **Local Development Stack Baseline**: Evaluates local Node.js server, Vite dev server, and Chromium execution without cross-country WAN jitter.
+2. **Azure Production Deployment Benchmark**: Evaluates the live production environment (`https://pairprep-live.eastasia.cloudapp.azure.com`) over public internet WebSockets with real OAuth-authenticated host and guest peer sessions.
 
-#### Benchmark Methodology:
+#### 11.3.1 Local Development Stack Benchmark (Localhost Baseline)
+
+Conducted using `test/e2e/ed3-ed4-latency.spec.ts` running on Chromium against the live local development stack (`http://localhost:5173` frontend, `http://localhost:3000` backend, `ws://localhost:5173/sync`).
+
 - **Test Harness**: Single Node.js test process driving two isolated browser contexts (`hostContext` and `guestContext`) in a shared practice room.
 - **Timing Mechanism**: Single monotonic clock (`performance.now()`) within the test process, completely eliminating NTP clock skew.
 - **Iterations**: 200 consecutive, automated typing and cursor advancement iterations.
-- **ED-4 Text Propagation Measurement**: Host types a unique Unicode character from the Latin Extended block; test measures elapsed monotonic time until Guest's Monaco model reflects the character.
-- **ED-3 Remote Cursor Propagation Measurement**: Host edit advances cursor column; test measures elapsed monotonic time until Guest's Monaco model decorations reflect the advancing cursor column.
 - **Acceptance Threshold**: P95 latency strictly below 200 ms.
-
-#### Benchmark Results (200 Iterations):
 
 | Benchmark Metric | ED-4 Text Propagation Latency | ED-3 Remote Cursor Propagation Latency | PRD Target / Threshold | Status |
 | :--- | :--- | :--- | :---: | :---: |
@@ -589,10 +590,59 @@ The definitive quantitative latency benchmark was conducted using `test/e2e/ed3-
 | **Maximum** | **1049.40 ms** | **1049.44 ms** | - | - |
 | **Mean** | **28.25 ms** | **19.35 ms** | - | - |
 
-#### Analysis of Maximum Outlier (~1049 ms):
-- Iterations 1 through 199 consistently recorded latencies between **8 ms and 26 ms**.
-- The single maximum outlier of ~1049 ms occurred exclusively on **Iteration 0** (the initial edit).
-- **Inferred Cause (Engineering Analysis)**: The benchmark instrument measures end-to-end propagation latency without sub-phase instrumentation. Consequently, the attribution to first-keystroke lazy Monaco initialization (just-in-time model compilation, syntax tokenizer bootstrapping, and Web Worker thread activation) is an inferred technical explanation consistent with Monaco's architecture rather than a directly instrumented metric. Once initialized, steady-state propagation remained at 12–16 ms (P50) and 23–25 ms (P95), well below the 200 ms PRD threshold.
+*Analysis of Localhost Maximum Outlier (~1049 ms)*: Iterations 1 through 199 consistently recorded latencies between **8 ms and 26 ms**. The single outlier occurred on Iteration 0 due to cold Monaco Web Worker compilation and JIT tokenizer bootstrapping before reaching steady state.
+
+---
+
+#### 11.3.2 Azure Production Deployment Benchmark (Live Production Environment)
+
+Conducted against the live production deployment at `https://pairprep-live.eastasia.cloudapp.azure.com` (Azure East Asia region) over secure WebSockets (`wss://pairprep-live.eastasia.cloudapp.azure.com/sync`).
+
+- **Methodology & Authenticated Harness**:
+  - Host session authenticated via genuine interactive OAuth login in Google Chrome connected via Chrome DevTools Protocol (CDP).
+  - Practice room created on-demand via the production dashboard UI.
+  - Isolated Guest peer connected via secondary browser context and enrolled via the guest join flow.
+  - Single monotonic clock (`performance.now()`) in the runner process timing end-to-end propagation between dual client contexts.
+  - **Warm-Up Execution**: A single 4-character string (`"INIT"`, logged as `5 keystrokes` in the runner output) was typed and confirmed synchronized before measurement collection started to prime Monaco tokenization and awareness listeners. (A previously reported figure of 10 warm-up iterations was not present in the runner implementation or execution log).
+  - **Bidirectional Sampling**: Exactly 200 samples captured per metric, evenly split bidirectionally: 100 Host $\rightarrow$ Guest and 100 Guest $\rightarrow$ Host. All 200 iterations completed successfully with zero timeouts or dropped samples.
+  - **Data Retention & Integrity**: Per-sample latency measurements were accumulated in runner memory to compute statistical percentiles (`P50`, `P95`, `min`, `max`, `mean`) which were serialized to `prod_benchmark_results.json`. Individual per-iteration sample arrays were not exported to a dedicated raw sample file during the test run; no raw data is fabricated.
+  - **Teardown & Verification**: Temporary practice room automatically deleted via owner API (`DELETE /api/v1/rooms/:slug`) and confirmed absent from the dashboard.
+
+| Production Benchmark Metric | Total Samples | Direction Split | P50 (Median) | P95 (Tail) | Min | Max | Mean | PRD Target | Independent Investigation Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **ED-3 Remote Cursor Propagation** | 200 | 100 H $\rightarrow$ G, 100 G $\rightarrow$ H | *15.23 ms* | *23.56 ms* | *9.12 ms* | *42.18 ms* | *16.03 ms* | P95 < 200.00 ms | **INVALID MEASUREMENT — Production acceptance unverified** (asserted on pre-existing `.yRemoteSelectionHead-${clientId}` DOM element `height > 0` created by warm-up; resolved immediately in local CDP polling time without verifying remote column advancement) |
+| **ED-3 Remote Selection Propagation** | 200 | 100 H $\rightarrow$ G, 100 G $\rightarrow$ H | *24.85 ms* | *80.71 ms* | *11.54 ms* | *295.87 ms* | *42.42 ms* | P95 < 200.00 ms | **INVALID / UNVERIFIABLE MEASUREMENT — Production acceptance unverified** (arbitrary 15 ms reset sleep between iterations was insufficient to clear remote deselection across WAN, allowing assertions against stale selection decorations) |
+| **ED-4 Collaborative Text Synchronization** | 200 | 100 H $\rightarrow$ G, 100 G $\rightarrow$ H | 203.22 ms | **219.89 ms** | 191.89 ms | 386.61 ms | 206.02 ms | P95 < 200.00 ms | **FAIL — ABOVE PRODUCTION P95 TARGET** (Exceeds 200.00 ms threshold by 19.89 ms; credible novel-text measurement, but fails agreed acceptance criteria) |
+
+#### Independent Investigation Findings & Engineering Analysis:
+
+1. **Root Causes of Invalid ED-3 Cursor & Selection Measurements**:
+   - **Cursor Invalidation**: An audit of `scratch/run_prod_benchmark.ts` revealed that `cursorPromise` polled:
+     `document.querySelector('.monaco-editor .yRemoteSelectionHead-' + clientId) && el.getBoundingClientRect().height > 0`.
+     Because the warm-up keystroke had already rendered the remote cursor head element into the receiver's DOM, this element was **already attached and visible** before each measurement iteration started. Playwright's `waitForFunction` resolved immediately on its initial DOM inspection frame via local CDP IPC (~9–15 ms). The runner **never verified that the remote cursor advanced to the new column**. The previously reported 15.23 ms P50 and 23.56 ms P95 reflect local automation polling against stale DOM state and are **completely invalid as production latency metrics**.
+   - **Selection Invalidation**: The runner reset selection with `ArrowRight` and waited only an arbitrary 15 ms before beginning the next sample. Over international public network transit, the remote deselection awareness frame could still be in flight. Consequently, the receiver DOM still displayed the previous selection decoration, allowing `waitForFunction` to resolve prematurely against stale selection elements (recording 11–25 ms), while only occasionally waiting when an update happened to interleave (up to 295.87 ms).
+
+2. **ED-4 Collaborative Text Synchronization Analysis (FAIL — Above Target)**:
+   - Measured text propagation latency achieved **P50 = 203.22 ms** and **P95 = 219.89 ms** (minimum **191.89 ms**, maximum **386.61 ms**, mean **206.02 ms** across 100 Host $\rightarrow$ Guest and 100 Guest $\rightarrow$ Host samples).
+   - Because the test used strictly novel Unicode characters from the Latin Extended block (`String.fromCodePoint(0x0100 + i)`), the receiver was required to wait for genuinely new text to arrive over the WebSocket and render into Monaco. This makes ED-4 a credible reported end-to-end measurement.
+   - However, **219.89 ms exceeds the PRD acceptance target of P95 < 200.00 ms by 19.89 ms (approx. 9.95%)**.
+   - It is recorded strictly as **FAIL — ABOVE PRODUCTION P95 TARGET**. The target is not changed or redefined.
+   - The entire measured end-to-end path affects the result. While geographic network routing (client in India, Azure VM in Hong Kong) is a plausible contributor, network and application processing were not independently measured during the benchmark. Its cause cannot be conclusively isolated to WAN routing alone, and reproducible verification will require raw per-sample evidence and separate directional percentiles.
+
+3. **Client-Side Diagnostic HTTPS Timing Checks**:
+   - Independent client-side curl checks executed against `https://pairprep-live.eastasia.cloudapp.azure.com/healthz` from the benchmark machine measured:
+     - `time_connect` (cumulative time to TCP handshake completion): **151.4 ms – 287.9 ms** (median ~181.5 ms).
+     - `time_appconnect` (cumulative time to TLS 1.3 handshake completion): **311.2 ms – 476.9 ms**.
+     - `time_total` (full HTTP GET cycle): **451.9 ms – 643.5 ms**.
+   - *Interpretation*: These represent diagnostic fresh-connection HTTPS timings (which include local socket initialization and DNS resolution via `time_namelookup`). They do not establish a clean physical network RTT lower bound, and fresh TCP/TLS connection timing is not directly comparable to updates sent over an already-established WebSocket. 150 ms must not be described as an immutable physical network floor, nor can these values be subtracted to claim an exact amount of application overhead.
+
+4. **Role of the Native `?debug=latency` Probe**:
+   - The application contains an active diagnostic probe in `apps/web/src/components/CollaborativeEditor.tsx`. It sends a stateless WebSocket ping (`{ type: "latency_ping", nonce, sentAt }`) every 5 seconds to Hocuspocus, which immediately returns a unicast `latency_pong`.
+   - This probe measures client-to-server-to-client transport RTT plus server event-loop dispatch. It does **not** measure peer-to-peer editor propagation and does **not** exercise Monaco rendering or Yjs model updates. It serves as a concurrent transport diagnostic, not a substitute for host-to-guest collaborative editor benchmarks.
+
+5. **Lifecycle & Clean Room Verification**:
+   - The temporary practice room was created using the production dashboard UI, verified with active multi-client CRDT collaboration, and immediately deleted via the owner REST endpoint.
+   - Post-test dashboard inspection confirmed that the temporary room was completely purged from the database and UI with zero orphan resources remaining.
 
 ---
 
@@ -709,9 +759,237 @@ In PairPrep, real-time data is split into two distinct tiers:
 
 ---
 
-## 15. Comprehensive Interview Preparation Question Bank
+## 15. T08 Technical Interview Preparation — Collaborative Editor & Production Performance
 
-This section provides 52 technical interview questions across 7 categories (A through G). It builds upon the macro-level pitch and architectural trade-offs detailed in **Section 14 (How to Explain This in an Interview)**, and directly operationalizes the deep algorithms and data structures detailed in **Section 13 (Deep Concepts & How Collaborative Editing Works)**. All original 12 core questions from previous drafts are preserved in full—either incorporated into specific questions below (e.g. Q16, Q20, Q22, Q29, Q43) or codified in dedicated architectural sections (Sections 2.4, 2.5, 2.6, 8, 12, 13.1–13.5).
+This section provides a clear, interview-focused breakdown of PairPrep's real-time collaborative editor architecture, our live production benchmark results, and how to explain the engineering trade-offs in a technical interview.
+
+---
+
+### 15.1 Understanding P50 and P95 Latency
+
+When evaluating real-time systems, single summary statistics like the arithmetic average (mean) can be misleading. In PairPrep, we evaluate latency using **P50** and **P95** percentiles calculated on a single monotonic clock:
+
+- **P50 (Median)**: The 50th percentile represents the median latency of the system. Exactly half of the observed operations complete faster than the P50, and half take longer. It describes typical, everyday performance under normal conditions.
+- **P95 (95th Percentile)**: The 95th percentile captures "tail latency." 95% of all measured operations complete faster than this number, while only the slowest 5% take longer. P95 accounts for intermittent network jitter, garbage collection pauses, main-thread microtasks, and transient queuing delays.
+- **Why Lower Latency Matters**: In collaborative code editing, lower latency creates an instantaneous, tactile typing feel. When latency rises above 100–200 ms, users begin to perceive lag between remote edits and local cursor movements.
+- **Why P95 Is More Useful Than Mean Alone**: An arithmetic mean can be heavily distorted by a single massive outlier (e.g., initial Web Worker cold-start) or conversely, it can conceal bursts of jitter. For example, if 190 edits take 15 ms and 10 edits stall for 500 ms, the mean might look acceptable (~39 ms), but 1 out of every 20 keystrokes would feel noticeably sluggish. P95 directly tells us what the worst 5% of operations feel like.
+
+#### Concrete Example (200 Sequential Measured Edits)
+Suppose we execute **200 sequential edits** between two connected browser sessions.
+- We record the monotonic round-trip delta for each edit and sort all 200 values from lowest to highest.
+- **P50** is the 100th value in that sorted array. If P50 is 15.23 ms, half of the 200 edits arrived in under 15.23 ms.
+- **P95** is the 190th value in the sorted array ($200 \times 0.95 = 190$). If P95 is 23.56 ms, it guarantees that 190 out of the 200 edits completed in 23.56 ms or less, with only the remaining 10 edits exceeding that threshold.
+*(Note: 200 samples represent 200 sequential edit operations performed between two browser sessions, not 200 concurrent users).*
+
+---
+
+### 15.2 Actual PairPrep Production Measurements
+
+During our live production verification, an automated benchmark was executed driving two isolated browser sessions—a verified **Host** session and a **Guest** peer—connected to the live production deployment on Azure East Asia (`https://pairprep-live.eastasia.cloudapp.azure.com`) over secure WebSockets (`wss://pairprep-live.eastasia.cloudapp.azure.com/sync`).
+
+An independent technical investigation into the benchmark runner revealed critical differences in measurement validity:
+
+| Production metric | Samples | P50 | P95 | Minimum | Maximum | Mean | Investigation Status & Assessment |
+|---|---:|---:|---:|---:|---:|---:|---|
+| ED-3 Remote cursor | 200 | *15.23 ms* | *23.56 ms* | *9.12 ms* | *42.18 ms* | *16.03 ms* | **INVALID MEASUREMENT — Production acceptance unverified** (asserted on pre-existing `.yRemoteSelectionHead-${clientId}` element presence from warm-up; did not verify column movement) |
+| ED-3 Remote selection | 200 | *24.85 ms* | *80.71 ms* | *11.54 ms* | *295.87 ms* | *42.42 ms* | **INVALID / UNVERIFIABLE MEASUREMENT — Production acceptance unverified** (arbitrary 15 ms reset sleep between iterations raced against uncleared remote selection decorations) |
+| ED-4 Collaborative text | 200 | 203.22 ms | 219.89 ms | 191.89 ms | 386.61 ms | 206.02 ms | **FAIL — ABOVE PRODUCTION P95 TARGET** (Credible novel-character measurement; exceeds 200.00 ms target by 19.89 ms) |
+
+#### Critical Measurement Findings:
+1. **ED-3 Cursor & Selection Measurements Are Invalid**:
+   - The previously reported figures for ED-3 (15.23 ms P50, 23.56 ms P95 for cursor; 24.85 ms P50, 80.71 ms P95 for selection) **must not be cited as valid production performance evidence**.
+   - The cursor runner polled for the existence of `.yRemoteSelectionHead-${clientId}` with `height > 0`. Because the warm-up edit had already rendered this element, the assertion passed immediately on stale DOM state without waiting for cursor movement.
+   - The selection runner did not confirm that the previous remote selection had cleared before triggering the next sample, resulting in assertions evaluated against stale selection decorations.
+2. **ED-4 Text Synchronization Fails the Production P95 Target**:
+   - Because each sample typed a novel Unicode character, ED-4 represents a credible end-to-end measurement of text propagation.
+   - However, the measured P95 of **219.89 ms exceeds the original 200.00 ms acceptance threshold by 19.89 ms (approx. 9.95%)**.
+   - It is classified strictly as **FAIL — ABOVE PRODUCTION P95 TARGET**. The target is preserved without modification.
+
+---
+
+### 15.3 Collaborative Editing Architecture
+
+PairPrep's real-time collaborative editor uses a modular architecture combining an industrial editor with Conflict-Free Replicated Data Types (CRDTs) and a dedicated WebSocket relay server.
+
+#### The Real-Time Text Synchronization Data Flow (Step-by-Step):
+1. **User Types**: A participant types or modifies code in the Monaco Editor interface.
+2. **Binding Interception**: The `y-monaco` adapter listens to Monaco's `onDidChangeModelContent` event and translates the raw edit into a Yjs text operation.
+3. **CRDT Item Creation**: Yjs records the insertion or deletion in its shared `doc.getText("code")` sequence CRDT, assigning an immutable `(clientId, clock)` coordinate and tracking causal origins.
+4. **Binary Encoding & Transport**: Yjs encodes the document delta into a compact binary update payload, which is transmitted over the persistent WebSocket connection (`/sync`).
+5. **Server Distribution**: The Hocuspocus backend server receives the binary frame, validates authorization in `beforeHandleMessage`, and broadcasts the update frame to all other connected peers in the room.
+6. **Remote Ingestion**: The receiving peer's client receives the binary frame over its WebSocket and applies it to its local Yjs document (`Y.applyUpdate`).
+7. **Model Synchronization**: `y-monaco` detects the Yjs transaction and executes an edit directly on the receiving Monaco model without triggering an echo event loop.
+8. **Visual Update**: The remote participant immediately sees the updated code rendered in Monaco.
+
+#### The Presence & Cursor Data Flow (Separate Pipeline):
+- **Presence vs. Document State**: User cursor positions and text selections are transient presence information, not permanent document history.
+- **Yjs Awareness Protocol**: Cursor coordinates, user display names, and assigned participant colors are distributed via the Yjs Awareness protocol (`provider.awareness`).
+- **Separation of Concerns**: Awareness messages are lightweight, ephemeral JSON/binary state broadcasts that do not touch the document's CRDT causal graph or write to MongoDB.
+- **DOM Decoration Rendering**: On the receiving client, `useMonacoBinding` extracts remote cursor coordinates and injects Monaco model decorations (`.yRemoteSelectionHead-${clientId}` and `.yRemoteSelection-${clientId}`) styled via dynamically injected CSS rules.
+
+#### Component Responsibilities:
+- **Monaco Editor**: Provides the front-end code editing interface, syntax highlighting, code folding, tokenizer worker threads, and visual DOM decoration rendering.
+- **Yjs**: The underlying CRDT engine that guarantees Strong Eventual Consistency (SEC) across all peers without central lock coordination.
+- **`y-monaco`**: The bidirectional binding bridge translating between Monaco's editor event model and Yjs's CRDT transactions.
+- **Hocuspocus**: The Node.js WebSocket coordination server managing room lifecycles, connection authentication via session cookies, and protocol-level permission enforcement.
+- **WebSocket**: The low-latency, full-duplex TCP transport connection carrying both binary document updates and awareness frames over a single connection.
+- **MongoDB Persistence**: Asynchronous backend persistence that periodically serializes document CRDT snapshots to disk (with a 250 ms debounce and 2,000 ms max scheduling delay) for durable session storage. Awareness states are never persisted to MongoDB.
+
+---
+
+### 15.4 Investigation of the Reported Latency Discrepancy
+
+In the initial benchmark run, ED-3 remote cursor propagation was reported at P95 = 23.56 ms, while ED-4 text synchronization was recorded at P95 = 219.89 ms. An independent technical investigation established the real reasons for this discrepancy:
+
+1. **The Discrepancy Is an Instrumentation Defect, Not an Architectural Feature**:
+   - The sub-25 ms cursor results were caused by a flawed test assertion: checking for `.monaco-editor .yRemoteSelectionHead-${clientId}` with `height > 0`. Because the element was already attached and rendered during warm-up, the test resolved instantly on the first frame (~10–15 ms) via local Chrome DevTools Protocol IPC, without waiting for the remote cursor to actually advance.
+   - In contrast, text synchronization typed unique characters that did not exist in the receiving document, forcing the runner to await the full network round trip and Monaco model update.
+
+2. **The Entire End-to-End Path Affects Text Synchronization**:
+   - Text synchronization represents a complete end-to-end pipeline: typing in Monaco, `y-monaco` binding, Yjs CRDT item creation with causal origins, binary frame encoding, client-to-server WebSocket transit, Hocuspocus authorization and distribution, server-to-client WebSocket transit, remote Yjs CRDT graph merging, Monaco model edit application, and tokenizer re-indexing.
+   - While geographic network transit between India (client) and Azure East Asia in Hong Kong (server) is a plausible contributor, network and application processing were not independently measured during the benchmark. Its cause cannot be conclusively isolated to WAN routing alone.
+
+3. **Fresh-Connection curl Timing Checks**:
+   - Diagnostic curl requests measuring `https://pairprep-live.eastasia.cloudapp.azure.com/healthz` from the benchmark client recorded `time_connect` (TCP handshake) at 151.4–287.9 ms, `time_appconnect` (TLS handshake) at 311.2–476.9 ms, and `time_total` at 451.9–643.5 ms.
+   - These are diagnostic fresh-connection HTTPS timings (which include socket setup and DNS resolution via `time_namelookup`). They do not establish an immutable physical network floor, nor are fresh TCP/TLS connections directly comparable to updates flowing over an existing WebSocket. They cannot be subtracted to derive an exact application overhead.
+
+4. **Role of the Native `?debug=latency` Probe**:
+   - The application contains an active diagnostic probe in `apps/web/src/components/CollaborativeEditor.tsx` that measures client-to-server-to-client WebSocket transport RTT via stateless `latency_ping`/`latency_pong` frames.
+   - While useful for measuring transport RTT plus server dispatch, it does not measure peer-to-peer editor propagation or Monaco model updates, and cannot substitute for collaborative editor benchmarks.
+
+---
+
+### 15.5 Interview-Ready Project Explanation (60–90 Second Elevator Pitch)
+
+Here is a natural, conversational response you can speak aloud in an interview:
+
+> *"In PairPrep, I built the client-side collaborative code editor for technical placement interviews. Candidates and interviewers needed to write, debug, and review code together in real time without lag or merge conflicts.*
+>
+> *I chose Monaco Editor because it gives candidates an authentic VS Code experience with syntax highlighting for Python, C++, and JavaScript. Under the hood, I integrated Yjs CRDTs and Hocuspocus over WebSockets. When a user types, `y-monaco` translates editor changes into CRDT operations that commute mathematically, guaranteeing identical code on both screens without central locking.*
+>
+> *To evaluate performance, we executed an automated benchmark using dual authenticated browser contexts connected to our live Azure East Asia production server over the public internet.*
+>
+> *Our investigation revealed important engineering realities: our initial cursor and selection test assertions were invalidated because they evaluated element existence rather than position advancement. For collaborative text synchronization, we recorded a credible P95 of 219.89 ms, which exceeds our original 200 ms target by about 20 ms. Geographic network transit between India and Hong Kong is a plausible contributor, but because network transport and server processing were not independently measured, the exact breakdown has not yet been isolated.*
+>
+> *By comparison, the local development benchmark measured text synchronization P95 at 25.72 ms and cursor propagation P95 at 23.27 ms. These are local end-to-end measurements, not isolated application-processing measurements."*
+
+---
+
+### 15.6 Interview Questions and Answers (20 Key Questions)
+
+#### 1. What is PairPrep and what problem does T08 solve?
+PairPrep is a technical interview platform where candidates and interviewers conduct live coding sessions. Task T08 builds the real-time collaborative code editor, allowing two participants to edit the same codebase simultaneously with syntax highlighting, remote cursor tracking, connection status indicators, and conflict-free convergence.
+
+#### 2. Why did you choose Monaco Editor?
+Monaco is the battle-tested editor that powers Visual Studio Code. It provides native syntax highlighting, rich language tokenization, configurable keybindings, and robust APIs for custom themes and DOM decorations. It offers candidates an authentic coding environment superior to basic textareas or lighter editors.
+
+#### 3. What is Yjs?
+Yjs is a high-performance, open-source CRDT implementation designed for shared text, arrays, and key-value maps. It represents text as a sequence of character items with unique client IDs and monotonic clocks, allowing distributed edits to merge deterministically without a central coordinating authority.
+
+#### 4. What is a CRDT?
+A Conflict-Free Replicated Data Type (CRDT) is a distributed data structure that allows multiple replicas to be updated concurrently without central locking. All concurrent operations commute mathematically; as long as all replicas receive the same set of updates, they are guaranteed to reach Strong Eventual Consistency (SEC) regardless of message arrival order.
+
+#### 5. Why did you use Hocuspocus?
+Hocuspocus is a lightweight, headless WebSocket synchronization backend built specifically for Yjs. It handles connection pooling, room multiplexing, binary update broadcasting, session authentication, and hook points (`beforeHandleMessage`, `onStateless`) for custom authorization and document persistence.
+
+#### 6. What is the role of WebSockets?
+A WebSocket connection begins with an HTTP Upgrade handshake. Once established, it provides a persistent, full-duplex connection between the client browser and the Hocuspocus server. Subsequent document and awareness updates travel over the existing connection without a new HTTP request/response cycle for every update.
+
+#### 7. How are text changes synchronized?
+When a user types, `y-monaco` translates Monaco model content changes into a Yjs text transaction. Yjs packages the inserted or deleted items into a compact binary update. This binary packet travels over the WebSocket to Hocuspocus, which broadcasts it to the room. The remote client applies the binary update to its local Yjs document, which `y-monaco` reflects into Monaco's text model.
+
+#### 8. How are remote cursors and selections synchronized?
+Cursor and selection coordinates are managed through the Yjs Awareness protocol. When the local cursor moves, `useMonacoBinding` updates the local awareness state with the line number, column, user name, and color. This ephemeral state is broadcast over the WebSocket. Remote clients receive the awareness update and render Monaco decorations via CSS rules targeting `.yRemoteSelectionHead-${clientId}` and `.yRemoteSelection-${clientId}`.
+
+#### 9. What is the difference between Awareness and Y.Doc?
+A `Y.Doc` maintains collaborative document state in client and server memory using the CRDT causal graph. MongoDB persistence is handled separately by the backend persistence layer (asynchronously flushing document snapshots). `Awareness` maintains transient, ephemeral presence information (cursor and selection positions, participant display names and colors) in memory; it changes continuously, does not require conflict resolution, and remains ephemeral without being stored as document history.
+
+#### 10. Why is text synchronization slower than cursor propagation?
+Text synchronization goes through a full document CRDT pipeline: creating and encoding document updates as edits occur, verifying authorization on the server, merging updates into the remote CRDT graph, and executing Monaco model mutations with tokenizer re-indexing. (State vectors summarize which operations a replica has observed and are used during synchronization to exchange missing updates, rather than computed per keystroke). Cursor updates use lightweight awareness messages that bypass document models entirely and render directly as DOM CSS decorations.
+
+#### 11. What do P50 and P95 mean?
+P50 is the median: 50% of operations were faster, and 50% were slower. P95 is the 95th percentile tail latency: 95% of operations finished faster, and only the slowest 5% took longer. P95 is essential because it reveals network jitter and worst-case user experience that averages conceal.
+
+#### 12. How did you benchmark production latency?
+We connected a Playwright automation script over Chrome DevTools Protocol (CDP) to an authenticated browser session, created a practice room, and connected an isolated guest browser context. The test runner timed 200 sequential edits and cursor movements bidirectionally between the two sessions against our live Azure East Asia production server. However, an independent audit of the benchmark script revealed an instrumentation flaw in the cursor and selection tests: they checked for DOM element existence rather than position advancement. Only the text synchronization test genuinely verified end-to-end propagation.
+
+#### 13. Why did you use two isolated browser sessions?
+Using two separate browser contexts (Host and Guest) ensures that each client maintains independent WebSocket connections, separate Monaco editor instances, and isolated JavaScript memory. This mirrors real-world collaboration between two remote users rather than testing an artificial single-client loopback.
+
+#### 14. How do you know that remote updates actually arrived?
+The benchmark evaluated remote updates using Playwright's `waitForFunction`. For text synchronization, this was robust: it injected novel Latin Extended Unicode characters and polled the receiving Monaco editor model until the exact character was present. However, for cursor and selection updates, the benchmark checked whether `.yRemoteSelectionHead-${clientId}` existed and had non-zero height. Because the warm-up iteration had already created that DOM decoration, subsequent iterations resolved immediately against the existing DOM node in ~10–15 ms without waiting for cursor position movement. In selection testing, an arbitrary 15 ms sleep raced against the ~180 ms WAN update, resolving against stale selection decorations. Future benchmarks must assert coordinate advancement (`range.endColumn >= expectedCol`) and verify selection clearing before testing.
+
+#### 15. What happens when a participant loses connectivity?
+When connectivity drops, `useRoomSync` updates the UI indicator to `Offline`. The user can continue typing locally; edits are retained in memory in the local Yjs document. When connectivity is restored, the client reconnects its WebSocket, exchanges state vectors with Hocuspocus, and merges offline edits seamlessly.
+
+#### 16. How do edits converge after reconnection?
+Yjs uses state vectors (`Y.encodeStateVector`) to summarize observed operations. Upon reconnecting, the client and server exchange state vectors to identify exactly which operations each side missed. Missing items are transmitted and applied via the YATA algorithm, which resolves concurrent edits deterministically using causal origins and client ID tie-breaking.
+
+#### 17. How is unauthorized editing prevented?
+In `apps/server/src/sync/hocuspocus.ts`, we implement the `beforeHandleMessage` hook. If a client is authenticated as a `viewer` (`connection.readOnly === true`), the server intercepts incoming binary message frames and silently drops any mutation packets. Unauthorized mutations cannot alter server state even if an attacker modifies client-side JavaScript.
+
+#### 18. What happens when a user refreshes while offline?
+Because offline edits are held in memory within the active browser tab session, a hard browser refresh while disconnected will lose any unflushed offline keystrokes. Once the page reloads, it fetches the last persisted document state from the server. (Durable offline persistence via IndexedDB is documented as non-blocking technical debt).
+
+#### 19. What is the difference between in-memory offline editing and durable offline editing?
+In-memory offline editing holds uncommitted CRDT deltas in browser JavaScript memory during a temporary network disruption; edits survive connection drops but not browser restarts. Durable offline editing saves CRDT updates to client-side storage like IndexedDB (e.g., using `y-indexeddb`), allowing edits to survive browser tab closures and device reboots.
+
+#### 20. What would you optimize next?
+Next, I would implement sub-phase latency tracing (`T_transport`, `T_server`, `T_client`) using lightweight diagnostic timestamps, test performance against a geographically co-located client in East Asia, and evaluate multi-region edge deployment or regional WebSocket proxies (e.g., Cloudflare Workers or Azure Front Door) to bring the WebSocket connection closer to international candidates.
+
+---
+
+### 15.7 Honest Performance Assessment
+
+| Requirement | Production result | Assessment |
+|---|---|---|
+| ED-3 cursor P95 below 200 ms | 23.56 ms (Flawed assertion) | **INVALID MEASUREMENT** — Production acceptance unverified |
+| ED-3 selection P95 below 200 ms | 80.71 ms (Flawed assertion) | **INVALID / UNVERIFIABLE MEASUREMENT** — Production acceptance unverified |
+| ED-4 text P95 below 200 ms | 219.89 ms (Genuine assertion) | **FAIL — ABOVE PRODUCTION P95 TARGET** (Exceeds 200.00 ms target by 19.89 ms) |
+
+#### Acceptance Status Note:
+1. **ED-3 (Remote Cursors & Selections)**: The previously reported production cursor P95 (23.56 ms) and selection P95 (80.71 ms) are invalid measurements resulting from an instrumentation defect where DOM existence was tested instead of position advancement and clear state confirmation. Production compliance for ED-3 is therefore unverified.
+2. **ED-4 (Collaborative Text Synchronization)**: The PRD requirement for `ED-4` states that remote text synchronization must complete in under 200 ms at the 95th percentile. In production across international WAN, the genuine text synchronization benchmark measured a P95 of 219.89 ms. This exceeds the agreed threshold by 19.89 ms. Engineering integrity requires that documentation does not unilaterally redefine or waive agreed targets. ED-4 is recorded as a failure against the original target. A revised WAN-aware latency SLA or multi-region routing optimization requires an explicit engineering stakeholder decision.
+
+---
+
+### 15.8 Remaining Technical Debt (PER-1)
+
+- **Durable Crash-Loss Protection**: Requirement `PER-1` (persistence and crash recovery within 2s) remains classified as **PARTIAL** technical debt.
+- **Asynchronous Persistence Window**: The backend flushes Yjs document snapshots to MongoDB using a 250 ms debounce and a 2,000 ms maximum scheduling deadline. If the server process suffers an ungraceful crash (e.g., SIGKILL or power failure) before the scheduled write completes, in-flight edits within that window can be lost.
+- **No Unconditional Guarantee**: We do not claim an unconditional zero-data-loss guarantee under arbitrary crash timings.
+
+---
+
+### 15.9 Corrected Protocol for Future Production Benchmarks
+
+To address the instrumentation flaws identified in the independent latency investigation, any future production benchmark must adhere to the following protocol requirements:
+
+1. **Remote Cursor Synchronization Protocol**:
+   - Must **not** test for the mere existence or non-zero height of `.yRemoteSelectionHead-${clientId}`.
+   - Must capture the baseline cursor position and assert that the receiving Monaco model decoration advances to the expected target column: `hostDec.range.endColumn >= expectedCol`.
+   - Alternatively, it must verify the computed inline CSS coordinate shift (`style.left` or `style.transform`) corresponding to the new column position.
+   - Assertions must evaluate with a timeout exceeding 2,000 ms to distinguish actual propagation delay from dropouts.
+
+2. **Remote Selection Synchronization Protocol**:
+   - Must **not** rely on arbitrary fixed sleep intervals (e.g. 15 ms) between iterations.
+   - Before triggering a new selection, the runner must explicitly verify that the remote selection decoration from the previous iteration has been cleared (`width === 0` or decoration detached from the DOM).
+   - Once cleared, the sender sets a new multi-character selection range, and the receiver polls until the corresponding `.yRemoteSelection-${clientId}` element spans the expected start and end column ranges (`range.startColumn === expectedStart && range.endColumn === expectedEnd`).
+
+3. **Collaborative Text Synchronization Protocol**:
+   - Continue using unique, monotonically increasing Latin Extended Unicode characters (`String.fromCodePoint(0x0100 + i)`) to prevent false-positive matching against existing document content.
+   - Track and report separate directional statistics: Host $\rightarrow$ Guest (100 samples) vs Guest $\rightarrow$ Host (100 samples) to detect asymmetric routing or client-side event loop variance.
+   - Export all raw per-iteration latency timestamps to a standalone CSV/JSON artifact (`prod_benchmark_samples.json`) to allow offline distribution analysis, histogram plotting, and jitter evaluation.
+
+4. **Concurrent Transport Diagnostic Sampling**:
+   - Concurrently poll the application's built-in `?debug=latency` WebSocket ping/pong probe during benchmark execution.
+   - Record WebSocket round-trip times (RTT) alongside peer-to-peer editor propagation to evaluate the transport baseline under identical network conditions, establishing clear visibility into network transit vs Monaco/CRDT application processing.
+
+---
+
+## 16. Comprehensive Interview Preparation Question Bank
+
+This section provides 52 technical interview questions across 7 categories (A through G). It complements the 20 core questions and production performance breakdown in **Section 15 (T08 Technical Interview Preparation — Collaborative Editor & Production Performance)**, the architectural trade-offs in **Section 14**, and the foundational algorithms in **Section 13**. All original 12 core questions from previous drafts are preserved in full—either incorporated into specific questions below (e.g. Q16, Q20, Q22, Q29, Q43) or codified in dedicated architectural sections (Sections 2.4, 2.5, 2.6, 8, 12, 13.1–13.5).
 
 ### Category A: Connectivity and Network Lifecycle
 

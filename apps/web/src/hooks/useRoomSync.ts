@@ -91,9 +91,9 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
 
     let isCurrent = true;
     let hasConnectedOnce = false;
+    let browserOffline = typeof navigator !== "undefined" && !navigator.onLine;
 
-    const isBrowserOffline = typeof navigator !== "undefined" && !navigator.onLine;
-    setStatus(isBrowserOffline ? "offline" : "connecting");
+    setStatus(browserOffline ? "offline" : "connecting");
     setIsSynced(false);
     setError(null);
 
@@ -120,15 +120,26 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
         onStatus({ status: wsStatus }: onStatusParameters) {
           if (!isCurrent) return;
 
+          if (browserOffline) {
+            setStatus("offline");
+            setIsSynced(false);
+            if (wsStatus === WebSocketStatus.Connected) {
+              const wsProvider =
+                customWsProvider || activeProvider?.configuration.websocketProvider;
+              if (typeof wsProvider?.disconnect === "function") {
+                wsProvider.disconnect();
+              }
+            }
+            return;
+          }
+
           if (wsStatus === WebSocketStatus.Connected) {
             hasConnectedOnce = true;
             setStatus("connected");
           } else if (wsStatus === WebSocketStatus.Connecting) {
             setStatus(hasConnectedOnce ? "reconnecting" : "connecting");
           } else if (wsStatus === WebSocketStatus.Disconnected) {
-            if (typeof navigator !== "undefined" && !navigator.onLine) {
-              setStatus("offline");
-            } else if (hasConnectedOnce) {
+            if (hasConnectedOnce) {
               setStatus("reconnecting");
             } else {
               setStatus("disconnected");
@@ -136,17 +147,17 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
           }
         },
         onSynced({ state }: onSyncedParameters) {
-          if (!isCurrent) return;
+          if (!isCurrent || browserOffline) return;
           setIsSynced(state);
         },
         onAuthenticationFailed({ reason }: onAuthenticationFailedParameters) {
-          if (!isCurrent) return;
+          if (!isCurrent || browserOffline) return;
           const formatted = formatSyncCloseError(4001, reason);
           setStatus("error");
           setError(new Error(formatted.message));
         },
         onClose({ event }: onCloseParameters) {
-          if (!isCurrent) return;
+          if (!isCurrent || browserOffline) return;
           if (event) {
             const formatted = formatSyncCloseError(event.code, event.reason);
             if (
@@ -168,6 +179,14 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
 
       if (customWsProvider) {
         activeProvider.attach();
+      }
+
+      if (browserOffline) {
+        const wsProvider =
+          customWsProvider || activeProvider.configuration.websocketProvider;
+        if (typeof wsProvider?.disconnect === "function") {
+          wsProvider.disconnect();
+        }
       }
 
       setDoc(activeDoc);
@@ -204,25 +223,32 @@ export function useRoomSync(options: UseRoomSyncOptions): UseRoomSyncResult {
 
     const handleOnline = () => {
       if (!isCurrent) return;
-      if (typeof activeProvider?.connect === "function") {
-        activeProvider.connect();
-      }
-      if (
-        activeProvider?.configuration?.websocketProvider?.status ===
-        WebSocketStatus.Connected
-      ) {
-        setStatus("connected");
-      } else {
-        setStatus(hasConnectedOnce ? "reconnecting" : "connecting");
+      browserOffline = false;
+      setIsSynced(false);
+      setStatus(hasConnectedOnce ? "reconnecting" : "connecting");
+
+      const wsProvider =
+        customWsProvider || activeProvider?.configuration?.websocketProvider;
+      if (typeof wsProvider?.connect === "function") {
+        void wsProvider.connect();
+      } else if (typeof activeProvider?.connect === "function") {
+        void activeProvider.connect();
       }
     };
 
     const handleOffline = () => {
       if (!isCurrent) return;
-      if (typeof activeProvider?.disconnect === "function") {
+      browserOffline = true;
+      setIsSynced(false);
+      setStatus("offline");
+
+      const wsProvider =
+        customWsProvider || activeProvider?.configuration?.websocketProvider;
+      if (typeof wsProvider?.disconnect === "function") {
+        wsProvider.disconnect();
+      } else if (typeof activeProvider?.disconnect === "function") {
         activeProvider.disconnect();
       }
-      setStatus("offline");
     };
 
     if (typeof window !== "undefined") {

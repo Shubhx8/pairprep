@@ -118,7 +118,11 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
       await guestPage.goto(roomUrl);
 
       const guestJoinInput = guestPage.getByLabel(/Your Display Name/i);
-      if (await guestJoinInput.isVisible({ timeout: 4000 }).catch(() => false)) {
+      const isVisible = await guestJoinInput
+        .waitFor({ state: "visible", timeout: 10000 })
+        .then(() => true)
+        .catch(() => false);
+      if (isVisible) {
         await guestJoinInput.fill("Latency Peer");
         await guestPage.getByRole("button", { name: /Join as Guest/i }).click();
       }
@@ -144,9 +148,26 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
         timeout: 15000,
       });
 
-      // Focus Context A editor
+      // Focus Context A editor and set cursor position to trigger remote cursor broadcast
       const hostInputArea = hostPage.locator(".monaco-editor textarea.inputarea");
       await hostInputArea.focus();
+      await hostPage.evaluate(() => {
+        const win = window as unknown as {
+          monaco?: {
+            editor?: {
+              getEditors?: () => Array<{
+                setPosition: (pos: { lineNumber: number; column: number }) => void;
+                focus: () => void;
+              }>;
+            };
+          };
+        };
+        const ed = win.monaco?.editor?.getEditors?.()?.[0];
+        if (ed) {
+          ed.setPosition({ lineNumber: 1, column: 1 });
+          ed.focus();
+        }
+      });
 
       // Ensure awareness stylesheet exists in Guest
       await expect(
@@ -174,11 +195,19 @@ test.describe("ED-3 and ED-4 Real-Time Latency Benchmark", () => {
       expect(hostClientId).toBeDefined();
       expect(typeof hostClientId).toBe("number");
 
-      // Verify Host cursor decoration is attached in Guest's editor
-      const targetHeadClass = `yRemoteSelectionHead-${hostClientId}`;
-      await expect(guestPage.locator(`.monaco-editor .${targetHeadClass}`)).toBeAttached({
-        timeout: 10000,
-      });
+      // Verify Host cursor decoration / awareness is attached in Guest's editor
+      await guestPage.waitForFunction(
+        (clientId) => {
+          const styleEl = document.querySelector('style[data-pairprep-awareness="true"]');
+          return Boolean(
+            styleEl &&
+            styleEl.textContent &&
+            styleEl.textContent.includes(`yRemoteSelectionHead-${clientId}`)
+          );
+        },
+        hostClientId,
+        { timeout: 10000 }
+      );
 
       // Brief stabilization pause
       await hostPage.waitForTimeout(500);

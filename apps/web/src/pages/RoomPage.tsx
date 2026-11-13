@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, lazy, Suspense, type FormEvent } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  lazy,
+  Suspense,
+  type FormEvent,
+} from "react";
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../lib/authContext.js";
 import { apiClient, ApiClientError } from "../lib/apiClient.js";
@@ -185,11 +193,13 @@ export default function RoomPage() {
     debounceMs: 500,
   });
 
-  // When WebSocket connects, immediately refresh room to sync live presence without waiting
+  // When WebSocket connects or reconnects, immediately refresh room to sync live presence without waiting (Phase 4.3)
+  const prevSyncStatusRef = useRef(sync.status);
   useEffect(() => {
-    if (sync.status === "connected") {
-      refreshRoom().catch(() => {});
+    if (prevSyncStatusRef.current !== "connected" && sync.status === "connected") {
+      void refreshRoom().catch(() => {});
     }
+    prevSyncStatusRef.current = sync.status;
   }, [sync.status, refreshRoom]);
 
   const handleCopyLink = () => {
@@ -599,6 +609,14 @@ export default function RoomPage() {
                       ? true
                       : Boolean(m.isOnline)
                     : false;
+
+                  const statusLabel = isLocalConnected
+                    ? isMemberOnline
+                      ? "Online"
+                      : "Offline"
+                    : isCurrent
+                      ? "Offline"
+                      : "Unavailable";
                   const participantColor =
                     PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
                     (PARTICIPANT_PALETTE[0] as string);
@@ -622,8 +640,8 @@ export default function RoomPage() {
                             {m.displayName.charAt(0).toUpperCase()}
                           </div>
                           <span
-                            aria-label={isMemberOnline ? "Online" : "Offline"}
-                            title={isMemberOnline ? "Online" : "Offline"}
+                            aria-label={statusLabel}
+                            title={statusLabel}
                             className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
                               isMemberOnline ? "bg-success" : "bg-text-subtle/40"
                             }`}
@@ -647,7 +665,7 @@ export default function RoomPage() {
                               : "bg-surface-subtle text-text-subtle border-border-subtle"
                           }`}
                         >
-                          {isMemberOnline ? "Online" : "Offline"}
+                          {statusLabel}
                         </span>
                         <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
                           {m.role}

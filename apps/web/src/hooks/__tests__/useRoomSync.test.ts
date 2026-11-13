@@ -5,7 +5,11 @@ import { WebSocketStatus } from "@hocuspocus/provider";
 import { useRoomSync, type UseRoomSyncOptions } from "../useRoomSync.js";
 
 interface MockProviderConfiguration {
-  websocketProvider?: { status: WebSocketStatus };
+  websocketProvider?: {
+    status: WebSocketStatus;
+    disconnect?: () => void;
+    connect?: () => void;
+  };
   onStatus?: (params: { status: WebSocketStatus }) => void;
   onSynced?: (params: { state: boolean }) => void;
   onAuthenticationFailed?: (params: { reason: string }) => void;
@@ -33,10 +37,22 @@ const {
     configuration: MockWsProviderConfiguration;
     status: WebSocketStatus = "connecting" as WebSocketStatus;
     isDestroyed = false;
+    disconnectCallCount = 0;
+    connectCallCount = 0;
 
     constructor(configuration: MockWsProviderConfiguration) {
       this.configuration = configuration;
       wsInstances.push(this);
+    }
+
+    disconnect() {
+      this.disconnectCallCount++;
+      this.status = "disconnected" as WebSocketStatus;
+    }
+
+    connect() {
+      this.connectCallCount++;
+      this.status = "connecting" as WebSocketStatus;
     }
 
     destroy() {
@@ -59,17 +75,29 @@ const {
     isDestroyed = false;
     attachCount = 0;
     _isAttached = false;
+    internalWsDisconnectCallCount = 0;
+    internalWsConnectCallCount = 0;
 
     constructor(configuration: MockProviderConfiguration) {
       if (MockProvider.shouldFail) {
         MockProvider.shouldFail = false;
         throw new Error("Simulated constructor failure");
       }
+      const defaultWsProvider = {
+        status: this.status,
+        disconnect: () => {
+          this.internalWsDisconnectCallCount++;
+          this.status = "disconnected" as WebSocketStatus;
+        },
+        connect: () => {
+          this.internalWsConnectCallCount++;
+          this.status = "connecting" as WebSocketStatus;
+        },
+      };
+
       this.configuration = {
         ...configuration,
-        websocketProvider: configuration.websocketProvider || {
-          status: this.status,
-        },
+        websocketProvider: configuration.websocketProvider || defaultWsProvider,
       };
       instances.push(this);
     }
@@ -619,5 +647,248 @@ describe("useRoomSync hook", () => {
 
     consoleErrorSpy.mockRestore();
     docDestroySpy.mockRestore();
+  });
+
+  describe("browser offline/online lifecycle", () => {
+    it("handles browser offline event: marks status offline, invalidates isSynced, disconnects wsProvider, and preserves doc with local edits in canonical 'code' field", () => {
+      const { result } = renderHook(() =>
+        useRoomSync({ roomId: validRoomId, enabled: true })
+      );
+
+      const provider = mockInstances[0]!;
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+        provider.simulateSynced(true);
+      });
+
+      expect(result.current.status).toBe("connected");
+      expect(result.current.isSynced).toBe(true);
+      expect(result.current.doc).not.toBeNull();
+
+      const docBeforeOffline = result.current.doc!;
+
+      // Insert one edit before disconnecting using canonical "code" field
+      act(() => {
+        docBeforeOffline.getText("code").insert(0, "console.log('before offline');");
+      });
+
+      // Dispatch browser offline event
+      act(() => {
+        window.dispatchEvent(new Event("offline"));
+      });
+
+      // 1. Status immediately becomes "offline"
+      expect(result.current.status).toBe("offline");
+      // 2. isSynced is immediately false
+      expect(result.current.isSynced).toBe(false);
+      // 3. Underlying wsProvider disconnect() was invoked
+      expect(provider.internalWsDisconnectCallCount).toBeGreaterThanOrEqual(1);
+
+      // Insert another edit after the offline event
+      act(() => {
+        docBeforeOffline
+          .getText("code")
+          .insert(
+            docBeforeOffline.getText("code").length,
+            "\nconsole.log('after offline');"
+          );
+      });
+
+      // 4. doc remains defined and intact (same instance, not destroyed or replaced)
+      expect(result.current.doc).toBe(docBeforeOffline);
+      // 5. Both local edits are preserved in the same Y.Doc without destroying or replacing
+      expect(result.current.doc?.getText("code").toString()).toBe(
+        "console.log('before offline');\nconsole.log('after offline');"
+      );
+      expect(result.current.error).toBeNull();
+    });
+
+    it("protects against late callbacks while offline: late Connected and onSynced cannot override offline status or sync", () => {
+      const { result } = renderHook(() =>
+        useRoomSync({ roomId: validRoomId, enabled: true })
+      );
+
+      const provider = mockInstances[0]!;
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+        provider.simulateSynced(true);
+      });
+
+      expect(result.current.status).toBe("connected");
+
+      // Go offline
+      act(() => {
+        window.dispatchEvent(new Event("offline"));
+      });
+      expect(result.current.status).toBe("offline");
+      expect(result.current.isSynced).toBe(false);
+
+      const disconnectsBeforeLateCallback = provider.internalWsDisconnectCallCount;
+
+      // Late Connected callback while offline
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+      });
+
+      // Status must remain offline
+      expect(result.current.status).toBe("offline");
+      expect(result.current.isSynced).toBe(false);
+      // Underlying provider is forcefully disconnected again
+      expect(provider.internalWsDisconnectCallCount).toBeGreaterThan(
+        disconnectsBeforeLateCallback
+      );
+
+      // Late onSynced(true) while offline
+      act(() => {
+        provider.simulateSynced(true);
+      });
+
+      // isSynced must remain false
+      expect(result.current.isSynced).toBe(false);
+      expect(result.current.status).toBe("offline");
+
+      // Late onAuthenticationFailed while offline must not change status to error or populate error
+      act(() => {
+        provider.simulateAuthFailed("Late authentication timeout during offline");
+      });
+      expect(result.current.status).toBe("offline");
+      expect(result.current.isSynced).toBe(false);
+      expect(result.current.error).toBeNull();
+
+      // Late onClose while offline must not trigger error state
+      act(() => {
+        provider.simulateClose(1006, "Abnormal closure");
+      });
+      expect(result.current.status).toBe("offline");
+      expect(result.current.error).toBeNull();
+    });
+
+    it("recovers when browser returns online: calls wsProvider.connect(), transitions to reconnecting, and becomes connected/synced on callbacks", () => {
+      const { result } = renderHook(() =>
+        useRoomSync({ roomId: validRoomId, enabled: true })
+      );
+
+      const provider = mockInstances[0]!;
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+        provider.simulateSynced(true);
+      });
+
+      // Browser offline
+      act(() => {
+        window.dispatchEvent(new Event("offline"));
+      });
+      expect(result.current.status).toBe("offline");
+      expect(result.current.isSynced).toBe(false);
+
+      const connectsBeforeOnline = provider.internalWsConnectCallCount;
+
+      // Browser online event fires
+      act(() => {
+        window.dispatchEvent(new Event("online"));
+      });
+
+      // Reconnect was invoked
+      expect(provider.internalWsConnectCallCount).toBeGreaterThan(connectsBeforeOnline);
+      // Transitioned to reconnecting (since it was previously connected)
+      expect(result.current.status).toBe("reconnecting");
+      // isSynced remains false until sync callback
+      expect(result.current.isSynced).toBe(false);
+
+      // WebSocket connects
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+      });
+      expect(result.current.status).toBe("connected");
+      expect(result.current.isSynced).toBe(false);
+
+      // Sync completes
+      act(() => {
+        provider.simulateSynced(true);
+      });
+      expect(result.current.status).toBe("connected");
+      expect(result.current.isSynced).toBe(true);
+    });
+
+    it("handles initial offline mount: starts in offline status, disconnects wsProvider, and reconnects when online event fires", () => {
+      const onlineSpy = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+
+      const { result } = renderHook(() =>
+        useRoomSync({ roomId: validRoomId, enabled: true })
+      );
+
+      const provider = mockInstances[0]!;
+      expect(result.current.status).toBe("offline");
+      expect(result.current.isSynced).toBe(false);
+      expect(provider.internalWsDisconnectCallCount).toBe(1);
+
+      // Now browser goes online
+      onlineSpy.mockReturnValue(true);
+      act(() => {
+        window.dispatchEvent(new Event("online"));
+      });
+
+      // Was never connected before, so status is "connecting"
+      expect(result.current.status).toBe("connecting");
+      expect(provider.internalWsConnectCallCount).toBe(1);
+
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+        provider.simulateSynced(true);
+      });
+
+      expect(result.current.status).toBe("connected");
+      expect(result.current.isSynced).toBe(true);
+
+      onlineSpy.mockRestore();
+    });
+
+    it("handles offline and online transitions identically with custom WebSocketPolyfill", () => {
+      class CustomWsPolyfill {}
+
+      const { result } = renderHook(() =>
+        useRoomSync({
+          roomId: validRoomId,
+          enabled: true,
+          WebSocketPolyfill: CustomWsPolyfill,
+        })
+      );
+
+      const provider = mockInstances[0]!;
+      const customWs = mockWsInstances[0]!;
+
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+        provider.simulateSynced(true);
+      });
+
+      expect(result.current.status).toBe("connected");
+      expect(result.current.isSynced).toBe(true);
+
+      // Trigger offline
+      act(() => {
+        window.dispatchEvent(new Event("offline"));
+      });
+
+      expect(result.current.status).toBe("offline");
+      expect(result.current.isSynced).toBe(false);
+      expect(customWs.disconnectCallCount).toBe(1);
+
+      // Trigger online
+      act(() => {
+        window.dispatchEvent(new Event("online"));
+      });
+
+      expect(customWs.connectCallCount).toBe(1);
+      expect(result.current.status).toBe("reconnecting");
+
+      act(() => {
+        provider.simulateStatus(WebSocketStatus.Connected);
+        provider.simulateSynced(true);
+      });
+
+      expect(result.current.status).toBe("connected");
+      expect(result.current.isSynced).toBe(true);
+    });
   });
 });

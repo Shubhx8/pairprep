@@ -537,9 +537,6 @@ roomsRouter.delete(
 
       assertCanModifyMember(room, targetMember, "remove");
 
-      // Immediately disconnect Socket.IO sockets (< 1s revocation)
-      presenceTracker.disconnectMemberSockets(room.id, targetMember.id);
-
       // Immediately terminate active WebSocket connections for removed member (< 1s revocation)
       syncRegistry.closeConnectionsForMember(
         room.id,
@@ -571,6 +568,9 @@ roomsRouter.delete(
           return roomMemberRepo.removeMember(room.id, targetMember.id, opId);
         },
       });
+
+      // Disconnect member Socket.IO sockets after broadcast has gone out (< 1s revocation)
+      presenceTracker.disconnectMemberSockets(room.id, targetMember.id);
 
       await roomRepo.touchActivity(room.id);
 

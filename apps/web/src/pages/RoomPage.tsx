@@ -113,17 +113,22 @@ export default function RoomPage() {
       }
     },
     onMemberJoined: (newMember) => {
+      if (!newMember || typeof newMember !== "object") return;
+      const memberId =
+        typeof newMember.memberId === "string" ? newMember.memberId.trim() : "";
+      if (!memberId) return;
+
       setMembers((prev) => {
-        if (prev.some((m) => m.id === newMember.memberId)) return prev;
+        if (prev.some((m) => m.id === memberId)) return prev;
         return [
           ...prev,
           {
-            id: newMember.memberId,
-            displayName: newMember.displayName,
-            role: newMember.role,
-            isGuest: newMember.isGuest,
+            id: memberId,
+            displayName: newMember.displayName || "Member",
+            role: newMember.role || "editor",
+            isGuest: Boolean(newMember.isGuest),
             isOnline: true,
-            joinedAt: newMember.joinedAt,
+            joinedAt: newMember.joinedAt || new Date().toISOString(),
             lastSeenAt: newMember.lastSeenAt,
           },
         ];

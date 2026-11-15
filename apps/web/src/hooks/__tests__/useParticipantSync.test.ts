@@ -574,4 +574,40 @@ describe("useParticipantSync (Finding 1)", () => {
 
     expect(refreshFn).toHaveBeenCalledTimes(0);
   });
+
+  it("15. fallbackIntervalMs <= 0 disables periodic fallback timer while keeping Yjs awareness active", async () => {
+    mockAwareness.setLocalState({ user: { name: "Local Host" } }, 1);
+
+    renderHook(() =>
+      useParticipantSync({
+        enabled: true,
+        slug: "test-room",
+        provider: mockProvider as HocuspocusProvider,
+        localClientId: 1,
+        onRefresh: callRefresh,
+        fallbackIntervalMs: 0, // Disabled fallback polling when socket is active
+        debounceMs: 200,
+      })
+    );
+
+    // Awareness listener is active
+    expect(mockAwareness.listenerCount).toBe(1);
+
+    // Advancing timers by 60 seconds triggers NO fallback refresh
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    expect(refreshFn).toHaveBeenCalledTimes(0);
+
+    // Yjs awareness event (remote participant joins) still triggers debounced refresh
+    act(() => {
+      mockAwareness.setRemoteState(2, { user: { name: "Remote Peer" } });
+    });
+    expect(refreshFn).toHaveBeenCalledTimes(0);
+
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+    });
+    expect(refreshFn).toHaveBeenCalledTimes(1);
+  });
 });

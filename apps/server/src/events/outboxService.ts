@@ -12,7 +12,13 @@ import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { RoomMemberModel } from "../models/room_members.js";
 import { RoomModel } from "../models/rooms.js";
 import { IMessage } from "../models/messages.js";
-import { toMessageDto } from "@pairprep/shared";
+import {
+  toMessageDto,
+  RoomMemberJoinedPayloadSchema,
+  RoomMemberDtoSchema,
+  type RoomMemberDto,
+  type UserRole,
+} from "@pairprep/shared";
 import { rootLogger } from "../middleware/logger.js";
 import { presenceTracker } from "./presenceTracker.js";
 import { syncRegistry } from "../sync/syncRegistry.js";
@@ -196,23 +202,100 @@ export class OutboxService {
 
       // Emit domain-specific event
       switch (op.type) {
-        case "join":
-          io.to(roomChannel).emit("room:member_joined", {
-            roomId: op.roomId,
-            member: op.payload["member"],
-          });
+        case "join": {
+          let memberDto: RoomMemberDto | null = null;
+          const candidateMember = op.payload["member"];
+          if (
+            candidateMember &&
+            typeof candidateMember === "object" &&
+            "memberId" in candidateMember
+          ) {
+            const parsed = RoomMemberDtoSchema.safeParse(candidateMember);
+            if (parsed.success) {
+              memberDto = parsed.data;
+            }
+          }
+
+          if (!memberDto) {
+            // Recover authoritative member data from database (handles flat or legacy payload)
+            let rawMemberId: string | undefined;
+            if (
+              typeof op.payload["memberId"] === "string" &&
+              op.payload["memberId"].trim()
+            ) {
+              rawMemberId = op.payload["memberId"].trim();
+            } else if (
+              candidateMember &&
+              typeof candidateMember === "object" &&
+              "memberId" in candidateMember &&
+              typeof (candidateMember as { memberId?: unknown }).memberId === "string"
+            ) {
+              const trimmed = (candidateMember as { memberId: string }).memberId.trim();
+              if (trimmed) rawMemberId = trimmed;
+            }
+
+            if (rawMemberId) {
+              const persistedMember = await roomMemberRepo.findMember(
+                op.roomId,
+                rawMemberId
+              );
+              if (persistedMember) {
+                memberDto = {
+                  roomId: op.roomId,
+                  memberId: persistedMember.memberId,
+                  displayName: persistedMember.displayName,
+                  role: persistedMember.role,
+                  isGuest: Boolean(persistedMember.isGuest),
+                  joinedAt:
+                    typeof persistedMember.joinedAt === "string"
+                      ? persistedMember.joinedAt
+                      : (persistedMember.joinedAt?.toISOString?.() ??
+                        new Date().toISOString()),
+                  lastSeenAt: persistedMember.lastSeenAt
+                    ? typeof persistedMember.lastSeenAt === "string"
+                      ? persistedMember.lastSeenAt
+                      : persistedMember.lastSeenAt.toISOString()
+                    : undefined,
+                };
+              }
+            }
+          }
+
+          if (memberDto) {
+            const eventPayload = {
+              roomId: op.roomId,
+              member: memberDto,
+            };
+            const validated = RoomMemberJoinedPayloadSchema.safeParse(eventPayload);
+            if (validated.success) {
+              io.to(roomChannel).emit("room:member_joined", validated.data);
+            } else {
+              rootLogger.warn(
+                { opId, roomId: op.roomId },
+                "[outboxService] Suppressed invalid room:member_joined event: validation failed"
+              );
+            }
+          } else {
+            rootLogger.warn(
+              { opId, roomId: op.roomId },
+              "[outboxService] Suppressed room:member_joined event: member data unrecoverable"
+            );
+          }
           break;
+        }
         case "remove":
           io.to(roomChannel).emit("room:member_left", {
             roomId: op.roomId,
-            memberId: op.payload["memberId"],
+            memberId:
+              (op.payload["memberDocId"] as string) || (op.payload["memberId"] as string),
             reason: "removed",
           });
           break;
         case "role_change":
           io.to(roomChannel).emit("room:role_changed", {
             roomId: op.roomId,
-            memberId: op.payload["memberId"],
+            memberId:
+              (op.payload["memberDocId"] as string) || (op.payload["memberId"] as string),
             role: op.payload["role"],
           });
           break;
@@ -348,6 +431,41 @@ export class OutboxService {
         const v = (result as { roleVersion: number }).roleVersion;
         options.payload["roleVersion"] = v;
         extraApplied = { appliedVersion: v, "payload.roleVersion": v };
+      }
+
+      if (
+        options.type === "join" &&
+        result &&
+        typeof result === "object" &&
+        "memberId" in result
+      ) {
+        const m = result as unknown as {
+          roomId: string;
+          memberId: string;
+          displayName: string;
+          role: UserRole;
+          isGuest?: boolean;
+          joinedAt?: Date | string;
+          lastSeenAt?: Date | string;
+        };
+        const memberDto: RoomMemberDto = {
+          roomId: options.roomId,
+          memberId: m.memberId,
+          displayName: m.displayName,
+          role: m.role,
+          isGuest: Boolean(m.isGuest),
+          joinedAt:
+            typeof m.joinedAt === "string"
+              ? m.joinedAt
+              : (m.joinedAt?.toISOString?.() ?? new Date().toISOString()),
+          lastSeenAt: m.lastSeenAt
+            ? typeof m.lastSeenAt === "string"
+              ? m.lastSeenAt
+              : m.lastSeenAt.toISOString()
+            : undefined,
+        };
+        options.payload["member"] = memberDto;
+        extraApplied["payload.member"] = memberDto;
       }
 
       // 3. Advance to Applied via CAS

@@ -668,8 +668,16 @@ export function useRoomSocket({
         };
 
         const onRoomMemberJoined = (payload: RoomMemberJoinedPayload) => {
+          if (!payload || typeof payload !== "object") return;
           if (payload.roomId !== roomId) return;
-          setOnlineMemberIds((prev) => new Set(prev).add(payload.member.memberId));
+          if (!payload.member || typeof payload.member !== "object") return;
+          const memberId =
+            typeof payload.member.memberId === "string"
+              ? payload.member.memberId.trim()
+              : "";
+          if (!memberId) return;
+
+          setOnlineMemberIds((prev) => new Set(prev).add(memberId));
           callbacksRef.current.onMemberJoined?.(payload.member);
         };
 

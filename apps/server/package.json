@@ -28,6 +28,7 @@
     "passport-google-oauth20": "2.0.0",
     "pino": "10.4.0",
     "proxy-addr": "2.0.8",
+    "socket.io": "4.8.4",
     "ws": "8.18.0",
     "y-protocols": "1.0.7",
     "yjs": "13.6.33",
@@ -45,6 +46,7 @@
     "@types/passport-google-oauth20": "2.0.17",
     "@types/proxy-addr": "2.0.3",
     "@types/ws": "8.5.14",
+    "socket.io-client": "4.8.4",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
   }

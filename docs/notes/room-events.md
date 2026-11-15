@@ -84,3 +84,49 @@ If PairPrep simplified from Option A (Keep and Harden) to Option B (Minimal Dire
 4. **How are memory leaks prevented with embedded arrays?**
    "We use a two-tier strategy: pre-mutation capacity gating rejects operations if pending arrays exceed safe limits, and terminal resolution cleans up evidence via `$pull`. A 1,000-operation benchmark confirms room documents remain under 1 KiB."
 
+---
+
+## 6. Frontend Presence, Fallback Polling & Terminal Lifecycles
+
+### A. Authoritative Socket.IO Presence vs. Yjs Awareness
+- **Socket.IO Presence (`presence:status`, `presence:snapshot`)**:
+  - Authoritative source of truth for participant online/offline states.
+  - Multi-tab debounced: server emits `presence:status` (`isOnline: true`) only on a user's $0 \to 1$ active socket connection, and `isOnline: false` strictly on the $1 \to 0$ transition.
+  - When a user joins or reconnects, the server delivers an authoritative `presence:snapshot` listing all currently online participant IDs.
+- **Yjs Editor Awareness**:
+  - Operates independently on the Hocuspocus WebSocket connection (`provider.awareness.on("change")`).
+  - Tracks ephemeral cursor positions and active editor selection ranges in Monaco.
+  - Presence status in the participant list is driven by Socket.IO; Yjs awareness solely updates in-editor cursor avatars and line selections.
+
+### B. Resilient Participant Sync & Fallback Polling
+To guarantee fresh participant state even during socket degradations:
+- **Active Socket (Connected)**: When `socketStatus === "connected"` (or `isSocketConnected === true`), fallback polling is completely dormant (0 HTTP overhead).
+- **Degraded/Disconnected Socket**: When the socket disconnects (`disconnected`, `connecting`, or `fatal_error`), a 30-second interval fallback poll (`GET /api/v1/rooms/:slug`) activates automatically.
+- **Page Visibility Coordination**: Polling is paused when document tab is hidden (`document.visibilityState === "hidden"`). Upon returning to visible, any pending refresh executes immediately.
+- **HTTP 429 Rate Limit Backoff**: If fallback polling encounters a 429 status code, it reads the `Retry-After` header and engages exponential backoff with jitter to protect the server.
+- **Reconnection Cleanup**: When the socket successfully reconnects, the fallback polling timer is cleared immediately without timer stacking.
+
+### C. Terminal Screens & Room Lifecycles
+When a room transitions into a terminal state, the frontend cleanly tears down live channels and presents authoritative terminal screens:
+1. **Participant Removal (`RemovedScreen` / `data-testid="removed-screen"`)**:
+   - Triggered when the host removes a participant (`DELETE /api/v1/rooms/:slug/members/:id`).
+   - Server emits `room:member_left` with `reason: "removed"` and closes active sockets with code 4003 (`removed`).
+   - Evicted participant's UI renders the `RemovedScreen` with a Lock icon, "Removed from Room" heading, and a "Back to Dashboard" action button.
+   - Socket and editor sync disconnect immediately. If the user attempts to re-enter, the server rejects `room:join` with `FORBIDDEN` and REST queries return public room preview only.
+2. **Room Deletion (`DeletedScreen` / `data-testid="deleted-screen"`)**:
+   - Triggered when the host deletes the room (`DELETE /api/v1/rooms/:slug`).
+   - Mutation barrier closes new writes; `outboxService` broadcasts `room:deleted`.
+   - All participants receive the event and render `DeletedScreen` with "Room Deleted" heading and "Back to Dashboard" button.
+3. **Room Ended (`isRoomEnded` / `data-testid="room-ended-banner"`)**:
+   - Triggered when the host ends the room (`POST /api/v1/rooms/:slug/end`).
+   - Server emits `room:ended` with `status: "ended"`.
+   - The room transitions to view-only mode: collaborative editor disables editing, and chat composer is disabled with the notice: `"Room has ended. Chat is view-only."` Existing chat history remains readable.
+
+### D. Offline Catch-Up & Reconnection Architecture
+- When a client experiences an offline network partition or closes the tab:
+  1. The server detects socket disconnect and marks the participant offline if all tabs are closed.
+  2. While offline, messages sent by peers are persisted with monotonic sequence numbers (`seq`).
+  3. Upon reconnecting, the client queries `GET /api/v1/rooms/:slug/messages?limit=50`.
+  4. Messages are merged and deduplicated using unique `id` and `clientMsgId`, preserving strict monotonic sequence ordering.
+  5. If the participant was removed while offline, the reconnecting REST lookup returns public preview without membership, preventing workspace admission.
+

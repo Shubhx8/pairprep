@@ -286,19 +286,16 @@ export default function RoomPage() {
     }
   }, [slug]);
 
-  // Event-driven participant synchronization with 10s fallback & 429 backoff (Finding 1 / ROOM-5)
-  // When socket is enabled, disable periodic REST polling fallback (fallbackIntervalMs: 0) while keeping Yjs awareness listeners active.
+  // Event-driven participant synchronization with 30s fallback & 429 backoff (Finding 1 / ROOM-5)
+  // When socket is connected, fallback polling is disabled; if disconnected/error, 30s fallback is active.
   useParticipantSync({
     enabled: Boolean(currentMember && slug),
     slug: slug ?? null,
     provider: sync.provider,
     localClientId: sync.doc?.clientID,
     onRefresh: refreshRoom,
-    fallbackIntervalMs: isSocketEnabled
-      ? 0
-      : import.meta.env["VITE_PAIRPREP_E2E"] === "1"
-        ? 4000
-        : 10000,
+    socketStatus: roomSocket.connectionStatus,
+    fallbackIntervalMs: import.meta.env["VITE_PAIRPREP_E2E"] === "1" ? 4000 : 30000,
     debounceMs: 500,
   });
 

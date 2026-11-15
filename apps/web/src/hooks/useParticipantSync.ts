@@ -9,6 +9,8 @@ export interface UseParticipantSyncOptions {
   onRefresh: () => Promise<void>;
   fallbackIntervalMs?: number; // default 30000 (30 seconds)
   debounceMs?: number; // default 500ms
+  socketStatus?: "connecting" | "connected" | "disconnected" | "error";
+  isSocketConnected?: boolean;
 }
 
 /**
@@ -31,6 +33,8 @@ export function useParticipantSync({
   onRefresh,
   fallbackIntervalMs = 30000,
   debounceMs = 500,
+  socketStatus,
+  isSocketConnected,
 }: UseParticipantSyncOptions): void {
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -110,10 +114,15 @@ export function useParticipantSync({
       }, debounceMs);
     };
 
-    // 1. Fallback 30-second timer (active only when tab is visible and fallbackIntervalMs > 0)
+    // 1. Fallback 30-second timer (active only when tab is visible, fallbackIntervalMs > 0, and socket is NOT connected)
+    const isSocketOnline = socketStatus === "connected" || isSocketConnected === true;
+
     const startFallback = () => {
       stopFallback();
       if (fallbackIntervalMs <= 0) {
+        return;
+      }
+      if (isSocketOnline) {
         return;
       }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -212,5 +221,14 @@ export function useParticipantSync({
       pendingRefreshRef.current = false;
       isBackingOffRef.current = false;
     };
-  }, [enabled, slug, provider, localClientId, fallbackIntervalMs, debounceMs]);
+  }, [
+    enabled,
+    slug,
+    provider,
+    localClientId,
+    fallbackIntervalMs,
+    debounceMs,
+    socketStatus,
+    isSocketConnected,
+  ]);
 }

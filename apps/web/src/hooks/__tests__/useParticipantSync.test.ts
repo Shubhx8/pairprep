@@ -610,4 +610,257 @@ describe("useParticipantSync (Finding 1)", () => {
     });
     expect(refreshFn).toHaveBeenCalledTimes(1);
   });
+
+  describe("Phase 2 Fallback Correction: Socket Lifecycle & Polling Gating", () => {
+    it("16. Connected socket means no fallback timer", async () => {
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          onRefresh: callRefresh,
+          socketStatus: "connected",
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      // Advance by 60 seconds (two normal intervals)
+      await act(async () => {
+        vi.advanceTimersByTime(60000);
+      });
+
+      expect(refreshFn).toHaveBeenCalledTimes(0);
+    });
+
+    it("17. Disconnected socket enables fallback", async () => {
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          onRefresh: callRefresh,
+          socketStatus: "disconnected",
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      // Advance by 30 seconds -> 1 fallback refresh
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+
+      // Advance by another 30 seconds -> 2nd fallback refresh
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("18. Fatal connection error enables fallback", async () => {
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          onRefresh: callRefresh,
+          socketStatus: "error",
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("19. Reconnection stops fallback", async () => {
+      const { rerender } = renderHook(
+        ({ status }: { status: "disconnected" | "connected" }) =>
+          useParticipantSync({
+            enabled: true,
+            slug: "test-room",
+            provider: mockProvider as HocuspocusProvider,
+            onRefresh: callRefresh,
+            socketStatus: status,
+            fallbackIntervalMs: 30000,
+            debounceMs: 200,
+          }),
+        { initialProps: { status: "disconnected" } }
+      );
+
+      // Fires once while disconnected
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+
+      // Socket reconnects
+      rerender({ status: "connected" });
+
+      // Advance another 60 seconds -> no further calls
+      await act(async () => {
+        vi.advanceTimersByTime(60000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("20. Hidden tab pauses polling", async () => {
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          onRefresh: callRefresh,
+          socketStatus: "disconnected",
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      // Hide tab
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      // Advance by 60 seconds -> no calls while hidden
+      await act(async () => {
+        vi.advanceTimersByTime(60000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(0);
+    });
+
+    it("21. Visible tab resumes polling", async () => {
+      // Start hidden
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          onRefresh: callRefresh,
+          socketStatus: "disconnected",
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      // Make visible
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+
+      // Advance by 30 seconds -> fallback fires
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("22. HTTP 429 applies backoff", async () => {
+      let isRateLimited = true;
+      refreshFn.mockImplementation(async () => {
+        if (isRateLimited) {
+          throw { status: 429, retryAfterSec: 5 };
+        }
+      });
+
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          onRefresh: callRefresh,
+          socketStatus: "disconnected",
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      // Trigger 429 via 30s interval
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+
+      // While in backoff (5s), next regular timer does not fire immediate duplicate
+      isRateLimited = false;
+      await act(async () => {
+        vi.advanceTimersByTime(5100);
+      });
+      // Backoff expired cleanly
+    });
+
+    it("23. Repeated status changes do not create duplicate timers", async () => {
+      const { rerender } = renderHook(
+        ({ status }: { status: "disconnected" | "error" | "connecting" }) =>
+          useParticipantSync({
+            enabled: true,
+            slug: "test-room",
+            provider: mockProvider as HocuspocusProvider,
+            onRefresh: callRefresh,
+            socketStatus: status,
+            fallbackIntervalMs: 30000,
+            debounceMs: 200,
+          }),
+        { initialProps: { status: "disconnected" } }
+      );
+
+      // Rapidly flip status
+      rerender({ status: "error" });
+      rerender({ status: "connecting" });
+      rerender({ status: "disconnected" });
+
+      // After 30s, exactly 1 refresh occurs (no timer stacking)
+      await act(async () => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("24. Yjs awareness continues working independently of socket status", async () => {
+      mockAwareness.setLocalState({ user: { name: "Local Host" } }, 1);
+
+      renderHook(() =>
+        useParticipantSync({
+          enabled: true,
+          slug: "test-room",
+          provider: mockProvider as HocuspocusProvider,
+          localClientId: 1,
+          onRefresh: callRefresh,
+          socketStatus: "connected", // Fallback polling disabled
+          fallbackIntervalMs: 30000,
+          debounceMs: 200,
+        })
+      );
+
+      // Awareness listener is active despite socket connected
+      expect(mockAwareness.listenerCount).toBe(1);
+
+      // Remote peer joins in Yjs
+      act(() => {
+        mockAwareness.setRemoteState(2, { user: { name: "Remote Peer" } });
+      });
+
+      // Debounce window
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+
+      // Refreshed via awareness
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+  });
 });

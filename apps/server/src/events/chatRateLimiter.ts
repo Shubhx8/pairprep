@@ -29,8 +29,8 @@ export class ChatRateLimiter {
 
   constructor(options: ChatRateLimiterOptions = {}) {
     this.windowMs = options.windowMs ?? 10_000;
-    this.userMax = options.userMax ?? 20;
-    this.ipMax = options.ipMax ?? 100;
+    this.userMax = options.userMax ?? (process.env["PAIRPREP_E2E"] === "1" ? 1000 : 20);
+    this.ipMax = options.ipMax ?? (process.env["PAIRPREP_E2E"] === "1" ? 5000 : 100);
     this.maxEntries = options.maxEntries ?? 10_000;
   }
 

@@ -774,4 +774,422 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       await guestUser.seed.cleanup();
     }
   });
+
+  /* -------------------------------------------------------------------------- */
+  /* GROUP E: CHAT SECURITY, OFFLINE RECOVERY, MOBILE A11Y & BENCHMARK SUITE     */
+  /* -------------------------------------------------------------------------- */
+
+  test("E22: Chat security & XSS sanitization (inert text, no script execution)", async ({
+    browser,
+    baseURL,
+  }) => {
+    const hostUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Alice XSS",
+      `alice.xss.${Date.now()}@pairprep.com`
+    );
+    const guestUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Bob XSS",
+      `bob.xss.${Date.now()}@pairprep.com`
+    );
+
+    const hostPage = await hostUser.context.newPage();
+    const guestPage = await guestUser.context.newPage();
+
+    let dialogFired = false;
+    guestPage.on("dialog", async (dialog) => {
+      dialogFired = true;
+      await dialog.dismiss();
+    });
+
+    try {
+      const { roomUrl } = await createRoomViaHost(hostPage, "E22 XSS Sanitization Room");
+
+      // Bob joins
+      await guestPage.goto(roomUrl);
+      await expect(
+        guestPage.getByRole("button", { name: /Join as Bob XSS/i })
+      ).toBeVisible({ timeout: 10000 });
+      await guestPage.getByRole("button", { name: /Join as Bob XSS/i }).click();
+      await expect(guestPage.getByTestId("chat-trigger-button")).toBeVisible({
+        timeout: 10000,
+      });
+
+      // Open chat on both
+      await hostPage.getByTestId("chat-trigger-button").click();
+      await expect(hostPage.getByTestId("chat-panel")).toBeVisible();
+      await guestPage.getByTestId("chat-trigger-button").click();
+      await expect(guestPage.getByTestId("chat-panel")).toBeVisible();
+
+      // Alice sends XSS payloads
+      const imgPayload =
+        '<img src="x" onerror="window.__xss_img = true; alert(\'xss-img\');" />';
+      const scriptPayload =
+        "<script>window.__xss_script = true; alert('xss-script');</script>";
+
+      const hostComposer = hostPage.getByTestId("chat-composer-textarea");
+      const hostSendBtn = hostPage.getByTestId("chat-composer-send-button");
+
+      await hostComposer.fill(imgPayload);
+      await hostSendBtn.click();
+
+      // Bob receives message and verifies inert text rendering
+      const imgMsg = guestPage.locator('[data-testid^="chat-message-"]').filter({
+        hasText: '<img src="x"',
+      });
+      await expect(imgMsg).toBeVisible({ timeout: 10000 });
+      const imgTagCount = await imgMsg.locator('img[src="x"]').count();
+      expect(imgTagCount).toBe(0);
+
+      await hostComposer.fill(scriptPayload);
+      await hostSendBtn.click();
+
+      const scriptMsg = guestPage.locator('[data-testid^="chat-message-"]').filter({
+        hasText: "<script>",
+      });
+      await expect(scriptMsg).toBeVisible({ timeout: 10000 });
+      const scriptTagCount = await scriptMsg.locator("script").count();
+      expect(scriptTagCount).toBe(0);
+
+      // Verify no script execution occurred in browser context
+      const xssImg = await guestPage.evaluate(
+        () => (window as unknown as { __xss_img?: boolean }).__xss_img
+      );
+      const xssScript = await guestPage.evaluate(
+        () => (window as unknown as { __xss_script?: boolean }).__xss_script
+      );
+      expect(xssImg).toBeUndefined();
+      expect(xssScript).toBeUndefined();
+      expect(dialogFired).toBe(false);
+    } finally {
+      await hostPage.close();
+      await guestPage.close();
+      await hostUser.context.close();
+      await guestUser.context.close();
+      await hostUser.seed.cleanup();
+      await guestUser.seed.cleanup();
+    }
+  });
+
+  test("E23: Offline recovery, catch-up history, and offline eviction terminal recovery", async ({
+    browser,
+    baseURL,
+  }) => {
+    const hostUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Alice Offline",
+      `alice.off.${Date.now()}@pairprep.com`
+    );
+    const guestUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Bob Offline",
+      `bob.off.${Date.now()}@pairprep.com`
+    );
+
+    const hostPage = await hostUser.context.newPage();
+    const guestPage = await guestUser.context.newPage();
+
+    try {
+      const { roomUrl, slug } = await createRoomViaHost(
+        hostPage,
+        "E23 Offline Recovery Suite"
+      );
+
+      // Bob joins
+      await guestPage.goto(roomUrl);
+      await expect(
+        guestPage.getByRole("button", { name: /Join as Bob Offline/i })
+      ).toBeVisible({ timeout: 10000 });
+      await guestPage.getByRole("button", { name: /Join as Bob Offline/i }).click();
+      await expect(guestPage.getByTestId("chat-trigger-button")).toBeVisible({
+        timeout: 10000,
+      });
+
+      // Open chat on both
+      await hostPage.getByTestId("chat-trigger-button").click();
+      await expect(hostPage.getByTestId("chat-panel")).toBeVisible();
+      await guestPage.getByTestId("chat-trigger-button").click();
+      await expect(guestPage.getByTestId("chat-panel")).toBeVisible();
+
+      // Step A: Bob goes offline (close Bob's page)
+      await guestPage.close();
+
+      // Alice sends 3 messages while Bob is offline
+      const hostComposer = hostPage.getByTestId("chat-composer-textarea");
+      const hostSendBtn = hostPage.getByTestId("chat-composer-send-button");
+      for (let i = 1; i <= 3; i++) {
+        const itemText = `Offline catch-up item #${i} - ${Date.now()}`;
+        await hostComposer.fill(itemText);
+        await hostSendBtn.click();
+        await expect(
+          hostPage.locator('[data-testid^="chat-message-"]').filter({ hasText: itemText })
+        ).toBeVisible({ timeout: 10000 });
+      }
+
+      // Step B: Bob reopens room and verifies ordered recovery of messages
+      const bobReopenedPage = await guestUser.context.newPage();
+      await bobReopenedPage.goto(roomUrl);
+      await expect(bobReopenedPage.getByTestId("chat-trigger-button")).toBeVisible({
+        timeout: 10000,
+      });
+      await bobReopenedPage.getByTestId("chat-trigger-button").click();
+      await expect(bobReopenedPage.getByTestId("chat-panel")).toBeVisible();
+
+      for (let i = 1; i <= 3; i++) {
+        const item = bobReopenedPage
+          .locator('[data-testid^="chat-message-"]')
+          .filter({ hasText: `Offline catch-up item #${i}` });
+        await expect(item).toBeVisible({ timeout: 10000 });
+        expect(await item.count()).toBe(1);
+      }
+
+      // Step C: Bob closes tab again
+      await bobReopenedPage.close();
+
+      // While Bob is offline, Alice removes Bob via REST API
+      const roomDetailsRes = await hostPage.request.get(`/api/v1/rooms/${slug}`, {
+        headers: { Cookie: hostUser.seed.cookie.header },
+      });
+      const roomData = await roomDetailsRes.json();
+      const bobMember = roomData.members.find(
+        (m: { displayName: string }) => m.displayName === "Bob Offline"
+      );
+      expect(bobMember).toBeDefined();
+
+      const removeRes = await hostPage.request.delete(
+        `/api/v1/rooms/${slug}/members/${bobMember.id}`,
+        {
+          headers: {
+            Cookie: hostUser.seed.cookie.header,
+            "x-requested-with": "pairprep",
+          },
+        }
+      );
+      expect(removeRes.status()).toBe(200);
+
+      // Step D: Bob attempts to re-enter room while removed
+      const bobEvictedPage = await guestUser.context.newPage();
+      await bobEvictedPage.goto(roomUrl);
+
+      // Bob is no longer an active member; cannot access workspace or chat panel
+      await expect(bobEvictedPage.getByTestId("code-editor-workspace")).not.toBeVisible();
+      await expect(bobEvictedPage.getByTestId("chat-panel")).not.toBeVisible();
+
+      await bobEvictedPage.close();
+    } finally {
+      await hostPage.close();
+      await hostUser.context.close();
+      await guestUser.context.close();
+      await hostUser.seed.cleanup();
+      await guestUser.seed.cleanup();
+    }
+  });
+
+  test("E24: Mobile chat drawer keyboard navigation & focus trapping (375x667)", async ({
+    browser,
+    baseURL,
+  }) => {
+    const hostUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Alice Mobile",
+      `alice.mob.${Date.now()}@pairprep.com`
+    );
+    const guestUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Bob Mobile",
+      `bob.mob.${Date.now()}@pairprep.com`
+    );
+
+    const mobilePage = await hostUser.context.newPage();
+    await mobilePage.setViewportSize({ width: 375, height: 667 });
+
+    const guestPage = await guestUser.context.newPage();
+
+    try {
+      const { roomUrl } = await createRoomViaHost(mobilePage, "E24 Mobile Drawer A11y");
+
+      // Bob joins
+      await guestPage.goto(roomUrl);
+      await expect(
+        guestPage.getByRole("button", { name: /Join as Bob Mobile/i })
+      ).toBeVisible({ timeout: 10000 });
+      await guestPage.getByRole("button", { name: /Join as Bob Mobile/i }).click();
+
+      // Mobile chat trigger button should be visible
+      const triggerBtn = mobilePage.getByTestId("chat-trigger-button");
+      await expect(triggerBtn).toBeVisible({ timeout: 10000 });
+
+      // Click to open mobile drawer
+      await triggerBtn.click();
+      const panel = mobilePage.getByTestId("chat-panel");
+      await expect(panel).toBeVisible({ timeout: 10000 });
+
+      // Auto-focus on composer textarea
+      const composer = mobilePage.getByTestId("chat-composer-textarea");
+      await expect(composer).toBeFocused({ timeout: 5000 });
+
+      // Focus trapping: Tab wraps from composer to close button (when send is disabled)
+      await mobilePage.keyboard.press("Tab");
+      const closeBtn = mobilePage.getByTestId("chat-panel-close-button");
+      await expect(closeBtn).toBeFocused();
+
+      // Shift+Tab from close button wraps back to composer
+      await mobilePage.keyboard.press("Shift+Tab");
+      await expect(composer).toBeFocused();
+
+      // Screen-reader polite live region receives message from other user
+      await guestPage.getByTestId("chat-trigger-button").click();
+      const guestComposer = guestPage.getByTestId("chat-composer-textarea");
+      const guestSendBtn = guestPage.getByTestId("chat-composer-send-button");
+      await guestComposer.fill("Hello on mobile!");
+      await guestSendBtn.click();
+
+      const announcer = mobilePage.getByTestId("chat-polite-announcer");
+      await expect(announcer).toHaveText(/Bob Mobile: Hello on mobile!/, {
+        timeout: 10000,
+      });
+
+      // Escape key closes drawer and returns focus to trigger button
+      await mobilePage.keyboard.press("Escape");
+      await expect(panel).not.toBeVisible();
+      await expect(triggerBtn).toBeFocused();
+    } finally {
+      await mobilePage.close();
+      await guestPage.close();
+      await hostUser.context.close();
+      await guestUser.context.close();
+      await hostUser.seed.cleanup();
+      await guestUser.seed.cleanup();
+    }
+  });
+
+  test("E25: Bidirectional 100-message chat load benchmark (Alice -> Bob & Bob -> Alice)", async ({
+    browser,
+    baseURL,
+  }) => {
+    test.setTimeout(180000);
+    const hostUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Alice Load",
+      `alice.load.${Date.now()}@pairprep.com`
+    );
+    const guestUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Bob Load",
+      `bob.load.${Date.now()}@pairprep.com`
+    );
+
+    const hostPage = await hostUser.context.newPage();
+    const guestPage = await guestUser.context.newPage();
+
+    try {
+      const { roomUrl } = await createRoomViaHost(hostPage, "E25 Load Benchmark");
+
+      // Bob joins
+      await guestPage.goto(roomUrl);
+      await expect(
+        guestPage.getByRole("button", { name: /Join as Bob Load/i })
+      ).toBeVisible({ timeout: 10000 });
+      await guestPage.getByRole("button", { name: /Join as Bob Load/i }).click();
+
+      // Open chat on both
+      await hostPage.getByTestId("chat-trigger-button").click();
+      await expect(hostPage.getByTestId("chat-panel")).toBeVisible();
+      await guestPage.getByTestId("chat-trigger-button").click();
+      await expect(guestPage.getByTestId("chat-panel")).toBeVisible();
+
+      const hostComposer = hostPage.getByTestId("chat-composer-textarea");
+      const hostSendBtn = hostPage.getByTestId("chat-composer-send-button");
+      const guestComposer = guestPage.getByTestId("chat-composer-textarea");
+      const guestSendBtn = guestPage.getByTestId("chat-composer-send-button");
+
+      await expect(hostComposer).toBeEnabled({ timeout: 10000 });
+      await expect(guestComposer).toBeEnabled({ timeout: 10000 });
+
+      // 1. Warm-up message Alice -> Bob (excluded from measurement)
+      await hostComposer.fill("Warmup Alice -> Bob");
+      await hostSendBtn.click();
+      await guestPage
+        .locator('[data-testid^="chat-message-"]')
+        .filter({ hasText: "Warmup Alice -> Bob" })
+        .first()
+        .waitFor({ state: "visible", timeout: 10000 });
+
+      // 100 sequential messages Alice -> Bob
+      const samplesAtoB: number[] = [];
+      for (let i = 1; i <= 100; i++) {
+        const text = `A2B-${i}-${Date.now()}`;
+        await hostComposer.fill(text);
+        const t0 = performance.now();
+        await hostSendBtn.click();
+        await guestPage
+          .locator('[data-testid^="chat-message-"]')
+          .filter({ hasText: text })
+          .first()
+          .waitFor({ state: "visible", timeout: 10000 });
+        const t1 = performance.now();
+        samplesAtoB.push(t1 - t0);
+      }
+
+      // 2. Warm-up message Bob -> Alice (excluded from measurement)
+      await guestComposer.fill("Warmup Bob -> Alice");
+      await guestSendBtn.click();
+      await hostPage
+        .locator('[data-testid^="chat-message-"]')
+        .filter({ hasText: "Warmup Bob -> Alice" })
+        .first()
+        .waitFor({ state: "visible", timeout: 10000 });
+
+      // 100 sequential messages Bob -> Alice
+      const samplesBtoA: number[] = [];
+      for (let i = 1; i <= 100; i++) {
+        const text = `B2A-${i}-${Date.now()}`;
+        await guestComposer.fill(text);
+        const t0 = performance.now();
+        await guestSendBtn.click();
+        await hostPage
+          .locator('[data-testid^="chat-message-"]')
+          .filter({ hasText: text })
+          .first()
+          .waitFor({ state: "visible", timeout: 10000 });
+        const t1 = performance.now();
+        samplesBtoA.push(t1 - t0);
+      }
+
+      const p50_AtoB = calculatePercentile(samplesAtoB, 0.5);
+      const p95_AtoB = calculatePercentile(samplesAtoB, 0.95);
+      const p50_BtoA = calculatePercentile(samplesBtoA, 0.5);
+      const p95_BtoA = calculatePercentile(samplesBtoA, 0.95);
+
+      console.log(
+        `[Load Benchmark - Localhost Only] Alice -> Bob (100 msgs): p50 = ${p50_AtoB.toFixed(1)} ms, p95 = ${p95_AtoB.toFixed(1)} ms`
+      );
+      console.log(
+        `[Load Benchmark - Localhost Only] Bob -> Alice (100 msgs): p50 = ${p50_BtoA.toFixed(1)} ms, p95 = ${p95_BtoA.toFixed(1)} ms`
+      );
+
+      expect(samplesAtoB.length).toBe(100);
+      expect(samplesBtoA.length).toBe(100);
+      expect(p50_AtoB).toBeGreaterThan(0);
+      expect(p95_AtoB).toBeGreaterThan(0);
+      expect(p50_BtoA).toBeGreaterThan(0);
+      expect(p95_BtoA).toBeGreaterThan(0);
+    } finally {
+      await hostPage.close();
+      await guestPage.close();
+      await hostUser.context.close();
+      await guestUser.context.close();
+      await hostUser.seed.cleanup();
+      await guestUser.seed.cleanup();
+    }
+  });
 });

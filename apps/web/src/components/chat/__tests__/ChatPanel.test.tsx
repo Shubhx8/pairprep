@@ -609,6 +609,58 @@ describe("ChatPanel component", () => {
     vi.useRealTimers();
   });
 
+  it("traps focus within chat panel on Tab and Shift+Tab keydown", () => {
+    render(
+      <ChatPanel
+        messages={sampleMessages}
+        currentUserId={currentUserId}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    const panel = screen.getByTestId("chat-panel");
+    const closeBtn = screen.getByTestId("chat-panel-close-button");
+    const textarea = screen.getByLabelText(/send a message/i);
+
+    // Initial state: closeBtn is first focusable element
+    closeBtn.focus();
+    expect(document.activeElement).toBe(closeBtn);
+
+    // Shift+Tab from first element wraps to last focusable element (textarea when empty)
+    fireEvent.keyDown(panel, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(textarea);
+
+    // Tab from last element wraps to first focusable element (close button)
+    fireEvent.keyDown(panel, { key: "Tab", shiftKey: false });
+    expect(document.activeElement).toBe(closeBtn);
+
+    // Now type text into composer so Send button becomes enabled and focusable
+    fireEvent.change(textarea, { target: { value: "Hello world" } });
+    const sendBtn = screen.getByTestId("chat-composer-send-button");
+    expect(sendBtn).not.toBeDisabled();
+
+    // Focus on send button (now the last focusable element)
+    sendBtn.focus();
+    expect(document.activeElement).toBe(sendBtn);
+
+    // Tab from send button wraps to close button
+    fireEvent.keyDown(panel, { key: "Tab", shiftKey: false });
+    expect(document.activeElement).toBe(closeBtn);
+
+    // Shift+Tab from close button wraps to send button
+    fireEvent.keyDown(panel, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(sendBtn);
+  });
+
   it("visually distinguishes system messages from user messages", () => {
     const mixedMessages: ChatMessageItem[] = [
       {

@@ -110,6 +110,7 @@ export function ChatPanel({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
 
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const [hasNewMessagesWhileScrolledUp, setHasNewMessagesWhileScrolledUp] =
@@ -235,13 +236,48 @@ export function ChatPanel({
     }
   }, [prefersReducedMotion]);
 
-  // Keyboard navigation: Escape key closes panel and restores focus
+  // Keyboard navigation: Escape key closes panel and restores focus; Tab traps focus within drawer
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
+    (e: React.KeyboardEvent<HTMLElement>) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         onToggle();
         triggerRef?.current?.focus();
+        return;
+      }
+
+      if (e.key === "Tab" && panelRef.current) {
+        const focusableSelector =
+          'button:not([disabled]):not([aria-hidden="true"]), [href], input:not([disabled]):not([aria-hidden="true"]), select:not([disabled]):not([aria-hidden="true"]), textarea:not([disabled]):not([aria-hidden="true"]), [tabindex]:not([tabindex="-1"]):not([aria-hidden="true"])';
+        const focusableElements = Array.from(
+          panelRef.current.querySelectorAll<HTMLElement>(focusableSelector)
+        ).filter(
+          (el) =>
+            !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true"
+        );
+
+        if (focusableElements.length === 0) return;
+
+        const firstElement = focusableElements[0];
+        const lastElement = focusableElements[focusableElements.length - 1];
+
+        if (e.shiftKey) {
+          if (
+            document.activeElement === firstElement ||
+            !panelRef.current.contains(document.activeElement)
+          ) {
+            e.preventDefault();
+            lastElement?.focus();
+          }
+        } else {
+          if (
+            document.activeElement === lastElement ||
+            !panelRef.current.contains(document.activeElement)
+          ) {
+            e.preventDefault();
+            firstElement?.focus();
+          }
+        }
       }
     },
     [onToggle, triggerRef]
@@ -277,6 +313,7 @@ export function ChatPanel({
 
   return (
     <aside
+      ref={panelRef}
       aria-label="Room chat"
       onKeyDown={handleKeyDown}
       className={cn(

@@ -943,6 +943,13 @@ export class SyncRegistry {
   }
 
   /**
+   * Checks whether a room has been marked deleted in the sync registry.
+   */
+  isRoomDeleted(roomId: string): boolean {
+    return this.deletedRooms.has(roomId);
+  }
+
+  /**
    * Updates interview candidate permissions based on room live status.
    */
   syncCandidatePermissions(roomId: string, isLive: boolean): number {

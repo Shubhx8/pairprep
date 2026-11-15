@@ -6,6 +6,7 @@ import { docUpdateRepo } from "../repos/docUpdateRepo.js";
 import { docSnapshotRepo } from "../repos/docSnapshotRepo.js";
 import { syncRegistry } from "./syncRegistry.js";
 import { rootLogger } from "../middleware/logger.js";
+import { roomMutationBarrier } from "../events/roomMutationBarrier.js";
 
 export const FLUSH_DEBOUNCE_MS = 250;
 export const MAX_FLUSH_DEADLINE_MS = 2000;
@@ -303,6 +304,7 @@ let snapshotsSaved = 0;
 let snapshotFailures = 0;
 let inFlightUpdatesCount = 0;
 const inFlightFlushes = new Set<Promise<void>>();
+const inFlightFlushesByRoom = new Map<string, Set<Promise<void>>>();
 const inFlightSnapshots = new Set<Promise<void>>();
 
 export function registerLoadedDocument(roomId: string, document: Y.Doc): void {
@@ -655,17 +657,41 @@ export function requeueUpdates(
  * Flushes pending updates for a room under the room mutex.
  */
 export async function flushRoom(roomId: string, forceSnapshot = false): Promise<void> {
-  const flushPromise = (async () => {
+  if (syncRegistry.isRoomDeleted(roomId) || !roomMutationBarrier.isRoomOpen(roomId)) {
+    return;
+  }
+
+  let resolvePromise!: () => void;
+  const flushPromise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  const runPromise = (async () => {
     await roomMutex.runExclusive(roomId, async () => {
+      if (syncRegistry.isRoomDeleted(roomId) || !roomMutationBarrier.isRoomOpen(roomId)) {
+        return;
+      }
       await flushRoomLocked(roomId, forceSnapshot);
     });
   })();
 
-  inFlightFlushes.add(flushPromise);
+  let roomFlushes = inFlightFlushesByRoom.get(roomId);
+  if (!roomFlushes) {
+    roomFlushes = new Set<Promise<void>>();
+    inFlightFlushesByRoom.set(roomId, roomFlushes);
+  }
+  roomFlushes.add(flushPromise);
+  inFlightFlushes.add(runPromise);
+
   try {
-    await flushPromise;
+    await runPromise;
   } finally {
-    inFlightFlushes.delete(flushPromise);
+    roomFlushes.delete(flushPromise);
+    if (roomFlushes.size === 0) {
+      inFlightFlushesByRoom.delete(roomId);
+    }
+    inFlightFlushes.delete(runPromise);
+    resolvePromise();
   }
 }
 
@@ -878,7 +904,17 @@ async function flushRoomLocked(roomId: string, forceSnapshot = false): Promise<v
     }
 
     if (toInsert.length > 0) {
+      if (syncRegistry.isRoomDeleted(roomId) || !roomMutationBarrier.isRoomOpen(roomId)) {
+        rootLogger.info({ roomId }, "Aborting DocUpdate insertion: room was deleted");
+        return;
+      }
       for (const item of toInsert) {
+        if (
+          syncRegistry.isRoomDeleted(roomId) ||
+          !roomMutationBarrier.isRoomOpen(roomId)
+        ) {
+          return;
+        }
         try {
           await DocUpdateModel.create({
             roomId,
@@ -1254,6 +1290,42 @@ export function stopAllSnapshotIntervals(): void {
     clearInterval(timer);
   }
   snapshotIntervals.clear();
+}
+
+/**
+ * Immediately clears and cancels all pending persistence queues, timers, and reservations for a deleted room.
+ * Awaits in-flight flush promises under roomMutex before resolving to prevent post-deletion database recreation (H-2).
+ */
+export async function abortRoomPersistence(roomId: string): Promise<void> {
+  syncRegistry.markRoomDeleted(roomId);
+  syncRegistry.setRoomReadOnly(roomId);
+
+  const queue = pendingQueues.get(roomId);
+  if (queue) {
+    if (queue.debounceTimeout) clearTimeout(queue.debounceTimeout);
+    if (queue.flushDeadlineTimeout) clearTimeout(queue.flushDeadlineTimeout);
+    if (queue.retryTimeout) clearTimeout(queue.retryTimeout);
+    pendingQueues.delete(roomId);
+  }
+  const timer = snapshotIntervals.get(roomId);
+  if (timer) {
+    clearInterval(timer);
+    snapshotIntervals.delete(roomId);
+  }
+  activeLoadedDocuments.delete(roomId);
+  inFlightUpdatesByRoom.delete(roomId);
+  inFlightBytesByRoom.delete(roomId);
+  reservedUpdatesByRoom.delete(roomId);
+  reservedBytesByRoom.delete(roomId);
+
+  const roomFlushes = inFlightFlushesByRoom.get(roomId);
+  if (roomFlushes && roomFlushes.size > 0) {
+    await Promise.allSettled(Array.from(roomFlushes));
+  }
+
+  await roomMutex.runExclusive(roomId, async () => {
+    pendingQueues.delete(roomId);
+  });
 }
 
 /**

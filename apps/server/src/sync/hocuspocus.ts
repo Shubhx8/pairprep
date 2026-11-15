@@ -318,7 +318,7 @@ export function createSyncServer(
           if (!syncRegistry.isReservationValid(roomId, data.socketId, reservationToken)) {
             throw new Error("Authentication reservation expired or cancelled");
           }
-          if (!room) {
+          if (!room || room.status === "deleted") {
             const err = new Error("Room not found");
             (err as unknown as { reason: string }).reason = "room_not_found";
             throw err;

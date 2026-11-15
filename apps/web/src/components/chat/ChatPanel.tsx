@@ -85,6 +85,8 @@ export interface ChatPanelProps {
   onUnreadCountChange?: (count: number) => void;
   renderCollapsedTrigger?: boolean;
   className?: string;
+  style?: React.CSSProperties;
+  width?: number;
 }
 
 export function ChatPanel({
@@ -106,6 +108,8 @@ export function ChatPanel({
   onUnreadCountChange,
   renderCollapsedTrigger = false,
   className,
+  style,
+  width,
 }: ChatPanelProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -316,6 +320,10 @@ export function ChatPanel({
       ref={panelRef}
       aria-label="Room chat"
       onKeyDown={handleKeyDown}
+      style={{
+        width: typeof width === "number" ? `${width}px` : undefined,
+        ...style,
+      }}
       className={cn(
         "flex flex-col h-full bg-surface border-l border-border-subtle shadow-lg relative select-none",
         className
@@ -333,13 +341,15 @@ export function ChatPanel({
       </div>
 
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle bg-surface">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="h-4 w-4 text-primary" aria-hidden="true" />
-          <h2 className="text-sm font-semibold text-text-primary">Room Chat</h2>
+      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border-subtle bg-surface shrink-0 h-11">
+        <div className="flex items-center gap-2 min-w-0">
+          <MessageSquare className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary truncate">
+            Room Chat
+          </h2>
           {/* Connection state dot */}
           <span
-            className="flex items-center"
+            className="flex items-center shrink-0"
             title={`Status: ${connectionStatus}`}
             data-testid={`connection-indicator-${connectionStatus}`}
           >
@@ -365,7 +375,7 @@ export function ChatPanel({
             triggerRef?.current?.focus();
           }}
           aria-label="Close chat panel"
-          className="h-8 w-8 text-text-subtle hover:text-text-primary"
+          className="h-7 w-7 text-text-subtle hover:text-text-primary shrink-0"
           data-testid="chat-panel-close-button"
         >
           <X className="h-4 w-4" />
@@ -379,7 +389,7 @@ export function ChatPanel({
         tabIndex={0}
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex-1 overflow-y-auto overscroll-contain custom-scroll p-3.5 space-y-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         data-testid="chat-messages-log"
       >
         {/* Earlier messages notice */}

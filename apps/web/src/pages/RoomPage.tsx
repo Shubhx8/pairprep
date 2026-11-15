@@ -26,7 +26,10 @@ import type { SupportedEditorLanguage } from "../components/CodeEditor.js";
 import { useRoomSync } from "../hooks/useRoomSync.js";
 import { useParticipantSync } from "../hooks/useParticipantSync.js";
 import { useRoomSocket } from "../hooks/useRoomSocket.js";
-import { ChatPanel, ChatTriggerButton } from "../components/chat/index.js";
+import { ChatPanel, ChatUnreadBadge } from "../components/chat/index.js";
+import { MembersPanel } from "../components/workspace/MembersPanel.js";
+import { ResizeHandle } from "../components/workspace/ResizeHandle.js";
+import { cn } from "../lib/utils.js";
 import { isValidRoomId } from "../lib/roomId.js";
 
 // PRD Performance & Section 14: Dynamic lazy-loading boundary for Monaco collaborative editor
@@ -41,6 +44,7 @@ import {
   ArrowLeft,
   Sparkles,
   Terminal,
+  MessageSquare,
 } from "lucide-react";
 
 export default function RoomPage() {
@@ -66,10 +70,37 @@ export default function RoomPage() {
   const [selectedLanguage, setSelectedLanguage] =
     useState<SupportedEditorLanguage | null>(null);
 
-  // Chat UI and lifecycle state
+  // Three-column collaborative workspace layout states
+  // On desktop (>= 1024px) start with members panel open; on mobile (< 1024px) start with drawers closed
+  const [isMembersOpen, setIsMembersOpen] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 1024 : true
+  );
+  const [membersWidth, setMembersWidth] = useState(280);
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatWidth, setChatWidth] = useState(320);
   const [unreadCount, setUnreadCount] = useState(0);
+  const membersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const chatTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const toggleMembers = useCallback(() => {
+    setIsMembersOpen((prev) => {
+      const next = !prev;
+      if (next && typeof window !== "undefined" && window.innerWidth < 1024) {
+        setIsChatOpen(false);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleChat = useCallback(() => {
+    setIsChatOpen((prev) => {
+      const next = !prev;
+      if (next && typeof window !== "undefined" && window.innerWidth < 1024) {
+        setIsMembersOpen(false);
+      }
+      return next;
+    });
+  }, []);
   const [lifecycleNotice, setLifecycleNotice] = useState<{
     type: "removed" | "deleted" | "ended";
     message: string;
@@ -677,13 +708,13 @@ export default function RoomPage() {
     : 0;
 
   return (
-    <div className="min-h-screen bg-canvas text-text-primary flex flex-col">
+    <div className="h-screen max-h-screen bg-canvas text-text-primary flex flex-col overflow-hidden">
       {/* Ended Room Read-Only Notice */}
       {isEnded && (
         <div
           role="banner"
           data-testid="room-ended-banner"
-          className="bg-muted text-text-secondary border-b border-border-subtle px-4 py-2 text-center text-xs font-medium flex items-center justify-center gap-2"
+          className="bg-muted text-text-secondary border-b border-border-subtle px-4 py-2 text-center text-xs font-medium flex items-center justify-center gap-2 shrink-0"
         >
           <Lock className="h-3.5 w-3.5" />
           This room has ended and is in read-only mode.
@@ -691,48 +722,117 @@ export default function RoomPage() {
       )}
 
       {/* Room Application Header */}
-      <header className="border-b border-border-subtle bg-surface/90 backdrop-blur-md sticky top-0 z-20 h-14 px-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <header className="border-b border-border-subtle bg-surface/90 backdrop-blur-md sticky top-0 z-20 h-14 px-3 sm:px-4 flex items-center justify-between shrink-0 select-none">
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
           <Link
             to="/dashboard"
-            className="flex items-center gap-1.5 text-xs text-text-subtle hover:text-text-primary mr-2"
+            className="flex items-center gap-1.5 text-xs text-text-subtle hover:text-text-primary transition-colors shrink-0"
+            title="Back to Dashboard"
+            aria-label="Back to Dashboard"
           >
             <ArrowLeft className="h-4 w-4" />
-            <span className="hidden sm:inline">Dashboard</span>
+            <span className="hidden md:inline font-medium">Dashboard</span>
           </Link>
 
-          <span className="h-4 w-px bg-border-subtle" />
+          <span className="h-4 w-px bg-border-subtle shrink-0" />
 
-          <div className="flex items-center gap-2">
-            <h1 className="font-semibold text-sm sm:text-base text-text-primary truncate max-w-[200px] sm:max-w-md">
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="font-semibold text-sm sm:text-base text-text-primary truncate max-w-[140px] sm:max-w-xs md:max-w-md">
               {fullRoom.title}
             </h1>
-            <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-subtle border border-border-subtle text-text-secondary uppercase">
-              {fullRoom.language}
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-subtle border border-border-subtle text-text-secondary uppercase shrink-0">
+              {selectedLanguage ?? fullRoom.language}
+            </span>
+            <span
+              className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono border border-border-subtle bg-surface-subtle shrink-0"
+              title={`Connection: ${roomSocket.connectionStatus}`}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  isLocalConnected ? "bg-success" : "bg-warning animate-pulse"
+                )}
+              />
+              <span className={isLocalConnected ? "text-success" : "text-warning"}>
+                {isLocalConnected ? "Connected" : "Reconnecting"}
+              </span>
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Chat Trigger Button */}
-          <ChatTriggerButton
-            isOpen={isChatOpen}
-            unreadCount={unreadCount}
-            onToggle={() => setIsChatOpen((prev) => !prev)}
-            triggerRef={chatTriggerRef}
-          />
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Upper Layout Toggle Buttons Group (Independent Members & Chat controls) */}
+          <div
+            role="group"
+            aria-label="Panel layout controls"
+            className="flex items-center bg-surface-subtle p-0.5 sm:p-1 rounded-xl border border-border-subtle shadow-xs gap-1"
+          >
+            {/* Toggle Members Panel */}
+            <Button
+              ref={membersTriggerRef}
+              variant="ghost"
+              size="sm"
+              onClick={toggleMembers}
+              aria-label={`Toggle participants panel (${onlineCount} online)`}
+              aria-expanded={isMembersOpen}
+              aria-controls="members-panel"
+              title="Toggle Participants Panel (Left)"
+              data-testid="members-toggle-button"
+              className={cn(
+                "gap-1.5 h-8 px-2.5 text-xs font-medium transition-all",
+                isMembersOpen
+                  ? "bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 shadow-xs"
+                  : "text-text-subtle hover:text-text-primary hover:bg-surface"
+              )}
+            >
+              <Users className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Members</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-surface text-[10px] font-mono text-text-secondary border border-border-subtle">
+                {onlineCount}
+              </span>
+            </Button>
+
+            {/* Toggle Chat Panel */}
+            <Button
+              ref={chatTriggerRef}
+              variant="ghost"
+              size="sm"
+              onClick={toggleChat}
+              aria-label={`Toggle chat panel${unreadCount > 0 && !isChatOpen ? `, ${unreadCount} unread message${unreadCount === 1 ? "" : "s"}` : ""}`}
+              aria-expanded={isChatOpen}
+              aria-controls="chat-panel"
+              title="Toggle Room Chat Panel (Right)"
+              data-testid="chat-trigger-button"
+              className={cn(
+                "relative gap-1.5 h-8 px-2.5 text-xs font-medium transition-all",
+                isChatOpen
+                  ? "bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 shadow-xs"
+                  : "text-text-subtle hover:text-text-primary hover:bg-surface"
+              )}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Chat</span>
+              <ChatUnreadBadge
+                count={unreadCount}
+                className="absolute -top-1.5 -right-1.5"
+              />
+            </Button>
+          </div>
+
+          <span className="h-4 w-px bg-border-subtle hidden sm:block" />
 
           {/* Share Link Button */}
           <Button
             variant="outline"
             size="sm"
             onClick={handleCopyLink}
-            className="gap-1.5 text-xs h-8"
+            className="gap-1.5 text-xs h-8 px-2.5"
+            title="Copy room invite link"
           >
             {copied ? (
               <>
                 <Check className="h-3.5 w-3.5 text-success" />
-                <span className="hidden sm:inline text-success">Copied!</span>
+                <span className="hidden sm:inline text-success font-medium">Copied!</span>
               </>
             ) : (
               <>
@@ -748,156 +848,63 @@ export default function RoomPage() {
             title={`${totalMembersCount} of 6 maximum room members`}
           >
             <Users className="h-3.5 w-3.5 text-text-subtle mr-1" />
-            <span className="font-mono font-medium">{totalMembersCount}/6 members</span>
+            <span className="font-mono text-[11px] text-text-secondary font-medium">
+              {totalMembersCount}/6 members
+            </span>
           </div>
         </div>
       </header>
 
-      {/* Editor & Collaboration Workspace Placeholder (Phase 2 integration anchor) */}
-      <main className="flex-1 flex overflow-hidden relative">
-        {/* Sidebar: Participants & Room Info */}
-        <aside className="w-[280px] shrink-0 border-r border-border-subtle bg-surface/50 p-4 space-y-6 hidden lg:block overflow-y-auto">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-                Participants
-              </h2>
-              <span
-                data-testid="participant-counts"
-                className="text-[11px] font-mono text-text-subtle"
-              >
-                <span className="text-success font-medium">{onlineCount} online</span>
-                {" · "}
-                <span>
-                  {totalMembersCount} {totalMembersCount === 1 ? "member" : "members"}
-                </span>
-              </span>
-            </div>
-            <div className="space-y-2">
-              {members.length > 0 ? (
-                members.map((m, idx) => {
-                  const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
-                  const memberOnline = isLocalConnected ? isMemberOnline(m) : false;
+      {/* Main Symmetrical Three-Column Collaborative Workspace */}
+      <main className="flex-1 flex overflow-hidden relative min-h-0">
+        {/* Mobile Backdrop for Members Drawer */}
+        {isMembersOpen && (
+          <div
+            className="lg:hidden fixed inset-0 z-40 bg-overlay/60 backdrop-blur-xs animate-in fade-in duration-200"
+            onClick={() => setIsMembersOpen(false)}
+            aria-hidden="true"
+          />
+        )}
 
-                  const statusLabel = isLocalConnected
-                    ? memberOnline
-                      ? "Online"
-                      : "Offline"
-                    : isCurrent
-                      ? "Offline"
-                      : "Unavailable";
-                  const participantColor =
-                    PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
-                    (PARTICIPANT_PALETTE[0] as string);
+        {/* Left Column: Members / Participants Panel */}
+        {isMembersOpen && (
+          <MembersPanel
+            members={members}
+            currentMember={currentMember}
+            isLocalConnected={isLocalConnected}
+            onlineCount={onlineCount}
+            totalMembersCount={totalMembersCount}
+            isMemberOnline={isMemberOnline}
+            isOpen={isMembersOpen}
+            onToggle={() => setIsMembersOpen(false)}
+            triggerRef={membersTriggerRef}
+            copied={copied}
+            onCopyLink={handleCopyLink}
+            width={membersWidth}
+            className="fixed inset-y-0 left-0 z-50 w-full sm:w-80 lg:static lg:shrink-0 lg:z-auto h-full"
+          />
+        )}
 
-                  return (
-                    <div
-                      key={m.id}
-                      data-testid={`participant-${m.id}`}
-                      className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="relative shrink-0 flex items-center justify-center">
-                          <div
-                            className="h-6 w-6 rounded-full flex items-center justify-center font-bold text-[10px] border"
-                            style={{
-                              borderColor: participantColor,
-                              color: participantColor,
-                              backgroundColor: `${participantColor}22`,
-                            }}
-                          >
-                            {m.displayName.charAt(0).toUpperCase()}
-                          </div>
-                          <span
-                            aria-label={statusLabel}
-                            title={statusLabel}
-                            className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
-                              memberOnline ? "bg-success" : "bg-text-subtle/40"
-                            }`}
-                          />
-                        </div>
-                        <span className="truncate font-medium text-text-primary">
-                          {m.displayName}
-                        </span>
-                        {isCurrent && (
-                          <span className="text-[10px] text-primary font-mono ml-1 font-semibold shrink-0">
-                            (You)
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                        <span
-                          data-testid={`participant-status-${m.id}`}
-                          className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border transition-colors ${
-                            memberOnline
-                              ? "bg-success/10 text-success border-success/20"
-                              : "bg-surface-subtle text-text-subtle border-border-subtle"
-                          }`}
-                        >
-                          {statusLabel}
-                        </span>
-                        <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
-                          {m.role}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="flex items-center justify-between p-2 rounded-lg bg-surface border border-border-subtle text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="relative shrink-0 flex items-center justify-center">
-                      <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center font-bold text-[10px] text-primary">
-                        {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
-                      </div>
-                      <span
-                        aria-label={isLocalConnected ? "Online" : "Offline"}
-                        className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
-                          isLocalConnected ? "bg-success" : "bg-text-subtle/40"
-                        }`}
-                      />
-                    </div>
-                    <span className="font-medium text-text-primary truncate">
-                      {currentMember?.displayName || "You"}
-                    </span>
-                    <span className="text-[10px] text-primary font-mono font-semibold shrink-0">
-                      (You)
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    <span
-                      className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border ${
-                        isLocalConnected
-                          ? "bg-success/10 text-success border-success/20"
-                          : "bg-surface-subtle text-text-subtle border-border-subtle"
-                      }`}
-                    >
-                      {isLocalConnected ? "Online" : "Offline"}
-                    </span>
-                    <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
-                      {currentMember?.role || "editor"}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+        {/* Left Resize Handle (between Members panel and Code Editor) */}
+        {isMembersOpen && (
+          <ResizeHandle
+            side="left"
+            currentWidth={membersWidth}
+            minWidth={220}
+            maxWidth={400}
+            onResize={setMembersWidth}
+            onReset={() => setMembersWidth(280)}
+            ariaLabel="Resize participants panel"
+          />
+        )}
 
-          <div className="rounded-xl border border-border-subtle bg-surface p-3.5 text-xs text-text-subtle space-y-1.5">
-            <div className="font-medium text-text-primary">Unguessable Link:</div>
-            <div className="font-mono text-[11px] truncate bg-surface-subtle p-1.5 rounded border border-border-subtle">
-              {window.location.href}
-            </div>
-          </div>
-        </aside>
-
-        {/* Center: Collaborative Workspace */}
-        <section className="flex-1 min-w-0 flex flex-col bg-canvas p-4 sm:p-6 overflow-hidden space-y-4">
+        {/* Center Column: Monaco Collaborative Code Editor + Terminal */}
+        <section className="flex-1 min-w-0 flex flex-col bg-canvas p-3 lg:p-4 overflow-hidden space-y-3">
           <Suspense
             fallback={
               <div
                 data-testid="editor-loading-fallback"
-                className="flex flex-1 items-center justify-center min-h-[400px] bg-canvas-subtle border border-border rounded-lg text-text-muted text-sm font-mono"
+                className="flex flex-1 items-center justify-center min-h-[400px] bg-canvas-subtle border border-border rounded-xl text-text-muted text-sm font-mono"
               >
                 Loading collaborative editor...
               </div>
@@ -938,19 +945,37 @@ export default function RoomPage() {
             />
           </Suspense>
 
-          {/* Terminal / Output Placeholder */}
-          <div className="h-40 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden">
-            <div className="border-b border-border-subtle bg-surface-subtle px-4 py-2 flex items-center gap-2 text-xs font-mono text-text-subtle">
-              <Terminal className="h-3.5 w-3.5" />
-              <span>Terminal & Execution Output</span>
+          {/* Terminal / Execution Output Area */}
+          <div className="h-36 lg:h-40 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden shrink-0 shadow-xs">
+            <div className="border-b border-border-subtle bg-surface-subtle px-3.5 py-1.5 flex items-center justify-between text-xs font-mono text-text-subtle">
+              <div className="flex items-center gap-2">
+                <Terminal className="h-3.5 w-3.5 text-primary" />
+                <span className="font-medium text-text-secondary">
+                  Terminal & Execution Output
+                </span>
+              </div>
+              <span className="text-[10px] text-text-subtle/70">Console</span>
             </div>
-            <div className="flex-1 p-3 font-mono text-xs text-text-subtle bg-canvas/50">
+            <div className="flex-1 p-3 font-mono text-xs text-text-subtle bg-canvas/50 overflow-y-auto custom-scroll">
               $ Ready for code execution. Output will appear here.
             </div>
           </div>
         </section>
 
-        {/* Right: Chat Panel (Desktop docked / Mobile overlay drawer) */}
+        {/* Right Resize Handle (between Code Editor and Chat panel) */}
+        {isChatOpen && (
+          <ResizeHandle
+            side="right"
+            currentWidth={chatWidth}
+            minWidth={260}
+            maxWidth={480}
+            onResize={setChatWidth}
+            onReset={() => setChatWidth(320)}
+            ariaLabel="Resize chat panel"
+          />
+        )}
+
+        {/* Right Column: Live Chat Panel */}
         <ChatPanel
           messages={roomSocket.messages}
           currentUserId={currentMember?.id || ""}
@@ -968,8 +993,18 @@ export default function RoomPage() {
           hasEarlierMessages={roomSocket.hasEarlierMessages}
           triggerRef={chatTriggerRef}
           onUnreadCountChange={setUnreadCount}
-          className="fixed inset-y-0 right-0 z-50 w-full sm:w-80 lg:static lg:w-80 lg:shrink-0 lg:z-auto h-full"
+          width={chatWidth}
+          className="fixed inset-y-0 right-0 z-50 w-full sm:w-80 lg:static lg:shrink-0 lg:z-auto h-full"
         />
+
+        {/* Mobile Backdrop for Chat Drawer */}
+        {isChatOpen && (
+          <div
+            className="lg:hidden fixed inset-0 z-40 bg-overlay/60 backdrop-blur-xs animate-in fade-in duration-200"
+            onClick={() => setIsChatOpen(false)}
+            aria-hidden="true"
+          />
+        )}
       </main>
     </div>
   );

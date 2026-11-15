@@ -20,6 +20,7 @@ import { startArchiveJob, stopArchiveJob } from "./services/archiveJob.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
 import { attachSyncServer, SyncServerInstance } from "./sync/hocuspocus.js";
+import { attachSocketServer, SocketServerInstance } from "./events/socketServer.js";
 import { roomsRouter } from "./routes/rooms.js";
 import {
   getDatabaseStatus,
@@ -264,6 +265,7 @@ export function setupGracefulShutdown(
 export interface BootstrapResult {
   server: Server;
   syncServer: SyncServerInstance;
+  socketServer: SocketServerInstance;
   handleShutdown: (signal: string) => Promise<void>;
 }
 
@@ -309,24 +311,27 @@ export async function bootstrapServer(
   // 7. Attach the sync server and upgrade handler
   const syncServer = attachSyncServer(httpServer);
 
-  // 8. Register graceful shutdown handlers
+  // 8. Attach the Socket.IO room events server
+  const socketServer = attachSocketServer(httpServer);
+
+  // 9. Register graceful shutdown handlers
   const { handleShutdown } = setupGracefulShutdown(httpServer, async () => {
-    await syncServer.drainAndShutdown();
+    await Promise.allSettled([syncServer.drainAndShutdown(), socketServer.close()]);
   });
 
-  // 9. Start listening for HTTP traffic
+  // 10. Start listening for HTTP traffic
   await new Promise<void>((resolve, reject) => {
     httpServer.listen(port, () => resolve());
     httpServer.once("error", reject);
   });
 
-  // 10. Report application readiness
+  // 11. Report application readiness
   rootLogger.info(
     { port, env: config.NODE_ENV },
     `[PairPrep Server] running on http://localhost:${port}`
   );
 
-  return { server: httpServer, syncServer, handleShutdown };
+  return { server: httpServer, syncServer, socketServer, handleShutdown };
 }
 
 let server: Server | undefined;

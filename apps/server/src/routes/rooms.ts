@@ -7,10 +7,16 @@ import {
   toRoomDto,
   toPublicRoomDto,
   toRoomMemberDto,
+  toMessageDto,
+  ChatHistoryQuerySchema,
 } from "@pairprep/shared";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { guestRepo } from "../repos/guestRepo.js";
+import { messageRepo } from "../repos/messageRepo.js";
+import { getSocketServer } from "../events/socketServer.js";
+import { presenceTracker } from "../events/presenceTracker.js";
+import { outboxService } from "../events/outboxService.js";
 import {
   requireUser,
   requirePrincipal,
@@ -265,13 +271,37 @@ roomsRouter.post(
           return;
         }
 
-        const member = await roomMemberRepo.addMember({
+        const io = getSocketServer();
+        const opId = outboxService.generateOpId(
+          "join",
+          room.id,
+          user.id,
+          String(Date.now())
+        );
+
+        const outboxResult = await outboxService.executeDurableOperation<IRoomMember>({
+          opId,
+          type: "join",
           roomId: room.id,
-          memberId: user.id,
-          displayName: user.displayName,
-          role: "editor",
-          isGuest: false,
+          payload: {
+            memberId: user.id,
+            displayName: user.displayName,
+            role: "editor",
+          },
+          messageText: `${user.displayName} joined the room`,
+          io,
+          mutation: async () => {
+            return roomMemberRepo.addMember({
+              roomId: room.id,
+              memberId: user.id,
+              displayName: user.displayName,
+              role: "editor",
+              isGuest: false,
+              opId,
+            });
+          },
         });
+        const member = outboxResult.result;
 
         await roomRepo.touchActivity(room.id);
         const updatedRoom = await roomRepo.findById(room.id);
@@ -323,18 +353,42 @@ roomsRouter.post(
           : undefined;
       const oldGuestId = oldRoomId ? req.principal?.id : undefined;
 
-      // Create new Room B guest document and membership first
+      // Create new Room B guest document first
       const guestDoc = await guestRepo.createGuest(displayName, room.id);
       let member: IRoomMember;
       try {
-        member = await roomMemberRepo.addMember({
+        const io = getSocketServer();
+        const opId = outboxService.generateOpId(
+          "join",
+          room.id,
+          guestDoc.id,
+          String(Date.now())
+        );
+
+        const outboxResult = await outboxService.executeDurableOperation<IRoomMember>({
+          opId,
+          type: "join",
           roomId: room.id,
-          memberId: guestDoc.id,
-          displayName: guestDoc.displayName,
-          role: "editor",
-          isGuest: true,
-          guestExpiresAt: guestDoc.expiresAt,
+          payload: {
+            memberId: guestDoc.id,
+            displayName: guestDoc.displayName,
+            role: "editor",
+          },
+          messageText: `${guestDoc.displayName} joined the room`,
+          io,
+          mutation: async () => {
+            return roomMemberRepo.addMember({
+              roomId: room.id,
+              memberId: guestDoc.id,
+              displayName: guestDoc.displayName,
+              role: "editor",
+              isGuest: true,
+              guestExpiresAt: guestDoc.expiresAt,
+              opId,
+            });
+          },
         });
+        member = outboxResult.result;
       } catch (addErr) {
         // On join failure (e.g. ROOM_FULL), delete the guest created in that request
         await guestRepo.deleteGuest(guestDoc.id);
@@ -401,22 +455,50 @@ roomsRouter.patch(
 
       assertCanModifyMember(room, targetMember, "demote");
 
-      const updatedMember = await roomMemberRepo.updateRole(
+      const previousRole = targetMember.role;
+      const newRole = parseResult.data.role;
+
+      // Coordinate outbox durable operation and Socket.IO broadcast
+      const io = getSocketServer();
+      const opId = outboxService.generateOpId(
+        "role_change",
         room.id,
         targetMember.id,
-        parseResult.data.role
+        String(Date.now())
       );
 
+      let updatedMember: IRoomMember | null = null;
+      await outboxService.executeDurableOperation({
+        opId,
+        type: "role_change",
+        roomId: room.id,
+        payload: {
+          memberDocId: targetMember.id,
+          memberId: targetMember.memberId,
+          role: newRole,
+          previousRole,
+        },
+        messageText: `${targetMember.displayName}'s role was changed from ${previousRole} to ${newRole}`,
+        io,
+        mutation: async () => {
+          updatedMember = await roomMemberRepo.updateRole(
+            room.id,
+            targetMember.id,
+            newRole,
+            opId
+          );
+          return updatedMember;
+        },
+      });
+
+      // Update in-memory presence tracking
+      presenceTracker.updateMemberRole(targetMember.id, newRole);
+
       // Coordinate live sync permissions with syncRegistry (< 1s revocation)
-      if (parseResult.data.role === "viewer") {
+      if (newRole === "viewer") {
         syncRegistry.setMemberReadOnly(room.id, targetMember.memberId, true, "viewer");
       } else if (room.status !== "ended" && room.status !== "archived") {
-        syncRegistry.setMemberReadOnly(
-          room.id,
-          targetMember.memberId,
-          false,
-          parseResult.data.role
-        );
+        syncRegistry.setMemberReadOnly(room.id, targetMember.memberId, false, newRole);
       }
 
       await roomRepo.touchActivity(room.id);
@@ -455,8 +537,8 @@ roomsRouter.delete(
 
       assertCanModifyMember(room, targetMember, "remove");
 
-      await roomMemberRepo.removeMember(room.id, targetMember.id);
-      await roomRepo.touchActivity(room.id);
+      // Immediately disconnect Socket.IO sockets (< 1s revocation)
+      presenceTracker.disconnectMemberSockets(room.id, targetMember.id);
 
       // Immediately terminate active WebSocket connections for removed member (< 1s revocation)
       syncRegistry.closeConnectionsForMember(
@@ -465,6 +547,32 @@ roomsRouter.delete(
         4003,
         "removed"
       );
+
+      // Durable outbox operation for member removal (CH-3 Option A departure notice)
+      const io = getSocketServer();
+      const opId = outboxService.generateOpId(
+        "remove",
+        room.id,
+        targetMember.id,
+        String(Date.now())
+      );
+
+      await outboxService.executeDurableOperation({
+        opId,
+        type: "remove",
+        roomId: room.id,
+        payload: {
+          memberDocId: targetMember.id,
+          memberId: targetMember.memberId,
+        },
+        messageText: `${targetMember.displayName} was removed from the room by the owner`,
+        io,
+        mutation: async () => {
+          return roomMemberRepo.removeMember(room.id, targetMember.id, opId);
+        },
+      });
+
+      await roomRepo.touchActivity(room.id);
 
       res.json({ status: "ok" });
     } catch (err) {
@@ -501,9 +609,35 @@ roomsRouter.post(
         return;
       }
 
-      const endedRoom = await roomRepo.updateStatus(room.slug, "ended");
+      const io = getSocketServer();
+      const opId = outboxService.generateOpId(
+        "room_ended",
+        room.id,
+        "all",
+        String(Date.now())
+      );
+
+      const { result: endedRoom } =
+        await outboxService.executeDurableOperation<IRoom | null>({
+          opId,
+          type: "room_ended",
+          roomId: room.id,
+          payload: { status: "ended" },
+          messageText: "The room session was ended by the owner",
+          io,
+          mutation: async () => {
+            return roomRepo.updateStatus(room.slug, "ended", opId);
+          },
+        });
+
       // Immediately enforce read-only across all active sync connections in the room
       syncRegistry.updateRoomLifecycle(room.id, "ended");
+
+      // Prune retention on ended room if message count exceeds 1,000 (Item 12)
+      if (endedRoom?.messageSeq && endedRoom.messageSeq > 1000) {
+        await messageRepo.deleteMessagesBeforeSeq(room.id, endedRoom.messageSeq - 1000);
+      }
+
       res.json({ room: toRoomDto(endedRoom || room) });
     } catch (err) {
       handleRouteError(err, req, res, next);
@@ -523,13 +657,60 @@ roomsRouter.delete(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const room = req.room!;
-      await roomRepo.deleteRoom(room.id);
-      // Immediately terminate all sync connections, mark room deleted, and cascade client mappings
-      syncRegistry.markRoomDeleted(room.id);
-      syncRegistry.closeAllConnectionsForRoom(room.id, 1000, "room_deleted");
-      syncRegistry.setRoomReadOnly(room.id);
+
+      // Durable room deletion (H-1, H-2, M-1)
+      const io = getSocketServer();
+      await outboxService.executeRoomDeletion({
+        roomId: room.id,
+        slug: room.slug,
+        io,
+      });
+
       await clientMapRepo.deleteByRoom(room.id);
       res.status(204).end();
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
+  }
+);
+
+/**
+ * PRD 13.1 / CH-1 & CH-2: Get room chat messages (cursor paginated)
+ * Pipeline: requirePrincipal -> requireMember (viewers allowed!)
+ * Supports ?limit=50 (max 100), ?beforeSeq, ?afterSeq
+ */
+roomsRouter.get(
+  "/:slug/messages",
+  requirePrincipal,
+  requireMember,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const room = req.room!;
+      const parseQuery = ChatHistoryQuerySchema.safeParse(req.query);
+
+      if (!parseQuery.success) {
+        throw new AppError(
+          parseQuery.error.issues.map((e) => e.message).join(", "),
+          400,
+          "VALIDATION_ERROR"
+        );
+      }
+
+      const { limit, beforeSeq, afterSeq } = parseQuery.data;
+
+      const historyResult = await messageRepo.getMessages(room.id, {
+        limit,
+        beforeSeq,
+        afterSeq,
+      });
+
+      res.json({
+        messages: historyResult.messages.map(toMessageDto),
+        hasMore: historyResult.hasMore,
+        nextCursor: historyResult.nextCursor,
+        oldestSeq: historyResult.oldestSeq,
+        newestSeq: historyResult.newestSeq,
+      });
     } catch (err) {
       handleRouteError(err, req, res, next);
     }

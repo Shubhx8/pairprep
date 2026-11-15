@@ -10,7 +10,12 @@ import {
 import { useParams, Link } from "react-router-dom";
 import { useAuth } from "../lib/authContext.js";
 import { apiClient, ApiClientError } from "../lib/apiClient.js";
-import type { RoomDto, PublicRoomDto, RoomMemberDetailDto } from "@pairprep/shared";
+import type {
+  RoomDto,
+  PublicRoomDto,
+  RoomMemberDetailDto,
+  UserRole,
+} from "@pairprep/shared";
 import { PARTICIPANT_PALETTE } from "@pairprep/shared";
 import { Button } from "../components/ui/Button.js";
 import { Input } from "../components/ui/Input.js";
@@ -20,6 +25,8 @@ import { ErrorState } from "../components/ui/ErrorState.js";
 import type { SupportedEditorLanguage } from "../components/CodeEditor.js";
 import { useRoomSync } from "../hooks/useRoomSync.js";
 import { useParticipantSync } from "../hooks/useParticipantSync.js";
+import { useRoomSocket } from "../hooks/useRoomSocket.js";
+import { ChatPanel, ChatTriggerButton } from "../components/chat/index.js";
 import { isValidRoomId } from "../lib/roomId.js";
 
 // PRD Performance & Section 14: Dynamic lazy-loading boundary for Monaco collaborative editor
@@ -59,10 +66,102 @@ export default function RoomPage() {
   const [selectedLanguage, setSelectedLanguage] =
     useState<SupportedEditorLanguage | null>(null);
 
+  // Chat UI and lifecycle state
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [lifecycleNotice, setLifecycleNotice] = useState<{
+    type: "removed" | "deleted" | "ended";
+    message: string;
+  } | null>(null);
+
+  const currentMemberRef = useRef(currentMember);
+  useEffect(() => {
+    currentMemberRef.current = currentMember;
+  }, [currentMember]);
+
   // Sync client hook: only enabled when visitor is an active room member with valid 24-char ObjectId
   const roomId = room && "id" in room && isValidRoomId(room.id) ? room.id : null;
   const isSyncEnabled = Boolean(currentMember && roomId);
   const sync = useRoomSync({ roomId, enabled: isSyncEnabled });
+
+  // Room socket hook: enabled only when visitor is an active room member with valid 24-char ObjectId
+  const isSocketEnabled = Boolean(currentMember && roomId && slug);
+  const roomSocket = useRoomSocket({
+    roomId,
+    slug: slug ?? null,
+    currentMember,
+    enabled: isSocketEnabled,
+    onRoleChanged: (newRole: UserRole, memberId?: string) => {
+      const myId = currentMemberRef.current?.id;
+      if (!memberId || (myId && memberId === myId)) {
+        setCurrentMember((prev) => (prev ? { ...prev, role: newRole } : prev));
+      }
+      setMembers((prev) =>
+        prev.map((m) => (!memberId || m.id === memberId ? { ...m, role: newRole } : m))
+      );
+    },
+    onMemberRemoved: (memberId: string) => {
+      const myId = currentMemberRef.current?.id;
+      if (myId && memberId === myId) {
+        setLifecycleNotice({
+          type: "removed",
+          message: "You have been removed from this room by the host.",
+        });
+      } else {
+        setMembers((prev) => prev.filter((m) => m.id !== memberId));
+      }
+    },
+    onMemberJoined: (newMember) => {
+      setMembers((prev) => {
+        if (prev.some((m) => m.id === newMember.memberId)) return prev;
+        return [
+          ...prev,
+          {
+            id: newMember.memberId,
+            displayName: newMember.displayName,
+            role: newMember.role,
+            isGuest: newMember.isGuest,
+            isOnline: true,
+            joinedAt: newMember.joinedAt,
+            lastSeenAt: newMember.lastSeenAt,
+          },
+        ];
+      });
+    },
+    onMemberLeft: (memberId: string, reason?: string) => {
+      const myId = currentMemberRef.current?.id;
+      if (myId && memberId === myId && reason === "removed") {
+        setLifecycleNotice({
+          type: "removed",
+          message: "You have been removed from this room by the host.",
+        });
+      } else {
+        setMembers((prev) => prev.filter((m) => m.id !== memberId));
+      }
+    },
+    onRoomEnded: () => {
+      setRoom((prev) => (prev ? { ...prev, status: "ended" } : prev));
+      setLifecycleNotice((prev) =>
+        prev?.type === "removed" || prev?.type === "deleted"
+          ? prev
+          : {
+              type: "ended",
+              message: "This room has ended and is now in read-only mode.",
+            }
+      );
+    },
+    onRoomDeleted: () => {
+      setLifecycleNotice({
+        type: "deleted",
+        message: "This practice room has been deleted.",
+      });
+    },
+    onMembersUpdated: (updatedMembers) => {
+      setMembers(updatedMembers);
+    },
+    syncProvider: sync.provider,
+  });
 
   // Expose sync handle for integration and E2E collaboration testing ONLY in DEV/test and when VITE_PAIRPREP_E2E=1
   useEffect(() => {
@@ -183,13 +282,18 @@ export default function RoomPage() {
   }, [slug]);
 
   // Event-driven participant synchronization with 10s fallback & 429 backoff (Finding 1 / ROOM-5)
+  // When socket is enabled, disable periodic REST polling fallback (fallbackIntervalMs: 0) while keeping Yjs awareness listeners active.
   useParticipantSync({
     enabled: Boolean(currentMember && slug),
     slug: slug ?? null,
     provider: sync.provider,
     localClientId: sync.doc?.clientID,
     onRefresh: refreshRoom,
-    fallbackIntervalMs: import.meta.env["VITE_PAIRPREP_E2E"] === "1" ? 4000 : 10000,
+    fallbackIntervalMs: isSocketEnabled
+      ? 0
+      : import.meta.env["VITE_PAIRPREP_E2E"] === "1"
+        ? 4000
+        : 10000,
     debounceMs: 500,
   });
 
@@ -329,10 +433,56 @@ export default function RoomPage() {
     );
   }
 
+  if (lifecycleNotice?.type === "removed") {
+    return (
+      <div
+        data-testid="removed-screen"
+        className="min-h-screen bg-canvas text-text-primary flex flex-col justify-center items-center px-4"
+      >
+        <EmptyState
+          title="Removed from Room"
+          description={lifecycleNotice.message}
+          icon={<Lock className="h-10 w-10 text-destructive-text" />}
+          action={
+            <Button asChild variant="primary">
+              <Link to="/dashboard">Back to Dashboard</Link>
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (lifecycleNotice?.type === "deleted") {
+    return (
+      <div
+        data-testid="deleted-screen"
+        className="min-h-screen bg-canvas text-text-primary flex flex-col justify-center items-center px-4"
+      >
+        <EmptyState
+          title="Room Deleted"
+          description={lifecycleNotice.message}
+          icon={<Lock className="h-10 w-10 text-destructive-text" />}
+          action={
+            <Button asChild variant="primary">
+              <Link to="/dashboard">Back to Dashboard</Link>
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
   if (!room) return null;
 
   const isMember = Boolean(currentMember);
-  const isEnded = room.status === "ended" || room.status === "archived";
+  const isEnded = Boolean(
+    roomSocket.isRoomEnded ||
+    (room &&
+      "status" in room &&
+      (room.status === "ended" || room.status === "archived")) ||
+    lifecycleNotice?.type === "ended"
+  );
 
   // 3. Non-member visiting an Ended Room -> Closed screen
   if (!isMember && isEnded) {
@@ -496,14 +646,26 @@ export default function RoomPage() {
   const fullRoom = room as RoomDto;
   const totalMembersCount = members.length > 0 ? members.length : fullRoom.memberCount;
 
-  // Local connection state: current user is online immediately when WebSocket is connected
-  const isLocalConnected = sync.status === "connected";
+  // Local connection state: current user is online when either sync WebSocket or room Socket.IO is connected
+  const isLocalConnected =
+    sync.status === "connected" || roomSocket.connectionStatus === "connected";
+
+  const isMemberOnline = (m: RoomMemberDetailDto) => {
+    const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+    if (isCurrent) {
+      return isLocalConnected;
+    }
+    if (
+      roomSocket.connectionStatus === "connected" &&
+      roomSocket.onlineMemberIds.size > 0
+    ) {
+      return roomSocket.onlineMemberIds.has(m.id);
+    }
+    return Boolean(m.isOnline);
+  };
 
   const computedOnlineCount = isLocalConnected
-    ? members.filter((m) => {
-        const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
-        return isCurrent ? true : Boolean(m.isOnline);
-      }).length
+    ? members.filter((m) => isMemberOnline(m)).length
     : 0;
 
   const onlineCount = isLocalConnected
@@ -518,6 +680,7 @@ export default function RoomPage() {
       {isEnded && (
         <div
           role="banner"
+          data-testid="room-ended-banner"
           className="bg-muted text-text-secondary border-b border-border-subtle px-4 py-2 text-center text-xs font-medium flex items-center justify-center gap-2"
         >
           <Lock className="h-3.5 w-3.5" />
@@ -549,6 +712,14 @@ export default function RoomPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Chat Trigger Button */}
+          <ChatTriggerButton
+            isOpen={isChatOpen}
+            unreadCount={unreadCount}
+            onToggle={() => setIsChatOpen((prev) => !prev)}
+            triggerRef={chatTriggerRef}
+          />
+
           {/* Share Link Button */}
           <Button
             variant="outline"
@@ -581,9 +752,9 @@ export default function RoomPage() {
       </header>
 
       {/* Editor & Collaboration Workspace Placeholder (Phase 2 integration anchor) */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-[280px_1fr] overflow-hidden">
+      <main className="flex-1 flex overflow-hidden relative">
         {/* Sidebar: Participants & Room Info */}
-        <aside className="border-r border-border-subtle bg-surface/50 p-4 space-y-6 hidden lg:block overflow-y-auto">
+        <aside className="w-[280px] shrink-0 border-r border-border-subtle bg-surface/50 p-4 space-y-6 hidden lg:block overflow-y-auto">
           <div>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
@@ -604,14 +775,10 @@ export default function RoomPage() {
               {members.length > 0 ? (
                 members.map((m, idx) => {
                   const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
-                  const isMemberOnline = isLocalConnected
-                    ? isCurrent
-                      ? true
-                      : Boolean(m.isOnline)
-                    : false;
+                  const memberOnline = isLocalConnected ? isMemberOnline(m) : false;
 
                   const statusLabel = isLocalConnected
-                    ? isMemberOnline
+                    ? memberOnline
                       ? "Online"
                       : "Offline"
                     : isCurrent
@@ -643,7 +810,7 @@ export default function RoomPage() {
                             aria-label={statusLabel}
                             title={statusLabel}
                             className={`absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface ${
-                              isMemberOnline ? "bg-success" : "bg-text-subtle/40"
+                              memberOnline ? "bg-success" : "bg-text-subtle/40"
                             }`}
                           />
                         </div>
@@ -660,7 +827,7 @@ export default function RoomPage() {
                         <span
                           data-testid={`participant-status-${m.id}`}
                           className={`text-[9px] font-mono font-medium px-1.5 py-0.5 rounded border transition-colors ${
-                            isMemberOnline
+                            memberOnline
                               ? "bg-success/10 text-success border-success/20"
                               : "bg-surface-subtle text-text-subtle border-border-subtle"
                           }`}
@@ -723,7 +890,7 @@ export default function RoomPage() {
         </aside>
 
         {/* Center: Collaborative Workspace */}
-        <section className="flex flex-col bg-canvas p-4 sm:p-6 overflow-hidden space-y-4">
+        <section className="flex-1 min-w-0 flex flex-col bg-canvas p-4 sm:p-6 overflow-hidden space-y-4">
           <Suspense
             fallback={
               <div
@@ -780,6 +947,27 @@ export default function RoomPage() {
             </div>
           </div>
         </section>
+
+        {/* Right: Chat Panel (Desktop docked / Mobile overlay drawer) */}
+        <ChatPanel
+          messages={roomSocket.messages}
+          currentUserId={currentMember?.id || ""}
+          isOpen={isChatOpen}
+          onToggle={() => setIsChatOpen((prev) => !prev)}
+          onSendMessage={roomSocket.sendMessage}
+          onRetryMessage={roomSocket.retryMessage}
+          onRefetchHistory={roomSocket.refetchHistory}
+          connectionStatus={roomSocket.connectionStatus}
+          isRateLimited={roomSocket.isRateLimited}
+          rateLimitCountdown={roomSocket.rateLimitCountdown}
+          isRoomEnded={isEnded}
+          isLoadingHistory={roomSocket.isLoadingHistory}
+          loadHistoryError={roomSocket.loadHistoryError}
+          hasEarlierMessages={roomSocket.hasEarlierMessages}
+          triggerRef={chatTriggerRef}
+          onUnreadCountChange={setUnreadCount}
+          className="fixed inset-y-0 right-0 z-50 w-full sm:w-80 lg:static lg:w-80 lg:shrink-0 lg:z-auto h-full"
+        />
       </main>
     </div>
   );

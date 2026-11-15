@@ -110,9 +110,12 @@ export function useParticipantSync({
       }, debounceMs);
     };
 
-    // 1. Fallback 30-second timer (active only when tab is visible)
+    // 1. Fallback 30-second timer (active only when tab is visible and fallbackIntervalMs > 0)
     const startFallback = () => {
       stopFallback();
+      if (fallbackIntervalMs <= 0) {
+        return;
+      }
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }

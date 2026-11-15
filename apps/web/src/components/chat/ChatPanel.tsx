@@ -131,7 +131,6 @@ export function ChatPanel({
   useEffect(() => {
     if (isOpen) {
       setUnreadCount(0);
-      onUnreadCountChange?.(0);
       // Accessibility focus management: focus composer input when panel opens
       const timer = setTimeout(() => {
         composerInputRef.current?.focus();
@@ -142,7 +141,20 @@ export function ChatPanel({
       triggerRef?.current?.focus();
       return undefined;
     }
-  }, [isOpen, triggerRef, onUnreadCountChange]);
+  }, [isOpen, triggerRef]);
+
+  // Sync unreadCount with parent callback safely outside render phase
+  useEffect(() => {
+    onUnreadCountChange?.(unreadCount);
+  }, [unreadCount, onUnreadCountChange]);
+
+  // Mark initial history load as done once history has loaded
+  useEffect(() => {
+    if (!isLoadingHistory && !initialLoadDoneRef.current) {
+      messages.forEach((m) => knownMessageIdsRef.current.add(m.id || m.clientMsgId));
+      initialLoadDoneRef.current = true;
+    }
+  }, [isLoadingHistory, messages]);
 
   // Handle incoming messages: unread count, announcer, and scroll behavior
   useEffect(() => {
@@ -156,6 +168,7 @@ export function ChatPanel({
     }
 
     let hasNewFromOther = false;
+    let newFromOthersCount = 0;
     let latestNewFromOtherText = "";
     let latestNewFromOtherAuthor = "";
 
@@ -167,6 +180,7 @@ export function ChatPanel({
         // Only messages from OTHERS are announced (never announce own echoes)
         if (m.authorId !== currentUserId) {
           hasNewFromOther = true;
+          newFromOthersCount++;
           latestNewFromOtherText = m.text;
           latestNewFromOtherAuthor = m.authorName || "Peer";
         }
@@ -179,11 +193,7 @@ export function ChatPanel({
 
       // Track unread if panel is collapsed
       if (!isOpen) {
-        setUnreadCount((prev) => {
-          const next = prev + 1;
-          onUnreadCountChange?.(next);
-          return next;
-        });
+        setUnreadCount((prev) => prev + newFromOthersCount);
       }
 
       // If user is scrolled up, show the "New messages" pill

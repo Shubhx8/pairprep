@@ -583,12 +583,19 @@ describe("RoomPage", () => {
         };
       });
 
-      const getSpy = vi.spyOn(apiClient, "get").mockResolvedValue({
-        room: validRoom,
-        currentMember: aliceMember,
-        members: [aliceMember],
-        onlineMemberCount: 1,
-      });
+      const getSpy = vi
+        .spyOn(apiClient, "get")
+        .mockImplementation(async (url: string) => {
+          if (url.includes("/messages")) {
+            return { messages: [], nextCursor: null, hasMore: false };
+          }
+          return {
+            room: validRoom,
+            currentMember: aliceMember,
+            members: [aliceMember],
+            onlineMemberCount: 1,
+          };
+        });
 
       renderWithRoute();
 
@@ -598,7 +605,9 @@ describe("RoomPage", () => {
         );
       });
 
-      expect(getSpy).toHaveBeenCalledTimes(1);
+      const roomMetadataCalls = () =>
+        getSpy.mock.calls.filter(([url]) => url === `/rooms/${validRoom.slug}`);
+      expect(roomMetadataCalls()).toHaveLength(1);
 
       // Transition hook state to "connected"
       act(() => {
@@ -606,7 +615,7 @@ describe("RoomPage", () => {
       });
 
       await waitFor(() => {
-        expect(getSpy).toHaveBeenCalledTimes(2);
+        expect(roomMetadataCalls()).toHaveLength(2);
       });
     });
   });

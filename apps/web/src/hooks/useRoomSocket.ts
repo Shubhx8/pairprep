@@ -40,11 +40,13 @@ export interface UseRoomSocketOptions {
   slug: string | null;
   currentMember: RoomMemberDetailDto | null;
   enabled: boolean;
-  onRoleChanged?: (newRole: UserRole) => void;
+  onRoleChanged?: (newRole: UserRole, memberId?: string) => void;
   onMemberRemoved?: (memberId: string) => void;
   onRoomEnded?: () => void;
   onRoomDeleted?: () => void;
   onMembersUpdated?: (members: RoomMemberDetailDto[]) => void;
+  onMemberJoined?: (member: RoomMemberJoinedPayload["member"]) => void;
+  onMemberLeft?: (memberId: string, reason?: string) => void;
   syncProvider?: { disconnect: () => void; destroy: () => void } | null;
   // Optional test override for custom socket URL/factory
   serverUrl?: string;
@@ -84,6 +86,8 @@ export function useRoomSocket({
   onRoomEnded,
   onRoomDeleted,
   onMembersUpdated,
+  onMemberJoined,
+  onMemberLeft,
   syncProvider,
   serverUrl,
 }: UseRoomSocketOptions): UseRoomSocketReturn {
@@ -113,6 +117,8 @@ export function useRoomSocket({
     onRoomEnded,
     onRoomDeleted,
     onMembersUpdated,
+    onMemberJoined,
+    onMemberLeft,
     syncProvider,
   });
   callbacksRef.current = {
@@ -121,6 +127,8 @@ export function useRoomSocket({
     onRoomEnded,
     onRoomDeleted,
     onMembersUpdated,
+    onMemberJoined,
+    onMemberLeft,
     syncProvider,
   };
 
@@ -662,6 +670,7 @@ export function useRoomSocket({
         const onRoomMemberJoined = (payload: RoomMemberJoinedPayload) => {
           if (payload.roomId !== roomId) return;
           setOnlineMemberIds((prev) => new Set(prev).add(payload.member.memberId));
+          callbacksRef.current.onMemberJoined?.(payload.member);
         };
 
         const onRoomMemberLeft = (payload: RoomMemberLeftPayload) => {
@@ -671,6 +680,8 @@ export function useRoomSocket({
             next.delete(payload.memberId);
             return next;
           });
+
+          callbacksRef.current.onMemberLeft?.(payload.memberId, payload.reason);
 
           // Check if current member was removed
           if (payload.reason === "removed") {
@@ -684,7 +695,7 @@ export function useRoomSocket({
 
         const onRoomRoleChanged = (payload: RoomRoleChangedPayload) => {
           if (payload.roomId !== roomId) return;
-          callbacksRef.current.onRoleChanged?.(payload.role);
+          callbacksRef.current.onRoleChanged?.(payload.role, payload.memberId);
         };
 
         const onRoomStatusChanged = (payload: RoomStatusChangedPayload) => {

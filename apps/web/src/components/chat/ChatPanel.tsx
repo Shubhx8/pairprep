@@ -12,6 +12,60 @@ import { Button } from "../ui/Button.js";
 import { ArrowDown, X, MessageSquare } from "lucide-react";
 import { cn } from "../../lib/utils.js";
 
+export interface ChatUnreadBadgeProps {
+  count: number;
+  className?: string;
+}
+
+export function ChatUnreadBadge({ count, className }: ChatUnreadBadgeProps) {
+  if (count <= 0) return null;
+  return (
+    <span
+      data-testid="chat-unread-badge"
+      aria-label={`${count} unread message${count === 1 ? "" : "s"}`}
+      className={cn(
+        "flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-fg shadow-xs",
+        className
+      )}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+export interface ChatTriggerButtonProps {
+  unreadCount?: number;
+  isOpen: boolean;
+  onToggle: () => void;
+  triggerRef?: React.Ref<HTMLButtonElement> | React.RefObject<HTMLButtonElement | null>;
+  className?: string;
+}
+
+export function ChatTriggerButton({
+  unreadCount = 0,
+  isOpen,
+  onToggle,
+  triggerRef,
+  className,
+}: ChatTriggerButtonProps) {
+  return (
+    <Button
+      ref={triggerRef as React.Ref<HTMLButtonElement>}
+      variant="secondary"
+      size="sm"
+      onClick={onToggle}
+      aria-label={`Toggle chat panel${unreadCount > 0 && !isOpen ? `, ${unreadCount} unread message${unreadCount === 1 ? "" : "s"}` : ""}`}
+      aria-expanded={isOpen}
+      className={cn("relative gap-1.5", className)}
+      data-testid="chat-trigger-button"
+    >
+      <MessageSquare className="h-4 w-4" />
+      <span>Chat</span>
+      <ChatUnreadBadge count={unreadCount} className="absolute -top-1.5 -right-1.5" />
+    </Button>
+  );
+}
+
 export interface ChatPanelProps {
   messages: ChatMessageType[];
   currentUserId: string;
@@ -29,6 +83,7 @@ export interface ChatPanelProps {
   hasEarlierMessages: boolean;
   triggerRef?: React.RefObject<HTMLButtonElement | null>;
   onUnreadCountChange?: (count: number) => void;
+  renderCollapsedTrigger?: boolean;
   className?: string;
 }
 
@@ -49,6 +104,7 @@ export function ChatPanel({
   hasEarlierMessages,
   triggerRef,
   onUnreadCountChange,
+  renderCollapsedTrigger = false,
   className,
 }: ChatPanelProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -58,7 +114,7 @@ export function ChatPanel({
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const [hasNewMessagesWhileScrolledUp, setHasNewMessagesWhileScrolledUp] =
     useState(false);
-  const [, setUnreadCount] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [politeAnnouncement, setPoliteAnnouncement] = useState("");
 
   // Track previously known message IDs to announce ONLY newly incoming messages from others
@@ -175,9 +231,10 @@ export function ChatPanel({
       if (e.key === "Escape") {
         e.stopPropagation();
         onToggle();
+        triggerRef?.current?.focus();
       }
     },
-    [onToggle]
+    [onToggle, triggerRef]
   );
 
   const disabledReason = useMemo(() => {
@@ -194,6 +251,17 @@ export function ChatPanel({
   const isComposerDisabled = Boolean(isRoomEnded || connectionStatus !== "connected");
 
   if (!isOpen) {
+    if (renderCollapsedTrigger) {
+      return (
+        <ChatTriggerButton
+          unreadCount={unreadCount}
+          isOpen={false}
+          onToggle={onToggle}
+          triggerRef={triggerRef}
+          className={className}
+        />
+      );
+    }
     return null;
   }
 
@@ -245,7 +313,10 @@ export function ChatPanel({
         <Button
           variant="ghost"
           size="icon"
-          onClick={onToggle}
+          onClick={() => {
+            onToggle();
+            triggerRef?.current?.focus();
+          }}
           aria-label="Close chat panel"
           className="h-8 w-8 text-text-subtle hover:text-text-primary"
           data-testid="chat-panel-close-button"

@@ -424,4 +424,329 @@ describe("ChatPanel component", () => {
     fireEvent.keyDown(panel, { key: "Escape" });
     expect(onToggleMock).toHaveBeenCalledTimes(1);
   });
+
+  it("renders unread badge when ChatPanel is collapsed and new messages arrive from others", () => {
+    const onUnreadCountChangeMock = vi.fn();
+    const { rerender } = render(
+      <ChatPanel
+        messages={sampleMessages}
+        currentUserId={currentUserId}
+        isOpen={false}
+        renderCollapsedTrigger={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onUnreadCountChange={onUnreadCountChangeMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // Initial mount with history is silent, no unread badge
+    expect(screen.queryByTestId("chat-unread-badge")).toBeNull();
+
+    // New message from another user arrives while collapsed
+    const incoming1: ChatMessageItem = {
+      id: "msg-unread-1",
+      clientMsgId: "c-unread-1",
+      roomId: "room-abc",
+      authorId: "user-456",
+      authorName: "Alice",
+      text: "Unread message 1",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+    };
+
+    rerender(
+      <ChatPanel
+        messages={[...sampleMessages, incoming1]}
+        currentUserId={currentUserId}
+        isOpen={false}
+        renderCollapsedTrigger={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onUnreadCountChange={onUnreadCountChangeMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    const badge = screen.getByTestId("chat-unread-badge");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent("1");
+    expect(onUnreadCountChangeMock).toHaveBeenCalledWith(1);
+
+    // Second message arrives from another user
+    const incoming2: ChatMessageItem = {
+      id: "msg-unread-2",
+      clientMsgId: "c-unread-2",
+      roomId: "room-abc",
+      authorId: "user-456",
+      authorName: "Alice",
+      text: "Unread message 2",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+    };
+
+    rerender(
+      <ChatPanel
+        messages={[...sampleMessages, incoming1, incoming2]}
+        currentUserId={currentUserId}
+        isOpen={false}
+        renderCollapsedTrigger={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onUnreadCountChange={onUnreadCountChangeMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    expect(badge).toHaveTextContent("2");
+    expect(onUnreadCountChangeMock).toHaveBeenCalledWith(2);
+
+    // When panel is opened, unread count resets to 0
+    rerender(
+      <ChatPanel
+        messages={[...sampleMessages, incoming1, incoming2]}
+        currentUserId={currentUserId}
+        isOpen={true}
+        renderCollapsedTrigger={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onUnreadCountChange={onUnreadCountChangeMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    expect(onUnreadCountChangeMock).toHaveBeenCalledWith(0);
+  });
+
+  it("manages focus: focuses composer input when opened and restores focus to trigger on close", async () => {
+    vi.useFakeTimers();
+    const triggerButton = document.createElement("button");
+    document.body.appendChild(triggerButton);
+    const triggerRef = { current: triggerButton };
+
+    const { rerender } = render(
+      <ChatPanel
+        messages={sampleMessages}
+        currentUserId={currentUserId}
+        isOpen={true}
+        triggerRef={triggerRef}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // Focus timer elapses
+    vi.advanceTimersByTime(100);
+    const textarea = screen.getByLabelText(/send a message/i);
+    expect(document.activeElement).toBe(textarea);
+
+    // Escape closes panel and focuses trigger
+    const panel = screen.getByTestId("chat-panel");
+    const focusSpy = vi.spyOn(triggerButton, "focus");
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(onToggleMock).toHaveBeenCalled();
+    expect(focusSpy).toHaveBeenCalled();
+
+    // Close button also restores focus
+    const closeBtn = screen.getByTestId("chat-panel-close-button");
+    fireEvent.click(closeBtn);
+    expect(focusSpy).toHaveBeenCalledTimes(2);
+
+    // Transitioning isOpen to false restores focus
+    rerender(
+      <ChatPanel
+        messages={sampleMessages}
+        currentUserId={currentUserId}
+        isOpen={false}
+        triggerRef={triggerRef}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+    expect(focusSpy).toHaveBeenCalledTimes(3);
+
+    triggerButton.remove();
+    vi.useRealTimers();
+  });
+
+  it("visually distinguishes system messages from user messages", () => {
+    const mixedMessages: ChatMessageItem[] = [
+      {
+        id: "sys-joined",
+        clientMsgId: "c-sys-j",
+        roomId: "room-abc",
+        authorId: "system",
+        text: "User Alice joined room",
+        ts: new Date().toISOString(),
+        kind: "system",
+        status: "sent",
+      },
+      {
+        id: "user-msg",
+        clientMsgId: "c-user-1",
+        roomId: "room-abc",
+        authorId: "user-456",
+        authorName: "Alice",
+        text: "Hello everyone",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+      },
+      {
+        id: "own-msg",
+        clientMsgId: "c-own-1",
+        roomId: "room-abc",
+        authorId: currentUserId,
+        authorName: "Bob",
+        text: "Welcome Alice!",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+      },
+    ];
+
+    render(
+      <ChatPanel
+        messages={mixedMessages}
+        currentUserId={currentUserId}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // System message has role="status" and is centered without user bubble attributes
+    const systemEl = screen.getByRole("status");
+    expect(systemEl).toHaveTextContent("User Alice joined room");
+    expect(systemEl).toHaveClass("flex justify-center");
+    expect(systemEl).not.toHaveAttribute("data-author");
+
+    // Other user message has data-author="other" and left-aligned container
+    const otherMsg = screen.getByTestId("chat-message-user-msg");
+    expect(otherMsg).toHaveAttribute("data-author", "other");
+    expect(otherMsg).toHaveClass("mr-auto items-start");
+    expect(otherMsg).toHaveTextContent("Alice");
+
+    // Own user message has data-author="own" and right-aligned container
+    const ownMsg = screen.getByTestId("chat-message-own-msg");
+    expect(ownMsg).toHaveAttribute("data-author", "own");
+    expect(ownMsg).toHaveClass("ml-auto items-end");
+    expect(ownMsg).toHaveTextContent("You");
+  });
+
+  it("displays new-messages pill when user is scrolled up and scrolls to bottom on click", () => {
+    const { rerender } = render(
+      <ChatPanel
+        messages={sampleMessages}
+        currentUserId={currentUserId}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // Initial state: not scrolled up, no pill
+    expect(screen.queryByTestId("new-messages-pill")).toBeNull();
+
+    // User scrolls up (scrollTop is far from bottom)
+    const logArea = screen.getByRole("log", { name: /chat messages/i });
+    Object.defineProperty(logArea, "scrollHeight", { value: 1200, configurable: true });
+    Object.defineProperty(logArea, "scrollTop", { value: 200, configurable: true });
+    Object.defineProperty(logArea, "clientHeight", { value: 300, configurable: true });
+    // Distance to bottom = 1200 - 200 - 300 = 700px (> 80px)
+    fireEvent.scroll(logArea);
+
+    // New message arrives from other user while scrolled up
+    const newMsg: ChatMessageItem = {
+      id: "msg-pill-test",
+      clientMsgId: "c-pill-1",
+      roomId: "room-abc",
+      authorId: "user-456",
+      authorName: "Alice",
+      text: "Look at this while scrolled up",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+    };
+
+    rerender(
+      <ChatPanel
+        messages={[...sampleMessages, newMsg]}
+        currentUserId={currentUserId}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // New messages pill is now visible!
+    const pill = screen.getByTestId("new-messages-pill");
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveTextContent("New messages");
+
+    // Clicking the pill scrolls to bottom and dismisses the pill
+    fireEvent.click(pill);
+    expect(screen.queryByTestId("new-messages-pill")).toBeNull();
+  });
 });

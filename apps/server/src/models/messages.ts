@@ -27,6 +27,22 @@ const MessageSchema = new Schema<IMessage>(
   { collection: "messages" }
 );
 
+MessageSchema.pre("validate", async function () {
+  if (this.seq === undefined || this.seq === null) {
+    if (mongoose.connection.readyState === 1 && this.roomId) {
+      const highest = await mongoose
+        .model<IMessage>("Message")
+        .findOne({ roomId: this.roomId })
+        .sort({ seq: -1 })
+        .select("seq")
+        .exec();
+      this.seq = (highest?.seq ?? 0) + 1;
+    } else {
+      this.seq = 1;
+    }
+  }
+});
+
 // 1. Monotonic sequence uniqueness per room
 MessageSchema.index({ roomId: 1, seq: 1 }, { unique: true });
 

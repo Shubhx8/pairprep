@@ -1,10 +1,27 @@
 import { z } from "zod";
-import {
-  UserRoleSchema,
-  RoomStatusSchema,
-  RoomMemberDtoSchema,
-  MessageDtoSchema,
-} from "../index.js";
+import { RoomMemberDtoSchema, MessageDtoSchema } from "../index.js";
+
+/**
+ * Standard user role schema for event authorization and payloads.
+ */
+export const EventUserRoleSchema = z.enum([
+  "owner",
+  "interviewer",
+  "candidate",
+  "editor",
+  "viewer",
+]);
+
+/**
+ * Standard room status schema for event lifecycle notifications.
+ */
+export const EventRoomStatusSchema = z.enum([
+  "open",
+  "live",
+  "ended",
+  "archived",
+  "deleted",
+]);
 
 /**
  * Validates a standard 24-character hexadecimal MongoDB ObjectId.
@@ -141,8 +158,8 @@ export type RoomJoinPayload = z.infer<typeof RoomJoinPayloadSchema>;
 export const RoomJoinAckDataSchema = z
   .object({
     roomId: ObjectIdSchema,
-    role: UserRoleSchema,
-    status: RoomStatusSchema,
+    role: EventUserRoleSchema,
+    status: EventRoomStatusSchema,
   })
   .strict();
 
@@ -210,7 +227,7 @@ export type ChatSendAck = EventAck<ChatSendAckData>;
 export const RoomMemberJoinedPayloadSchema = z
   .object({
     roomId: ObjectIdSchema,
-    member: RoomMemberDtoSchema,
+    member: z.lazy(() => RoomMemberDtoSchema),
   })
   .strict();
 
@@ -230,7 +247,7 @@ export const RoomRoleChangedPayloadSchema = z
   .object({
     roomId: ObjectIdSchema,
     memberId: z.string().min(1).max(64),
-    role: UserRoleSchema,
+    role: EventUserRoleSchema,
   })
   .strict();
 
@@ -239,7 +256,7 @@ export type RoomRoleChangedPayload = z.infer<typeof RoomRoleChangedPayloadSchema
 export const RoomStatusChangedPayloadSchema = z
   .object({
     roomId: ObjectIdSchema,
-    status: RoomStatusSchema,
+    status: EventRoomStatusSchema,
   })
   .strict();
 
@@ -256,7 +273,7 @@ export type RoomDeletedPayload = z.infer<typeof RoomDeletedPayloadSchema>;
 export const ChatMessagePayloadSchema = z
   .object({
     roomId: ObjectIdSchema,
-    message: MessageDtoSchema,
+    message: z.lazy(() => MessageDtoSchema),
   })
   .strict();
 
@@ -270,7 +287,7 @@ export const PresenceMemberDtoSchema = z
   .object({
     memberId: z.string().min(1),
     displayName: z.string().min(1),
-    role: UserRoleSchema,
+    role: EventUserRoleSchema,
     color: z.string().optional(),
     isOnline: z.boolean(),
   })
@@ -309,7 +326,7 @@ export type ChatHistoryQuery = z.infer<typeof ChatHistoryQuerySchema>;
 
 export const ChatHistoryResponseSchema = z
   .object({
-    messages: z.array(MessageDtoSchema),
+    messages: z.lazy(() => z.array(MessageDtoSchema)),
     nextCursor: z.number().int().nonnegative().optional(),
     hasMore: z.boolean(),
     oldestSeq: z.number().int().nonnegative().optional(),

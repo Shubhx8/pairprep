@@ -37,7 +37,7 @@ export class MessageRepo {
       try {
         const message = new MessageModel({
           roomId: data.roomId,
-          seq: data.seq ?? 1,
+          seq: data.seq,
           authorId: data.authorId,
           authorName: data.authorName,
           clientMsgId: data.clientMsgId?.trim() || undefined,

@@ -126,6 +126,7 @@ describe("Room & Roles API (Task T05)", () => {
       { method: "DELETE", path: "/:slug/members/:id" },
       { method: "POST", path: "/:slug/end" },
       { method: "DELETE", path: "/:slug" },
+      { method: "GET", path: "/:slug/messages" },
     ];
 
     expect(routeList.length).toBe(expectedRoutes.length);

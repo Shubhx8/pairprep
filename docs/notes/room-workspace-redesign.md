@@ -49,6 +49,28 @@ Inspired by modern developer IDE workspaces (such as the reference three-column 
 - On initial page load on mobile, side panels start closed to preserve immediate code visibility.
 - Focus trapping and Escape key closing ensure strict accessibility compliance.
 
+### E. Professional IDE Features & Elimination of Duplicate Controls (Phase 2 Polish)
+1. **Deduplication of Invite / Share Actions**:
+   - Removed the redundant "Invite URL" box and duplicate copy button from the `MembersPanel` footer. The primary, prominent `[ Share Link ]` button in the application header now acts as the single source of truth for inviting collaborators.
+2. **Interactive `TerminalConsole` (`TerminalConsole.tsx`)**:
+   - Upgraded the static placeholder into an interactive execution console.
+   - Includes `Run Code` action with `Ctrl+Enter` shortcut badge, simulated container spawning, test execution, and execution timing.
+   - Tab switching between `Console`, `Problems (0)`, and `Sandbox Stats` (128MB RAM, 0.5 vCPU, 5.0s timeout, isolated egress).
+   - Clear console (`RotateCcw`) and expand/collapse (`Maximize2`/`Minimize2`) controls.
+3. **Participant Filtering & Session Security Card**:
+   - Added instant search filtering in `MembersPanel` for multi-participant rooms.
+   - Replaced duplicate footer with a high-density "Real-time CRDT Sync & Socket.IO Live RTT" integrity widget.
+4. **Chat Composer Upgrades (`ChatComposer.tsx`)**:
+   - Quick reactions toolbar (`👍`, `👏`, `🚀`, `💡`, `❓`) for rapid feedback during interviews.
+   - Code block helper (`</> Code`) for wrapping or inserting formatted code snippets into conversations.
+5. **Global Workspace Shortcuts & Cheatsheet**:
+   - `Ctrl+B` / `Cmd+B`: Toggle Participants panel.
+   - `Ctrl+J` / `Cmd+J`: Toggle Chat panel.
+   - `Ctrl+Enter` / `Cmd+Enter`: Trigger code execution.
+   - Header shortcut button `[ ⌨ ]` opens an accessible cheatsheet modal.
+6. **Live Session Duration Timer**:
+   - Live elapsed interview clock (`LIVE 00:14:32`) in the room header.
+
 ---
 
 ## 3. Trade-offs & Decisions

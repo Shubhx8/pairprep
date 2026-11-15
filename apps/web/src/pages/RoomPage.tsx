@@ -29,6 +29,7 @@ import { useRoomSocket } from "../hooks/useRoomSocket.js";
 import { ChatPanel, ChatUnreadBadge } from "../components/chat/index.js";
 import { MembersPanel } from "../components/workspace/MembersPanel.js";
 import { ResizeHandle } from "../components/workspace/ResizeHandle.js";
+import { TerminalConsole } from "../components/workspace/TerminalConsole.js";
 import { cn } from "../lib/utils.js";
 import { isValidRoomId } from "../lib/roomId.js";
 
@@ -43,8 +44,10 @@ import {
   Lock,
   ArrowLeft,
   Sparkles,
-  Terminal,
   MessageSquare,
+  Clock,
+  Keyboard,
+  X,
 } from "lucide-react";
 
 export default function RoomPage() {
@@ -79,8 +82,23 @@ export default function RoomPage() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(320);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const membersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const chatTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSessionSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatTimer = (totalSec: number) => {
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  };
 
   const toggleMembers = useCallback(() => {
     setIsMembersOpen((prev) => {
@@ -101,6 +119,21 @@ export default function RoomPage() {
       return next;
     });
   }, []);
+
+  // Global workspace keyboard shortcuts (Ctrl+B, Ctrl+J)
+  useEffect(() => {
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleMembers();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        toggleChat();
+      }
+    };
+    window.addEventListener("keydown", handleGlobalShortcuts);
+    return () => window.removeEventListener("keydown", handleGlobalShortcuts);
+  }, [toggleMembers, toggleChat]);
   const [lifecycleNotice, setLifecycleNotice] = useState<{
     type: "removed" | "deleted" | "ended";
     message: string;
@@ -757,6 +790,15 @@ export default function RoomPage() {
                 {isLocalConnected ? "Connected" : "Reconnecting"}
               </span>
             </span>
+
+            {/* Live Session Timer */}
+            <span
+              className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono border border-primary/20 bg-primary/5 text-primary shrink-0"
+              title="Session Duration"
+            >
+              <Clock className="h-3 w-3" />
+              <span>LIVE {formatTimer(sessionSeconds)}</span>
+            </span>
           </div>
         </div>
 
@@ -776,7 +818,7 @@ export default function RoomPage() {
               aria-label={`Toggle participants panel (${onlineCount} online)`}
               aria-expanded={isMembersOpen}
               aria-controls="members-panel"
-              title="Toggle Participants Panel (Left)"
+              title="Toggle Participants Panel (Left) [Ctrl+B]"
               data-testid="members-toggle-button"
               className={cn(
                 "gap-1.5 h-8 px-2.5 text-xs font-medium transition-all",
@@ -801,7 +843,7 @@ export default function RoomPage() {
               aria-label={`Toggle chat panel${unreadCount > 0 && !isChatOpen ? `, ${unreadCount} unread message${unreadCount === 1 ? "" : "s"}` : ""}`}
               aria-expanded={isChatOpen}
               aria-controls="chat-panel"
-              title="Toggle Room Chat Panel (Right)"
+              title="Toggle Room Chat Panel (Right) [Ctrl+J]"
               data-testid="chat-trigger-button"
               className={cn(
                 "relative gap-1.5 h-8 px-2.5 text-xs font-medium transition-all",
@@ -852,6 +894,18 @@ export default function RoomPage() {
               {totalMembersCount}/6 members
             </span>
           </div>
+
+          {/* Keyboard Shortcuts Trigger */}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsShortcutsOpen((prev) => !prev)}
+            aria-label="Keyboard Shortcuts"
+            title="Keyboard Shortcuts"
+            className="h-8 w-8 text-text-subtle hover:text-text-primary hidden md:flex"
+          >
+            <Keyboard className="h-4 w-4" />
+          </Button>
         </div>
       </header>
 
@@ -878,8 +932,6 @@ export default function RoomPage() {
             isOpen={isMembersOpen}
             onToggle={() => setIsMembersOpen(false)}
             triggerRef={membersTriggerRef}
-            copied={copied}
-            onCopyLink={handleCopyLink}
             width={membersWidth}
             className="fixed inset-y-0 left-0 z-50 w-full sm:w-80 lg:static lg:shrink-0 lg:z-auto h-full"
           />
@@ -945,21 +997,11 @@ export default function RoomPage() {
             />
           </Suspense>
 
-          {/* Terminal / Execution Output Area */}
-          <div className="h-36 lg:h-40 bg-surface border border-border-subtle rounded-xl flex flex-col overflow-hidden shrink-0 shadow-xs">
-            <div className="border-b border-border-subtle bg-surface-subtle px-3.5 py-1.5 flex items-center justify-between text-xs font-mono text-text-subtle">
-              <div className="flex items-center gap-2">
-                <Terminal className="h-3.5 w-3.5 text-primary" />
-                <span className="font-medium text-text-secondary">
-                  Terminal & Execution Output
-                </span>
-              </div>
-              <span className="text-[10px] text-text-subtle/70">Console</span>
-            </div>
-            <div className="flex-1 p-3 font-mono text-xs text-text-subtle bg-canvas/50 overflow-y-auto custom-scroll">
-              $ Ready for code execution. Output will appear here.
-            </div>
-          </div>
+          {/* Terminal / Interactive Sandbox Execution Area */}
+          <TerminalConsole
+            language={selectedLanguage ?? fullRoom.language}
+            readOnly={isEnded || currentMember?.role === "viewer"}
+          />
         </section>
 
         {/* Right Resize Handle (between Code Editor and Chat panel) */}
@@ -1006,6 +1048,128 @@ export default function RoomPage() {
           />
         )}
       </main>
+
+      {/* Keyboard Shortcuts Cheatsheet Modal */}
+      {isShortcutsOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard Shortcuts"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-overlay/70 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setIsShortcutsOpen(false)}
+        >
+          <div
+            className="bg-surface border border-border-subtle rounded-2xl p-5 max-w-sm w-full shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border-subtle pb-3">
+              <div className="flex items-center gap-2">
+                <Keyboard className="h-4 w-4 text-primary" />
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Workspace Shortcuts
+                </h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsShortcutsOpen(false)}
+                aria-label="Close shortcuts dialog"
+                className="h-7 w-7 text-text-subtle hover:text-text-primary"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
+                <span className="text-text-secondary">Toggle Participants Panel</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
+                  Ctrl + B
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
+                <span className="text-text-secondary">Toggle Room Chat Panel</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
+                  Ctrl + J
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
+                <span className="text-text-secondary">Run Code in Sandbox</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
+                  Ctrl + Enter
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-text-secondary">Close Open Drawers</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-text-subtle">
+                  Escape
+                </kbd>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Keyboard Shortcuts Cheatsheet Modal */}
+      {isShortcutsOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard Shortcuts"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-overlay/70 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setIsShortcutsOpen(false)}
+        >
+          <div
+            className="bg-surface border border-border-subtle rounded-2xl p-5 max-w-sm w-full shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border-subtle pb-3">
+              <div className="flex items-center gap-2">
+                <Keyboard className="h-4 w-4 text-primary" />
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Workspace Shortcuts
+                </h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsShortcutsOpen(false)}
+                aria-label="Close shortcuts dialog"
+                className="h-7 w-7 text-text-subtle hover:text-text-primary"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
+                <span className="text-text-secondary">Toggle Participants Panel</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
+                  Ctrl + B
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
+                <span className="text-text-secondary">Toggle Room Chat Panel</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
+                  Ctrl + J
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
+                <span className="text-text-secondary">Run Code in Sandbox</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
+                  Ctrl + Enter
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-text-secondary">Close Open Drawers</span>
+                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-text-subtle">
+                  Escape
+                </kbd>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

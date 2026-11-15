@@ -1,10 +1,12 @@
 import React, { useState, useCallback, useId } from "react";
-import { Send, Clock } from "lucide-react";
+import { Send, Clock, Code } from "lucide-react";
 import { Button } from "../ui/Button.js";
 import { cn } from "../../lib/utils.js";
 
 export const MAX_CHAT_GRAPHEMES = 1000;
 export const MAX_CHAT_BYTES = 4000;
+
+const QUICK_REACTIONS = ["👍", "👏", "🚀", "💡", "❓"];
 
 const segmenter =
   typeof Intl !== "undefined" && "Segmenter" in Intl
@@ -88,8 +90,25 @@ export function ChatComposer({
     }
   };
 
+  const handleInsertEmoji = (emoji: string) => {
+    if (isEffectivelyDisabled) return;
+    setText((prev) => (prev ? `${prev} ${emoji}` : emoji));
+  };
+
+  const handleInsertCodeSnippet = () => {
+    if (isEffectivelyDisabled) return;
+    setText((prev) =>
+      prev ? `${prev}\n\`\`\`\n// code\n\`\`\`\n` : "```\n// code\n```\n"
+    );
+  };
+
   return (
-    <div className={cn("p-3 border-t border-border-subtle bg-surface", className)}>
+    <div
+      className={cn(
+        "p-3 border-t border-border-subtle bg-surface select-none",
+        className
+      )}
+    >
       {/* Rate limit warning banner */}
       {isRateLimited && rateLimitCountdown > 0 && (
         <div
@@ -111,6 +130,37 @@ export function ChatComposer({
           data-testid="composer-disabled-banner"
         >
           <span>{disabledReason}</span>
+        </div>
+      )}
+
+      {/* Quick Reactions & Code Helper Bar */}
+      {!disabled && !isRateLimited && (
+        <div className="flex items-center justify-between gap-1 mb-2 px-0.5">
+          <div className="flex items-center gap-1">
+            {QUICK_REACTIONS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => handleInsertEmoji(emoji)}
+                className="h-6 w-6 rounded hover:bg-surface-hover flex items-center justify-center text-xs transition-colors cursor-pointer"
+                title={`Insert ${emoji}`}
+                aria-label={`Insert ${emoji}`}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleInsertCodeSnippet}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono text-text-subtle hover:text-text-primary hover:bg-surface-hover transition-colors cursor-pointer"
+            title="Insert Code Block"
+            aria-label="Insert Code Block"
+          >
+            <Code className="h-3 w-3" />
+            <span>Code</span>
+          </button>
         </div>
       )}
 

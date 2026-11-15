@@ -103,6 +103,16 @@ export function registerEventHandler<TPayload, TResult>(
       const message = firstIssue
         ? `Validation error on ${firstIssue.path.join(".") || "payload"}: ${firstIssue.message}`
         : "Invalid request payload";
+      rootLogger.warn(
+        {
+          event: definition.name,
+          socketId: socket.id,
+          issueCount: parsed.error.issues.length,
+          firstPath: firstIssue?.path.join("."),
+          firstCode: firstIssue?.code,
+        },
+        "Inbound application Socket.IO event schema validation failed"
+      );
       return sendError(ErrorCodes.VALIDATION_ERROR, message);
     }
 

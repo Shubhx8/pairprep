@@ -19,12 +19,12 @@ describe("T09 Phase 2 — History Pagination & Reconnect Hydration (CH-1, CH-2)"
       expect(parsed.afterSeq).toBeUndefined();
     });
 
-    it("clamps limit between 1 and 100", () => {
-      const valid = ChatHistoryQuerySchema.parse({ limit: "100" });
-      expect(valid.limit).toBe(100);
+    it("clamps limit between 1 and 200", () => {
+      const valid = ChatHistoryQuerySchema.parse({ limit: "200" });
+      expect(valid.limit).toBe(200);
 
       expect(() => ChatHistoryQuerySchema.parse({ limit: "0" })).toThrow();
-      expect(() => ChatHistoryQuerySchema.parse({ limit: "101" })).toThrow();
+      expect(() => ChatHistoryQuerySchema.parse({ limit: "201" })).toThrow();
     });
 
     it("parses valid beforeSeq and afterSeq integers", () => {

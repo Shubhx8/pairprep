@@ -101,7 +101,7 @@ export class MessageRepo {
     roomId: string,
     options: GetMessagesOptions = {}
   ): Promise<GetMessagesResult> {
-    const limit = Math.min(Math.max(1, options.limit ?? 50), 100);
+    const limit = Math.min(Math.max(1, options.limit ?? 50), 200);
     const filter: Record<string, unknown> = { roomId };
 
     if (options.beforeSeq !== undefined && options.afterSeq !== undefined) {

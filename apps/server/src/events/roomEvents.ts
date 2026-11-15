@@ -37,6 +37,27 @@ function emitToRoom(
     .emit(event, data);
 }
 
+function emitToRoomIncludeSender(
+  socket: TypedSocket,
+  roomChannel: string,
+  event: string,
+  data: unknown
+): void {
+  const io = (
+    socket as unknown as {
+      server?: {
+        to: (ch: string) => { emit: (ev: string, payload: unknown) => boolean };
+      };
+    }
+  ).server;
+  if (io) {
+    io.to(roomChannel).emit(event, data);
+  } else {
+    emitDirect(socket, event, data);
+    emitToRoom(socket, roomChannel, event, data);
+  }
+}
+
 function emitDirect(socket: TypedSocket, event: string, data: unknown): void {
   (
     socket as unknown as {
@@ -182,19 +203,19 @@ export function attachRoomEventHandlers(socket: TypedSocket): void {
         // Monotonic Sequence Allocation via Atomic $inc on Room
         const seq = await roomRepo.allocateMessageSeq(ctx.payload.roomId);
 
-        // Message Persistence (with partial unique idempotency on clientMessageId)
+        // Message Persistence (with partial unique idempotency on clientMsgId)
         const message = await messageRepo.createMessage({
           roomId: ctx.payload.roomId,
           seq,
           authorId: ctx.member!.memberId,
           authorName: ctx.member!.displayName,
-          clientMsgId: ctx.payload.clientMessageId,
+          clientMsgId: ctx.payload.clientMsgId,
           text: sanitizedText,
           kind: "user",
         });
 
-        // Real-Time Broadcast to Room
-        emitToRoom(ctx.socket, roomChannel, "chat:message", {
+        // Real-Time Broadcast to Room (including sender for echo-before-ack deduplication)
+        emitToRoomIncludeSender(ctx.socket, roomChannel, "chat:message", {
           roomId: ctx.payload.roomId,
           message: toMessageDto(message),
         });

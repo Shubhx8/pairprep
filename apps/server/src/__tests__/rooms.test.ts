@@ -1865,4 +1865,73 @@ describe("Room & Roles API (Task T05)", () => {
       expect(res.body.error.code).toBe("CSRF_REJECTED");
     });
   });
+
+  describe("PRD CH-1 & CH-2: GET /api/v1/rooms/:slug/messages", () => {
+    it("accepts limit of 200, rejects 201, defaults to 50, and allows viewers", async () => {
+      const { agent, user } = await getAuthenticatedAgent({ displayName: "Host Owner" });
+      const createRes = await agent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .set("Idempotency-Key", crypto.randomUUID())
+        .send({ title: "Chat Room Limit Test" });
+      expect(createRes.status).toBe(201);
+      const slug = createRes.body.room.slug;
+
+      // Seed 5 messages
+      for (let i = 1; i <= 5; i++) {
+        await MessageModel.create({
+          roomId: createRes.body.room.id,
+          authorId: String(user.id),
+          authorName: "Host Owner",
+          text: `Message ${i}`,
+          seq: i,
+          clientMsgId: `client-msg-${i}`,
+          kind: "user",
+          ts: new Date(),
+        });
+      }
+      await RoomModel.updateOne(
+        { _id: createRes.body.room.id },
+        { $set: { messageSeq: 5 } }
+      );
+
+      // Default limit (50)
+      const defaultRes = await agent.get(`/api/v1/rooms/${slug}/messages`);
+      expect(defaultRes.status).toBe(200);
+      expect(defaultRes.body.messages.length).toBe(5);
+
+      // Limit 200 is accepted
+      const limit200Res = await agent.get(`/api/v1/rooms/${slug}/messages?limit=200`);
+      expect(limit200Res.status).toBe(200);
+      expect(limit200Res.body.messages.length).toBe(5);
+
+      // Limit 201 is rejected with 400 VALIDATION_ERROR
+      const limit201Res = await agent.get(`/api/v1/rooms/${slug}/messages?limit=201`);
+      expect(limit201Res.status).toBe(400);
+      expect(limit201Res.body.error.code).toBe("VALIDATION_ERROR");
+
+      // Verify a viewer member is allowed to fetch messages
+      const { agent: viewerAgent } = await getAuthenticatedAgent({
+        displayName: "Viewer Bob",
+      });
+      const joinRes = await viewerAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Viewer Bob" });
+      expect(joinRes.status).toBe(200);
+      const viewerMemberId = joinRes.body.currentMember.id;
+
+      // Host demotes viewer to "viewer"
+      const patchRes = await agent
+        .patch(`/api/v1/rooms/${slug}/members/${viewerMemberId}`)
+        .set("X-Requested-With", "pairprep")
+        .send({ role: "viewer" });
+      expect(patchRes.status).toBe(200);
+
+      // Viewer fetches messages successfully (5 initial user messages + join system message + role change system message)
+      const viewerMsgRes = await viewerAgent.get(`/api/v1/rooms/${slug}/messages`);
+      expect(viewerMsgRes.status).toBe(200);
+      expect(viewerMsgRes.body.messages.length).toBe(7);
+    });
+  });
 });

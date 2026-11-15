@@ -202,7 +202,7 @@ export const ChatSendPayloadSchema = z
       .trim()
       .min(1, "Message cannot be empty")
       .max(1000, "Message cannot exceed 1,000 characters"),
-    clientMessageId: z.string().min(1).max(64).optional(),
+    clientMsgId: z.string().min(1).max(64),
   })
   .strict();
 
@@ -316,7 +316,7 @@ export type PresenceStatusPayload = z.infer<typeof PresenceStatusPayloadSchema>;
 
 export const ChatHistoryQuerySchema = z
   .object({
-    limit: z.coerce.number().int().min(1).max(100).default(50),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
     beforeSeq: z.coerce.number().int().nonnegative().optional(),
     afterSeq: z.coerce.number().int().nonnegative().optional(),
   })

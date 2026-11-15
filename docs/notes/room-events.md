@@ -15,8 +15,9 @@ This separation keeps high-frequency collaborative typing independent from trans
 - **Strict Ordering**: Monotonic sequence numbers allocated via atomic `$inc: { messageSeq: 1 }` on `RoomModel`.
 - **Deduplication**: Client-provided UUID (`clientMsgId`) enforced via partial unique index `(roomId, authorId, clientMsgId)`.
 - **Sanitization**: Unicode NFC normalization, control code stripping, and bidirectional override removal.
-- **Rate Limiting**: Sliding-window rate limiter enforcing 20 messages / 10s per user, with an IP-level cap of 100 messages / 10s for campus NAT networks.
-- **History & Pagination**: Cursor-based backward (`beforeSeq`) and forward (`afterSeq`) REST endpoints clamped to a maximum of 100 messages per request.
+- **Rate Limiting**: Sliding-window rate limiter enforcing 20 messages / 10s per user, with an IP-level cap of 100 messages / 10s for campus NAT networks. Rejections include `retryAfter` in integer seconds (`Math.ceil(retryAfterMs / 1000)`).
+- **History & Pagination**: Cursor-based backward (`beforeSeq`) and forward (`afterSeq`) REST endpoints at `/api/v1/rooms/:slug/messages` default to 50 messages, clamped to a maximum of 200 messages per request (requests > 200 are rejected with 400 `VALIDATION_ERROR`).
+- **Viewer Role Permissions**: Viewers may join and participate in room chat (`chat:send` permitted for all roles: owner, editor, viewer, interviewer, candidate). Viewers are read-only for the collaborative document only (`ED-6`), enforced authoritatively on the sync server; viewer status does not disable chat sending.
 
 ### B. Durable System Event Outbox (`CH-3`, `ROOM-3`, `ROOM-6`, `SEC-7`)
 To ensure zero lost system messages and zero duplicate broadcasts during server crashes, room mutations follow a 7-step compare-and-set (CAS) state machine:

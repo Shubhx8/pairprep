@@ -20,6 +20,7 @@ import {
   RoomStatusChangedPayloadSchema,
   RoomDeletedPayloadSchema,
   ChatMessagePayloadSchema,
+  ChatHistoryQuerySchema,
   ClientEventName,
   ServerEventName,
 } from "../events/index.js";
@@ -211,27 +212,28 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
   });
 
   describe("6. chat:send Payload & Acknowledgement", () => {
-    it("accepts valid chat:send payload", () => {
+    it("accepts valid chat:send payload with canonical clientMsgId", () => {
       const payload = {
         roomId: validObjectId,
         text: "Hello, pair programming partner!",
-        clientMessageId: "msg_client_12345",
+        clientMsgId: "msg_client_12345",
       };
       expect(ChatSendPayloadSchema.parse(payload)).toEqual(payload);
     });
 
-    it("accepts chat:send without optional clientMessageId", () => {
+    it("rejects chat:send without required clientMsgId", () => {
       const payload = {
         roomId: validObjectId,
         text: "Simple text message",
       };
-      expect(ChatSendPayloadSchema.parse(payload)).toEqual(payload);
+      expect(() => ChatSendPayloadSchema.parse(payload)).toThrow();
     });
 
     it("trims whitespace from chat text", () => {
       const parsed = ChatSendPayloadSchema.parse({
         roomId: validObjectId,
         text: "   trimmed text   ",
+        clientMsgId: "msg_client_trim",
       });
       expect(parsed.text).toBe("trimmed text");
     });
@@ -241,6 +243,7 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         ChatSendPayloadSchema.parse({
           roomId: validObjectId,
           text: "",
+          clientMsgId: "msg_client_empty",
         })
       ).toThrow();
 
@@ -248,6 +251,7 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         ChatSendPayloadSchema.parse({
           roomId: validObjectId,
           text: "     ",
+          clientMsgId: "msg_client_ws",
         })
       ).toThrow();
     });
@@ -258,6 +262,7 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         ChatSendPayloadSchema.parse({
           roomId: validObjectId,
           text: oversizedText,
+          clientMsgId: "msg_client_oversized",
         })
       ).toThrow();
 
@@ -267,16 +272,17 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         ChatSendPayloadSchema.parse({
           roomId: validObjectId,
           text: exactly1000,
+          clientMsgId: "msg_client_exact1000",
         }).text.length
       ).toBe(1000);
     });
 
-    it("rejects oversized clientMessageId", () => {
+    it("rejects oversized clientMsgId", () => {
       expect(() =>
         ChatSendPayloadSchema.parse({
           roomId: validObjectId,
           text: "Valid text",
-          clientMessageId: "x".repeat(65),
+          clientMsgId: "x".repeat(65),
         })
       ).toThrow();
     });
@@ -286,6 +292,7 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         ChatSendPayloadSchema.parse({
           roomId: validObjectId,
           text: "Valid text",
+          clientMsgId: "msg_client_unknown",
           authorId: "spoofed_author", // Author MUST come from socket principal
         })
       ).toThrow();
@@ -368,6 +375,52 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         },
       };
       expect(ChatMessagePayloadSchema.parse(payload)).toEqual(payload);
+    });
+  });
+
+  describe("8. ChatHistoryQuerySchema", () => {
+    it("defaults limit to 50 when omitted", () => {
+      const parsed = ChatHistoryQuerySchema.parse({});
+      expect(parsed.limit).toBe(50);
+    });
+
+    it("accepts limit of 200", () => {
+      const parsed = ChatHistoryQuerySchema.parse({ limit: 200 });
+      expect(parsed.limit).toBe(200);
+    });
+
+    it("coerces string limit to number", () => {
+      const parsed = ChatHistoryQuerySchema.parse({ limit: "200" });
+      expect(parsed.limit).toBe(200);
+    });
+
+    it("rejects limit of 201", () => {
+      expect(() => ChatHistoryQuerySchema.parse({ limit: 201 })).toThrow();
+    });
+
+    it("rejects limit of 0 or negative", () => {
+      expect(() => ChatHistoryQuerySchema.parse({ limit: 0 })).toThrow();
+      expect(() => ChatHistoryQuerySchema.parse({ limit: -5 })).toThrow();
+    });
+
+    it("accepts valid beforeSeq and afterSeq cursors", () => {
+      const parsed = ChatHistoryQuerySchema.parse({
+        limit: 100,
+        beforeSeq: 50,
+        afterSeq: 10,
+      });
+      expect(parsed.limit).toBe(100);
+      expect(parsed.beforeSeq).toBe(50);
+      expect(parsed.afterSeq).toBe(10);
+    });
+
+    it("rejects unknown query fields", () => {
+      expect(() =>
+        ChatHistoryQuerySchema.parse({
+          limit: 50,
+          unknownParam: "malicious",
+        })
+      ).toThrow();
     });
   });
 });

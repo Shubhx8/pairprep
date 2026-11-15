@@ -9,7 +9,14 @@ export interface UseParticipantSyncOptions {
   onRefresh: () => Promise<void>;
   fallbackIntervalMs?: number; // default 30000 (30 seconds)
   debounceMs?: number; // default 500ms
-  socketStatus?: "connecting" | "connected" | "disconnected" | "error";
+  socketStatus?:
+    | "idle"
+    | "connecting"
+    | "connected"
+    | "reconnecting"
+    | "disconnected"
+    | "error"
+    | "fatal_error";
   isSocketConnected?: boolean;
 }
 

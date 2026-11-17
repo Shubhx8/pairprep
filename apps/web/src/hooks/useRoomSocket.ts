@@ -930,8 +930,8 @@ export function useRoomSocket({
 
           callbacksRef.current.onMemberLeft?.(payload.memberId, payload.reason);
 
-          // Check if current member was removed
-          if (payload.reason === "removed") {
+          // Check if current member was removed or kicked
+          if (payload.reason === "removed" || payload.reason === "kicked") {
             const isMe =
               currentMember &&
               (payload.memberId === currentMember.id ||

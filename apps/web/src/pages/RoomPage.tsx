@@ -331,12 +331,17 @@ export default function RoomPage() {
       const myId = currentMemberRef.current?.id;
       const myMemberId = (currentMemberRef.current as { memberId?: string })?.memberId;
       if (
-        (myId && memberId === myId && reason === "removed") ||
-        (myMemberId && memberId === myMemberId && reason === "removed")
+        (myId && memberId === myId && (reason === "removed" || reason === "kicked")) ||
+        (myMemberId &&
+          memberId === myMemberId &&
+          (reason === "removed" || reason === "kicked"))
       ) {
         setLifecycleNotice({
           type: "removed",
-          message: "You have been removed from this room by the host.",
+          message:
+            reason === "kicked"
+              ? "You have been temporarily removed from this room by the host."
+              : "You have been removed from this room by the host.",
         });
       } else {
         setMembers((prev) =>

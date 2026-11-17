@@ -372,7 +372,7 @@ export const RoomMemberLeftPayloadSchema = z
   .object({
     roomId: ObjectIdSchema,
     memberId: z.string().min(1).max(64),
-    reason: z.enum(["removed", "left", "disconnected"]).optional(),
+    reason: z.enum(["removed", "kicked", "left", "disconnected"]).optional(),
   })
   .strict();
 

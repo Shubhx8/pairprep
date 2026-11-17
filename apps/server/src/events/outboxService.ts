@@ -289,7 +289,8 @@ export class OutboxService {
             memberId:
               (op.payload["memberDocId"] as string) || (op.payload["memberId"] as string),
             reason:
-              (op.payload["reason"] as "removed" | "left" | "disconnected") || "removed",
+              (op.payload["reason"] as "removed" | "kicked" | "left" | "disconnected") ||
+              "removed",
           });
           break;
         case "role_change":

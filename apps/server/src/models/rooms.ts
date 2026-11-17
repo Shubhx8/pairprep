@@ -6,14 +6,23 @@ export interface IRoom extends Document {
   type: "practice" | "interview";
   ownerId: string;
   language: "python" | "cpp" | "javascript";
-  status: "open" | "live" | "ended" | "archived";
+  status: "open" | "live" | "ended" | "archived" | "deleted";
   settings: Record<string, unknown>;
   problemId?: string;
   timeLimitSec?: number;
   memberCount: number;
   memberCountUpdatedAt: Date;
   lastActivityAt: Date;
+  messageSeq?: number;
   idempotencyKey?: string;
+  statusOpId?: string;
+  deletionOpId?: string;
+  deletedAt?: Date;
+  lastRemovedMember?: { memberDocId: string; opId: string };
+  removedMembers?: { memberDocId: string; opId: string; removedAt: Date }[];
+  bannedMemberIds?: string[];
+  appliedOpIds?: string[];
+  version?: number;
   startedAt?: Date;
   endedAt?: Date;
   createdAt: Date;
@@ -32,7 +41,7 @@ const RoomSchema = new Schema<IRoom>(
     },
     status: {
       type: String,
-      enum: ["open", "live", "ended", "archived"],
+      enum: ["open", "live", "ended", "archived", "deleted"],
       default: "open",
     },
     settings: { type: Schema.Types.Mixed, default: {} },
@@ -41,7 +50,25 @@ const RoomSchema = new Schema<IRoom>(
     memberCount: { type: Number, default: 1, min: 1, max: 6 },
     memberCountUpdatedAt: { type: Date, default: Date.now },
     lastActivityAt: { type: Date, default: Date.now },
+    messageSeq: { type: Number, default: 0, min: 0 },
     idempotencyKey: { type: String },
+    statusOpId: { type: String },
+    deletionOpId: { type: String },
+    deletedAt: { type: Date },
+    lastRemovedMember: { type: Schema.Types.Mixed },
+    removedMembers: {
+      type: [
+        {
+          memberDocId: { type: String, required: true },
+          opId: { type: String, required: true },
+          removedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+    bannedMemberIds: { type: [String], default: [] },
+    appliedOpIds: { type: [String], default: [] },
+    version: { type: Number, default: 0 },
     startedAt: { type: Date },
     endedAt: { type: Date },
     createdAt: { type: Date, default: Date.now },

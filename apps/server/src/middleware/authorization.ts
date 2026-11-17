@@ -138,7 +138,7 @@ export function requireOpenRoom(req: Request, res: Response, next: NextFunction)
     (req.headers["x-request-id"] as string) ||
     "";
 
-  if (!req.room) {
+  if (!req.room || req.room.status === "deleted") {
     res.status(404).json({
       error: {
         code: "ROOM_NOT_FOUND",

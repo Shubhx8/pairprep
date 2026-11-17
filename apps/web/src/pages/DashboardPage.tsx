@@ -151,6 +151,7 @@ export default function DashboardPage() {
               variant="primary"
               size="sm"
               onClick={() => setIsCreateOpen(true)}
+              aria-label="New Room"
               className="gap-1.5 shadow-sm"
             >
               <Plus className="h-4 w-4" />

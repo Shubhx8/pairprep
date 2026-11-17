@@ -9,6 +9,7 @@ import { userRepo } from "../repos/userRepo.js";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { guestRepo } from "../repos/guestRepo.js";
+import { messageRepo } from "../repos/messageRepo.js";
 import { idempotencyRepo } from "../repos/idempotencyRepo.js";
 import { RoomModel } from "../models/rooms.js";
 import { RoomMemberModel } from "../models/room_members.js";
@@ -122,10 +123,12 @@ describe("Room & Roles API (Task T05)", () => {
       { method: "GET", path: "/" },
       { method: "GET", path: "/:slug" },
       { method: "POST", path: "/:slug/join" },
+      { method: "POST", path: "/:slug/leave" },
       { method: "PATCH", path: "/:slug/members/:id" },
       { method: "DELETE", path: "/:slug/members/:id" },
       { method: "POST", path: "/:slug/end" },
       { method: "DELETE", path: "/:slug" },
+      { method: "GET", path: "/:slug/messages" },
     ];
 
     expect(routeList.length).toBe(expectedRoutes.length);
@@ -1445,13 +1448,12 @@ describe("Room & Roles API (Task T05)", () => {
       const removed = await RoomMemberModel.findById(guestMemberDocId);
       expect(removed).toBeNull();
 
-      // Guest attempts to GET room details (member-gated full DTO requires membership)
-      // The guest cookie is still valid (signed, not expired) but the guest is no longer a member.
+      // Guest attempts to GET room details. Under P0-D, owner kick records ban, so removed guest receives 403 MEMBER_BANNED
       const afterRemoval = await request(app)
         .get(`/api/v1/rooms/${slug}`)
         .set("Cookie", guestCookie);
-      // Non-member receives public DTO on GET: room only, no currentMember or members
-      expect(afterRemoval.status).toBe(200);
+      expect(afterRemoval.status).toBe(403);
+      expect(afterRemoval.body.error.code).toBe("MEMBER_BANNED");
       expect(afterRemoval.body.currentMember).toBeUndefined();
       expect(afterRemoval.body.members).toBeUndefined();
 
@@ -1832,6 +1834,13 @@ describe("Room & Roles API (Task T05)", () => {
       expect(res.body.error.code).toBe("CSRF_REJECTED");
     });
 
+    it("POST /api/v1/rooms/:slug/leave rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
+      const { agent } = await getAuthenticatedAgent();
+      const res = await agent.post("/api/v1/rooms/dummy-slug/leave");
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
     it("PATCH /api/v1/rooms/:slug/members/:id rejects with 403 CSRF_REJECTED without X-Requested-With header", async () => {
       const { agent } = await getAuthenticatedAgent();
       const res = await agent
@@ -1862,6 +1871,331 @@ describe("Room & Roles API (Task T05)", () => {
       const res = await agent.delete("/api/v1/rooms/dummy-slug");
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+  });
+
+  describe("PRD CH-1 & CH-2: GET /api/v1/rooms/:slug/messages", () => {
+    it("accepts limit of 200, rejects 201, defaults to 50, and allows viewers", async () => {
+      const { agent, user } = await getAuthenticatedAgent({ displayName: "Host Owner" });
+      const createRes = await agent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .set("Idempotency-Key", crypto.randomUUID())
+        .send({ title: "Chat Room Limit Test" });
+      expect(createRes.status).toBe(201);
+      const slug = createRes.body.room.slug;
+
+      // Seed 5 messages
+      for (let i = 1; i <= 5; i++) {
+        await MessageModel.create({
+          roomId: createRes.body.room.id,
+          authorId: String(user.id),
+          authorName: "Host Owner",
+          text: `Message ${i}`,
+          seq: i,
+          clientMsgId: `client-msg-${i}`,
+          kind: "user",
+          ts: new Date(),
+        });
+      }
+      await RoomModel.updateOne(
+        { _id: createRes.body.room.id },
+        { $set: { messageSeq: 5 } }
+      );
+
+      // Default limit (50)
+      const defaultRes = await agent.get(`/api/v1/rooms/${slug}/messages`);
+      expect(defaultRes.status).toBe(200);
+      expect(defaultRes.body.messages.length).toBe(5);
+
+      // Limit 200 is accepted
+      const limit200Res = await agent.get(`/api/v1/rooms/${slug}/messages?limit=200`);
+      expect(limit200Res.status).toBe(200);
+      expect(limit200Res.body.messages.length).toBe(5);
+
+      // Limit 201 is rejected with 400 VALIDATION_ERROR
+      const limit201Res = await agent.get(`/api/v1/rooms/${slug}/messages?limit=201`);
+      expect(limit201Res.status).toBe(400);
+      expect(limit201Res.body.error.code).toBe("VALIDATION_ERROR");
+
+      // Verify a viewer member is allowed to fetch messages
+      const { agent: viewerAgent } = await getAuthenticatedAgent({
+        displayName: "Viewer Bob",
+      });
+      const joinRes = await viewerAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Viewer Bob" });
+      expect(joinRes.status).toBe(200);
+      const viewerMemberId = joinRes.body.currentMember.id;
+
+      // Host demotes viewer to "viewer"
+      const patchRes = await agent
+        .patch(`/api/v1/rooms/${slug}/members/${viewerMemberId}`)
+        .set("X-Requested-With", "pairprep")
+        .send({ role: "viewer" });
+      expect(patchRes.status).toBe(200);
+
+      // Viewer fetches messages successfully (5 initial user messages + join system message + role change system message)
+      const viewerMsgRes = await viewerAgent.get(`/api/v1/rooms/${slug}/messages`);
+      expect(viewerMsgRes.status).toBe(200);
+      expect(viewerMsgRes.body.messages.length).toBe(7);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P0 ROOM MANAGEMENT & RE-ENTRY SECURITY
+  // -------------------------------------------------------------------------
+  describe("P0 Room Management & Re-entry Security", () => {
+    it("voluntary leave: authenticated participant leaves successfully, decrements memberCount, and deletes membership", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Voluntary Leave Test" });
+      const slug = roomRes.body.room.slug;
+      const roomId = roomRes.body.room.id;
+
+      const { agent: memberAgent, user: memberUser } = await getAuthenticatedAgent({
+        displayName: "Leaving User",
+      });
+      const joinRes = await memberAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Leaving User" });
+      expect(joinRes.status).toBe(200);
+      expect(joinRes.body.room.memberCount).toBe(2);
+
+      // Verify member document exists
+      const memberDocBefore = await roomMemberRepo.findMember(roomId, memberUser.id);
+      expect(memberDocBefore).toBeTruthy();
+
+      // Voluntary leave
+      const leaveRes = await memberAgent
+        .post(`/api/v1/rooms/${slug}/leave`)
+        .set("X-Requested-With", "pairprep");
+      expect(leaveRes.status).toBe(200);
+      expect(leaveRes.body.status).toBe("ok");
+
+      // Verify member document is deleted
+      const memberDocAfter = await roomMemberRepo.findMember(roomId, memberUser.id);
+      expect(memberDocAfter).toBeNull();
+
+      // Verify memberCount is decremented to 1
+      const updatedRoom = await roomRepo.findById(roomId);
+      expect(updatedRoom?.memberCount).toBe(1);
+    });
+
+    it("voluntary leave: guest leaves successfully, decrements memberCount, and clears cookie", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Guest Leave Test" });
+      const slug = roomRes.body.room.slug;
+      const roomId = roomRes.body.room.id;
+
+      // Guest joins
+      const guestJoinRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Leaving Guest" });
+      expect(guestJoinRes.status).toBe(200);
+      const guestCookie =
+        (guestJoinRes.headers["set-cookie"] as string[] | undefined)?.[0] || "";
+      expect(guestCookie).toBeTruthy();
+
+      const updatedRoomAfterJoin = await roomRepo.findById(roomId);
+      expect(updatedRoomAfterJoin?.memberCount).toBe(2);
+
+      // Guest leaves
+      const guestLeaveRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/leave`)
+        .set("X-Requested-With", "pairprep")
+        .set("Cookie", guestCookie);
+      expect(guestLeaveRes.status).toBe(200);
+      expect(guestLeaveRes.body.status).toBe("ok");
+
+      // Verify guest cookie is cleared (set-cookie has maxAge 0 or expires in past)
+      const clearCookieHeader = guestLeaveRes.headers["set-cookie"];
+      expect(clearCookieHeader).toBeDefined();
+
+      // Verify memberCount decremented
+      const updatedRoomAfterLeave = await roomRepo.findById(roomId);
+      expect(updatedRoomAfterLeave?.memberCount).toBe(1);
+    });
+
+    it("voluntary leave: owner cannot leave (400 CANNOT_LEAVE_AS_OWNER)", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Owner Leave Guard Room" });
+      const slug = roomRes.body.room.slug;
+
+      const leaveRes = await ownerAgent
+        .post(`/api/v1/rooms/${slug}/leave`)
+        .set("X-Requested-With", "pairprep");
+      expect(leaveRes.status).toBe(400);
+      expect(leaveRes.body.error.code).toBe("CANNOT_LEAVE_AS_OWNER");
+    });
+
+    it("voluntary leave: non-member cannot leave (403 FORBIDDEN)", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Non-Member Leave Room" });
+      const slug = roomRes.body.room.slug;
+
+      const { agent: nonMemberAgent } = await getAuthenticatedAgent({
+        displayName: "Stranger",
+      });
+      const leaveRes = await nonMemberAgent
+        .post(`/api/v1/rooms/${slug}/leave`)
+        .set("X-Requested-With", "pairprep");
+      expect(leaveRes.status).toBe(403);
+    });
+
+    it("voluntary leave: excludes departing member from outstanding message receipts", async () => {
+      const { agent: ownerAgent, user: ownerUser } = await getAuthenticatedAgent({
+        displayName: "Owner",
+      });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Receipt Exclusion on Leave" });
+      const slug = roomRes.body.room.slug;
+      const roomId = roomRes.body.room.id;
+
+      const { agent: memberAgent, user: memberUser } = await getAuthenticatedAgent({
+        displayName: "Departing Reader",
+      });
+      await memberAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Departing Reader" });
+
+      // Owner creates a chat message with recipientIds = [memberUser.id]
+      const seq = await roomRepo.allocateMessageSeq(roomId);
+      const msg = await messageRepo.createMessage({
+        roomId,
+        seq,
+        authorId: ownerUser.id,
+        authorName: "Owner",
+        text: "Are you there?",
+        kind: "user",
+        recipientIds: [memberUser.id],
+      });
+      expect(msg.recipientIds).toContain(memberUser.id);
+
+      // Member voluntarily leaves
+      const leaveRes = await memberAgent
+        .post(`/api/v1/rooms/${slug}/leave`)
+        .set("X-Requested-With", "pairprep");
+      expect(leaveRes.status).toBe(200);
+
+      // Verify that message excludes memberUser.id
+      const updatedMsg = await MessageModel.findById(msg._id);
+      expect(updatedMsg?.excludedRecipientIds).toContain(memberUser.id);
+    });
+
+    it("re-entry prevention: kicked authenticated member is rejected on POST /join with 403 MEMBER_BANNED", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Banned User Room" });
+      const slug = roomRes.body.room.slug;
+
+      const { agent: badUserAgent } = await getAuthenticatedAgent({
+        displayName: "Bad User",
+      });
+      const joinRes = await badUserAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Bad User" });
+      expect(joinRes.status).toBe(200);
+      const memberDocId = joinRes.body.currentMember.id;
+
+      // Owner kicks bad user
+      const kickRes = await ownerAgent
+        .delete(`/api/v1/rooms/${slug}/members/${memberDocId}`)
+        .set("X-Requested-With", "pairprep");
+      expect(kickRes.status).toBe(200);
+
+      // Bad user attempts to rejoin with same authenticated account
+      const rejoinRes = await badUserAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Bad User Returns" });
+      expect(rejoinRes.status).toBe(403);
+      expect(rejoinRes.body.error.code).toBe("MEMBER_BANNED");
+    });
+
+    it("re-entry prevention: kicked guest is rejected on POST /join with 403 MEMBER_BANNED", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Banned Guest Room" });
+      const slug = roomRes.body.room.slug;
+
+      // Guest joins
+      const guestJoin = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Disruptive Guest" });
+      expect(guestJoin.status).toBe(200);
+      const guestCookie = (guestJoin.headers["set-cookie"] as unknown as string[])[0];
+      const guestMemberDocId = guestJoin.body.currentMember.id;
+
+      // Owner kicks guest
+      const kickRes = await ownerAgent
+        .delete(`/api/v1/rooms/${slug}/members/${guestMemberDocId}`)
+        .set("X-Requested-With", "pairprep");
+      expect(kickRes.status).toBe(200);
+
+      // Kicked guest attempts to rejoin using their guest cookie
+      const rejoinRes = await request(app)
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .set("Cookie", guestCookie!)
+        .send({ displayName: "Disruptive Guest Returns" });
+      expect(rejoinRes.status).toBe(403);
+      expect(rejoinRes.body.error.code).toBe("MEMBER_BANNED");
+    });
+
+    it("re-entry prevention: voluntary leaver is NOT banned and can rejoin", async () => {
+      const { agent: ownerAgent } = await getAuthenticatedAgent({ displayName: "Owner" });
+      const roomRes = await ownerAgent
+        .post("/api/v1/rooms")
+        .set("X-Requested-With", "pairprep")
+        .send({ title: "Friendly Leaver Room" });
+      const slug = roomRes.body.room.slug;
+
+      const { agent: friendlyAgent } = await getAuthenticatedAgent({
+        displayName: "Friendly User",
+      });
+      const join1 = await friendlyAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Friendly User" });
+      expect(join1.status).toBe(200);
+
+      // Friendly user voluntarily leaves
+      const leaveRes = await friendlyAgent
+        .post(`/api/v1/rooms/${slug}/leave`)
+        .set("X-Requested-With", "pairprep");
+      expect(leaveRes.status).toBe(200);
+
+      // Friendly user rejoins later
+      const rejoinRes = await friendlyAgent
+        .post(`/api/v1/rooms/${slug}/join`)
+        .set("X-Requested-With", "pairprep")
+        .send({ displayName: "Friendly User Rejoining" });
+      expect(rejoinRes.status).toBe(200);
+      expect(rejoinRes.body.currentMember).toBeDefined();
     });
   });
 });

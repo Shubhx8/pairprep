@@ -174,7 +174,7 @@ export type SupportedLanguage = z.infer<typeof SupportedLanguageSchema>;
 export const RoomTypeSchema = z.enum(["practice", "interview"]);
 export type RoomType = z.infer<typeof RoomTypeSchema>;
 
-export const RoomStatusSchema = z.enum(["open", "live", "ended", "archived"]);
+export const RoomStatusSchema = z.enum(["open", "live", "ended", "archived", "deleted"]);
 export type RoomStatus = z.infer<typeof RoomStatusSchema>;
 
 /**
@@ -285,9 +285,17 @@ export const MessageDtoSchema = z.object({
   id: z.string(),
   roomId: z.string(),
   authorId: z.string(),
+  authorName: z.string().optional(),
+  seq: z.number().int().nonnegative().optional(),
+  clientMsgId: z.string().optional(),
   text: z.string().max(1000),
   ts: z.string(),
   kind: z.enum(["user", "system"]),
+  opId: z.string().optional(),
+  recipientIds: z.array(z.string()).optional(),
+  excludedRecipientIds: z.array(z.string()).optional(),
+  deliveredTo: z.array(z.string()).optional(),
+  readBy: z.array(z.string()).optional(),
 });
 
 export type MessageDto = z.infer<typeof MessageDtoSchema>;
@@ -379,6 +387,7 @@ export type UpdateMemberRoleRequest = z.infer<typeof UpdateMemberRoleRequestSche
 export const RoomMemberDetailDtoSchema = z
   .object({
     id: z.string(), // membership document _id
+    memberId: z.string().optional(),
     displayName: z.string(),
     role: UserRoleSchema,
     isGuest: z.boolean(),
@@ -494,7 +503,7 @@ export function toRoomDto(room: {
   title: string;
   type: "practice" | "interview";
   language: "python" | "cpp" | "javascript";
-  status: "open" | "live" | "ended" | "archived";
+  status: RoomStatus;
   ownerId: string;
   timeLimitSec?: number;
   memberCount?: number;
@@ -541,7 +550,7 @@ export function toPublicRoomDto(room: {
   title: string;
   type: "practice" | "interview";
   language: "python" | "cpp" | "javascript";
-  status: "open" | "live" | "ended" | "archived";
+  status: RoomStatus;
   memberCount?: number;
   createdAt: string | Date;
 }): PublicRoomDto {
@@ -561,6 +570,7 @@ export function toRoomMemberDto(
   member: {
     _id?: unknown;
     id?: string;
+    memberId?: string;
     displayName: string;
     role: "owner" | "interviewer" | "candidate" | "editor" | "viewer";
     isGuest: boolean;
@@ -581,6 +591,10 @@ export function toRoomMemberDto(
         : member.joinedAt.toISOString(),
   };
 
+  if (member.memberId) {
+    dto["memberId"] = String(member.memberId);
+  }
+
   if (member.lastSeenAt) {
     dto["lastSeenAt"] =
       typeof member.lastSeenAt === "string"
@@ -594,3 +608,46 @@ export function toRoomMemberDto(
 
   return RoomMemberDetailDtoSchema.parse(dto);
 }
+
+export function toMessageDto(msg: {
+  _id?: unknown;
+  id?: string;
+  roomId: string;
+  authorId: string;
+  authorName?: string;
+  seq?: number;
+  clientMsgId?: string;
+  text: string;
+  ts: string | Date;
+  kind?: "user" | "system";
+  opId?: string;
+  recipientIds?: string[];
+  excludedRecipientIds?: string[];
+  deliveredTo?: string[];
+  readBy?: string[];
+}): MessageDto {
+  const messageId = msg.id ? String(msg.id) : String(msg._id ?? "");
+  const dto: Record<string, unknown> = {
+    id: messageId,
+    roomId: msg.roomId,
+    authorId: msg.authorId,
+    text: msg.text,
+    ts: typeof msg.ts === "string" ? msg.ts : msg.ts.toISOString(),
+    kind: msg.kind ?? "user",
+  };
+
+  if (msg.authorName !== undefined) dto["authorName"] = msg.authorName;
+  if (msg.seq !== undefined) dto["seq"] = msg.seq;
+  if (msg.clientMsgId !== undefined) dto["clientMsgId"] = msg.clientMsgId;
+  if (msg.opId !== undefined) dto["opId"] = msg.opId;
+  if (Array.isArray(msg.recipientIds)) dto["recipientIds"] = msg.recipientIds.map(String);
+  if (Array.isArray(msg.excludedRecipientIds))
+    dto["excludedRecipientIds"] = msg.excludedRecipientIds.map(String);
+  if (Array.isArray(msg.deliveredTo)) dto["deliveredTo"] = msg.deliveredTo.map(String);
+  if (Array.isArray(msg.readBy)) dto["readBy"] = msg.readBy.map(String);
+
+  return MessageDtoSchema.parse(dto);
+}
+
+// Re-export real-time event schemas, types, and error codes (T09)
+export * from "./events/index.js";

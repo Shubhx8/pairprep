@@ -179,7 +179,9 @@ test.describe("Mocked Multi-Context Room Creation & Guest Join Flow", () => {
 
       // Host sees collaborative editor placeholder
       await expect(hostPage.getByText("Collaborative Code Editor")).toBeVisible();
-      await expect(hostPage.getByText(/1\/6/)).toBeVisible();
+      await expect(hostPage.getByTestId("participant-counts")).toContainText(
+        /1\s+member/
+      );
 
       // 4. Guest opens room link in isolated context
       await guestPage.goto(roomUrl);
@@ -198,7 +200,9 @@ test.describe("Mocked Multi-Context Room Creation & Guest Join Flow", () => {
 
       // 6. Guest enters room
       await expect(guestPage.getByText("Collaborative Code Editor")).toBeVisible();
-      await expect(guestPage.getByText(/2\/6/)).toBeVisible();
+      await expect(guestPage.getByTestId("participant-counts")).toContainText(
+        /2\s+members/
+      );
     } finally {
       await hostContext.close();
       await guestContext.close();

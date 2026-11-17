@@ -1,5 +1,12 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
+export interface IRoleOpEvidence {
+  opId: string;
+  role: string;
+  version: number;
+  appliedAt: Date;
+}
+
 export interface IRoomMember extends Document {
   roomId: string;
   memberId: string;
@@ -7,6 +14,12 @@ export interface IRoomMember extends Document {
   role: "owner" | "interviewer" | "candidate" | "editor" | "viewer";
   isGuest: boolean;
   guestExpiresAt?: Date;
+  lastOpId?: string;
+  joinOpId?: string;
+  appliedOpIds?: string[];
+  roleVersion?: number;
+  roleOps?: IRoleOpEvidence[];
+  tombstoneOpId?: string;
   joinedAt: Date;
   lastSeenAt: Date;
 }
@@ -31,6 +44,22 @@ const RoomMemberSchema = new Schema<IRoomMember>(
     },
     isGuest: { type: Boolean, default: false },
     guestExpiresAt: { type: Date },
+    lastOpId: { type: String },
+    joinOpId: { type: String },
+    appliedOpIds: { type: [String], default: [] },
+    roleVersion: { type: Number, default: 1 },
+    roleOps: {
+      type: [
+        {
+          opId: { type: String, required: true },
+          role: { type: String, required: true },
+          version: { type: Number, required: true },
+          appliedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+    tombstoneOpId: { type: String },
     joinedAt: { type: Date, default: Date.now },
     lastSeenAt: { type: Date, default: Date.now },
   },

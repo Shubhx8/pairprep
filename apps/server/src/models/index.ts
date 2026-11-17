@@ -8,3 +8,6 @@ export * from "./messages.js";
 export * from "./client_map.js";
 export * from "./events.js";
 export * from "./idempotency_keys.js";
+export * from "./durable_operations.js";
+export * from "./room_bans.js";
+export * from "./room_kicks.js";

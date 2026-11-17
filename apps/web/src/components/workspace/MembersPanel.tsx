@@ -1,7 +1,26 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { type RoomMemberDetailDto, PARTICIPANT_PALETTE } from "@pairprep/shared";
-import { Users, X, Shield, UserCheck, Eye, Search, Wifi, Lock } from "lucide-react";
+import {
+  Users,
+  X,
+  Shield,
+  UserCheck,
+  Eye,
+  Search,
+  Wifi,
+  Lock,
+  UserMinus,
+  AlertTriangle,
+} from "lucide-react";
 import { Button } from "../ui/Button.js";
+import {
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalFooter,
+} from "../ui/Modal.js";
 import { cn } from "../../lib/utils.js";
 
 export interface MembersPanelProps {
@@ -13,6 +32,7 @@ export interface MembersPanelProps {
   isMemberOnline: (m: RoomMemberDetailDto) => boolean;
   isOpen: boolean;
   onToggle: () => void;
+  onRemoveMember?: (memberDocId: string) => Promise<void>;
   triggerRef?: React.RefObject<HTMLButtonElement | null>;
   copied?: boolean;
   onCopyLink?: () => void;
@@ -20,6 +40,7 @@ export interface MembersPanelProps {
   isMobileDrawer?: boolean;
   width?: number;
   style?: React.CSSProperties;
+  socketStatus?: string;
 }
 
 /**
@@ -36,14 +57,19 @@ export function MembersPanel({
   isMemberOnline,
   isOpen,
   onToggle,
+  onRemoveMember,
   triggerRef,
   className,
   isMobileDrawer = false,
   width,
   style,
+  socketStatus = "connected",
 }: MembersPanelProps) {
   const panelRef = useRef<HTMLElement | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [targetToRemove, setTargetToRemove] = useState<RoomMemberDetailDto | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   // Focus management for mobile drawer mode
   useEffect(() => {
@@ -190,7 +216,14 @@ export function MembersPanel({
       <div className="flex-1 overflow-y-auto overscroll-contain custom-scroll p-3 space-y-2 text-xs">
         {members.length > 0 ? (
           (filteredMembers.length > 0 ? filteredMembers : members).map((m, idx) => {
-            const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+            const isCurrent = currentMember?.id
+              ? m.id === currentMember.id ||
+                Boolean(
+                  m.memberId &&
+                  (currentMember as { memberId?: string }).memberId &&
+                  m.memberId === (currentMember as { memberId?: string }).memberId
+                )
+              : false;
             const memberOnline = isLocalConnected ? isMemberOnline(m) : false;
 
             const statusLabel = isLocalConnected
@@ -261,6 +294,25 @@ export function MembersPanel({
                     {getRoleIcon(m.role)}
                     <span>{m.role}</span>
                   </span>
+                  {currentMember?.role === "owner" &&
+                    !isCurrent &&
+                    m.role !== "owner" &&
+                    Boolean(onRemoveMember) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setRemoveError(null);
+                          setTargetToRemove(m);
+                        }}
+                        aria-label={`Remove ${m.displayName}`}
+                        title={`Remove ${m.displayName}`}
+                        className="h-6 w-6 text-text-subtle hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-1"
+                        data-testid={`remove-member-${m.id}`}
+                      >
+                        <UserMinus className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                 </div>
               </div>
             );
@@ -324,12 +376,111 @@ export function MembersPanel({
           <div className="flex items-center justify-between text-[10px] font-mono text-text-subtle pt-1 border-t border-border-subtle/50">
             <span className="flex items-center gap-1">
               <Wifi className="h-3 w-3 text-text-subtle" />
-              Socket.IO Live
+              Real-time Events
             </span>
-            <span>RTT &lt; 25ms</span>
+            <span
+              className={cn(
+                "font-semibold flex items-center gap-1",
+                socketStatus === "connected"
+                  ? "text-success"
+                  : socketStatus === "connecting" || socketStatus === "reconnecting"
+                    ? "text-warning"
+                    : "text-text-subtle"
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  socketStatus === "connected"
+                    ? "bg-success"
+                    : socketStatus === "connecting" || socketStatus === "reconnecting"
+                      ? "bg-warning animate-pulse"
+                      : "bg-text-subtle"
+                )}
+              />
+              {socketStatus === "connected"
+                ? "Connected"
+                : socketStatus === "connecting" || socketStatus === "reconnecting"
+                  ? "Reconnecting"
+                  : "Disconnected"}
+            </span>
           </div>
         </div>
       </div>
+      {/* Remove Member Confirmation Modal */}
+      {targetToRemove && (
+        <Modal
+          open={Boolean(targetToRemove)}
+          onOpenChange={(open) => {
+            if (!open && !isRemoving) {
+              setTargetToRemove(null);
+              setRemoveError(null);
+            }
+          }}
+        >
+          <ModalContent data-testid="remove-member-modal" className="sm:max-w-md">
+            <ModalHeader>
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                <ModalTitle>Remove Participant</ModalTitle>
+              </div>
+              <ModalDescription className="text-text-subtle text-xs mt-2">
+                Are you sure you want to remove{" "}
+                <span className="font-semibold text-text-primary">
+                  {targetToRemove.displayName}
+                </span>{" "}
+                from this room? They will immediately lose access and will not be able to
+                rejoin.
+              </ModalDescription>
+            </ModalHeader>
+            {removeError && (
+              <p
+                data-testid="remove-error-message"
+                className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
+              >
+                {removeError}
+              </p>
+            )}
+            <ModalFooter className="mt-4 gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isRemoving}
+                onClick={() => {
+                  setTargetToRemove(null);
+                  setRemoveError(null);
+                }}
+                data-testid="cancel-remove-button"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isRemoving}
+                onClick={async () => {
+                  if (!onRemoveMember) return;
+                  try {
+                    setIsRemoving(true);
+                    setRemoveError(null);
+                    await onRemoveMember(targetToRemove.id);
+                    setTargetToRemove(null);
+                  } catch (err: unknown) {
+                    const message =
+                      err instanceof Error ? err.message : "Failed to remove member";
+                    setRemoveError(message);
+                  } finally {
+                    setIsRemoving(false);
+                  }
+                }}
+                data-testid="confirm-remove-button"
+              >
+                {isRemoving ? "Removing..." : "Remove"}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+      )}
     </aside>
   );
 }

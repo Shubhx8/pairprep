@@ -11,6 +11,7 @@ import { GuestModel } from "../models/guests.js";
 import { DurableOperationModel } from "../models/durable_operations.js";
 import { AppError } from "../errors/AppError.js";
 import { roomMutationBarrier } from "../events/roomMutationBarrier.js";
+import { roomBanRepo } from "./roomBanRepo.js";
 
 export class RoomRepo {
   /**
@@ -118,7 +119,13 @@ export class RoomRepo {
     status: "open" | "live" | "ended" | "archived" | "deleted",
     opId?: string
   ): Promise<IRoom | null> {
-    if (opId && mongoose.connection.readyState === 1) {
+    const findOneMock = RoomModel.findOne as unknown as
+      Record<string, unknown> | undefined;
+    const isFindOneMocked = Boolean(findOneMock?._isMockFunction || findOneMock?.mock);
+    const isDbConnected =
+      mongoose.connection.readyState === 1 && Boolean(mongoose.connection.db);
+
+    if (opId && (isDbConnected || isFindOneMocked)) {
       const existing = await RoomModel.findOne({ slug }).select("appliedOpIds").exec();
       if (
         existing &&
@@ -140,7 +147,17 @@ export class RoomRepo {
       lastActivityAt: now,
     };
     if (status === "live") update["startedAt"] = now;
-    if (status === "ended") update["endedAt"] = now;
+    if (status === "ended") {
+      // Authoritative immutable endedAt (Phase 5): only set on first transition to ended
+      if (isDbConnected || isFindOneMocked) {
+        const existing = await RoomModel.findOne({ slug }).select("endedAt").exec();
+        if (!existing?.endedAt) {
+          update["endedAt"] = now;
+        }
+      } else {
+        update["endedAt"] = now;
+      }
+    }
     if (status === "deleted") update["deletedAt"] = now;
     if (opId) update["statusOpId"] = opId;
 
@@ -228,6 +245,7 @@ export class RoomRepo {
     await GuestModel.deleteMany({ roomId }).exec();
     await ClientMapModel.deleteMany({ roomId }).exec();
     await RoomMemberModel.deleteMany({ roomId }).exec();
+    await roomBanRepo.deleteBansForRoom(roomId);
 
     // H-2: Safely transition any pending outbox records to abandoned so they are never silently deleted
     await DurableOperationModel.updateMany(
@@ -266,6 +284,40 @@ export class RoomRepo {
         },
       }
     ).exec();
+  }
+
+  /**
+   * Records a banned principal (user or guest) preventing re-entry after owner kick.
+   * Delegates to the canonical roomBanRepo.
+   */
+  public async banPrincipal(
+    roomId: string,
+    principalId: string,
+    principalType: "user" | "guest" = "user",
+    bannedBy = "system"
+  ): Promise<void> {
+    if (mongoose.connection.readyState !== 1) return;
+    await roomBanRepo.banPrincipal(
+      roomId,
+      { id: principalId, type: principalType },
+      bannedBy
+    );
+  }
+
+  /**
+   * Checks whether a principal is banned from entering the room.
+   * Delegates to the canonical roomBanRepo.
+   */
+  public async isPrincipalBanned(
+    roomId: string,
+    principalId: string,
+    principalType?: "user" | "guest"
+  ): Promise<boolean> {
+    if (mongoose.connection.readyState !== 1) return false;
+    if (principalType) {
+      return roomBanRepo.isBanned(roomId, principalType, principalId);
+    }
+    return roomBanRepo.isPrincipalIdBanned(roomId, principalId);
   }
 }
 

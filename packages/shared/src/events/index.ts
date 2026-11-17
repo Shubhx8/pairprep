@@ -118,6 +118,9 @@ export const ClientEventName = {
   ROOM_JOIN: "room:join",
   ROOM_LEAVE: "room:leave",
   CHAT_SEND: "chat:send",
+  CHAT_DELIVERED: "chat:delivered",
+  CHAT_READ: "chat:read",
+  CHAT_READ_BATCH: "chat:read_batch",
 } as const;
 
 export type ClientEventName = (typeof ClientEventName)[keyof typeof ClientEventName];
@@ -132,6 +135,9 @@ export const ServerEventName = {
   ROOM_STATUS_CHANGED: "room:status_changed",
   ROOM_DELETED: "room:deleted",
   CHAT_MESSAGE: "chat:message",
+  CHAT_DELIVERED: "chat:delivered",
+  CHAT_READ: "chat:read",
+  CHAT_READ_BATCH: "chat:read_batch",
   PRESENCE_SNAPSHOT: "presence:snapshot",
   PRESENCE_STATUS: "presence:status",
   ERROR: "room:error",
@@ -220,6 +226,135 @@ export type ChatSendAckData = z.infer<typeof ChatSendAckDataSchema>;
 export const ChatSendAckSchema = createEventSuccessAckSchema(ChatSendAckDataSchema);
 export type ChatSendAck = EventAck<ChatSendAckData>;
 
+/**
+ * Inbound: chat:delivered payload
+ * Recipient client acknowledges receipt of a specific message.
+ */
+export const ChatDeliveredPayloadSchema = z
+  .object({
+    roomId: ObjectIdSchema,
+    messageId: ObjectIdSchema,
+    seq: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type ChatDeliveredPayload = z.infer<typeof ChatDeliveredPayloadSchema>;
+
+export const ChatDeliveredAckDataSchema = z
+  .object({
+    messageId: ObjectIdSchema,
+    delivered: z.literal(true),
+  })
+  .strict();
+
+export type ChatDeliveredAckData = z.infer<typeof ChatDeliveredAckDataSchema>;
+export const ChatDeliveredAckSchema = createEventSuccessAckSchema(
+  ChatDeliveredAckDataSchema
+);
+export type ChatDeliveredAck = EventAck<ChatDeliveredAckData>;
+
+/**
+ * Inbound: chat:read payload
+ * Recipient client acknowledges having viewed/read a specific message.
+ */
+export const ChatReadPayloadSchema = z
+  .object({
+    roomId: ObjectIdSchema,
+    messageId: ObjectIdSchema,
+    seq: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+export type ChatReadPayload = z.infer<typeof ChatReadPayloadSchema>;
+
+export const ChatReadAckDataSchema = z
+  .object({
+    messageId: ObjectIdSchema,
+    read: z.literal(true),
+  })
+  .strict();
+
+export type ChatReadAckData = z.infer<typeof ChatReadAckDataSchema>;
+export const ChatReadAckSchema = createEventSuccessAckSchema(ChatReadAckDataSchema);
+export type ChatReadAck = EventAck<ChatReadAckData>;
+
+/**
+ * Inbound: chat:read_batch payload
+ * Recipient client acknowledges having viewed/read up to 50 messages in a single batch.
+ */
+export const ChatReadBatchPayloadSchema = z
+  .object({
+    roomId: ObjectIdSchema.optional(),
+    messageIds: z
+      .array(ObjectIdSchema)
+      .min(1, "Batch must contain at least 1 message ID")
+      .max(50, "Batch cannot exceed 50 message IDs"),
+  })
+  .strict();
+
+export type ChatReadBatchPayload = z.infer<typeof ChatReadBatchPayloadSchema>;
+
+export const ChatReadBatchAckDataSchema = z
+  .object({
+    messageIds: z.array(ObjectIdSchema),
+    readCount: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type ChatReadBatchAckData = z.infer<typeof ChatReadBatchAckDataSchema>;
+export const ChatReadBatchAckSchema = createEventSuccessAckSchema(
+  ChatReadBatchAckDataSchema
+);
+export type ChatReadBatchAck = EventAck<ChatReadBatchAckData>;
+
+/**
+ * Outbound: chat:read_batch broadcast payload
+ */
+export const ChatReadBatchBroadcastPayloadSchema = z
+  .object({
+    roomId: ObjectIdSchema,
+    messageIds: z.array(ObjectIdSchema),
+    memberId: z.string().min(1),
+    readAt: z.string().datetime(),
+  })
+  .strict();
+
+export type ChatReadBatchBroadcastPayload = z.infer<
+  typeof ChatReadBatchBroadcastPayloadSchema
+>;
+
+/**
+ * Outbound: chat:delivered broadcast payload
+ */
+export const ChatDeliveredBroadcastPayloadSchema = z
+  .object({
+    roomId: ObjectIdSchema,
+    messageId: ObjectIdSchema,
+    seq: z.number().int().nonnegative().optional(),
+    memberId: z.string().min(1),
+    deliveredAt: z.string().datetime(),
+  })
+  .strict();
+
+export type ChatDeliveredBroadcastPayload = z.infer<
+  typeof ChatDeliveredBroadcastPayloadSchema
+>;
+
+/**
+ * Outbound: chat:read broadcast payload
+ */
+export const ChatReadBroadcastPayloadSchema = z
+  .object({
+    roomId: ObjectIdSchema,
+    messageId: ObjectIdSchema,
+    seq: z.number().int().nonnegative().optional(),
+    memberId: z.string().min(1),
+    readAt: z.string().datetime(),
+  })
+  .strict();
+
+export type ChatReadBroadcastPayload = z.infer<typeof ChatReadBroadcastPayloadSchema>;
+
 // ============================================================================
 // Outbound Server Event Payloads
 // ============================================================================
@@ -286,6 +421,7 @@ export type ChatMessagePayload = z.infer<typeof ChatMessagePayloadSchema>;
 export const PresenceMemberDtoSchema = z
   .object({
     memberId: z.string().min(1),
+    memberDocId: z.string().optional(),
     displayName: z.string().min(1),
     role: EventUserRoleSchema,
     color: z.string().optional(),
@@ -308,6 +444,7 @@ export const PresenceStatusPayloadSchema = z
   .object({
     roomId: ObjectIdSchema,
     memberId: z.string().min(1),
+    memberDocId: z.string().optional(),
     isOnline: z.boolean(),
   })
   .strict();

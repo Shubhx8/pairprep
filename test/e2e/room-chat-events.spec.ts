@@ -101,6 +101,38 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
     return { roomUrl, slug };
   }
 
+  interface BrowserErrorCollector {
+    pageErrors: Error[];
+    consoleErrors: string[];
+  }
+
+  function attachBrowserErrorListeners(page: Page, collector: BrowserErrorCollector) {
+    page.on("pageerror", (err) => {
+      collector.pageErrors.push(err);
+      console.log(`[PageError] ${err.message}`);
+    });
+    page.on("console", (msg) => {
+      if (msg.type() === "error") {
+        collector.consoleErrors.push(msg.text());
+        console.log(`[ConsoleError] ${msg.text()}`);
+      }
+    });
+  }
+
+  function assertNoFatalBrowserErrors(collector: BrowserErrorCollector) {
+    const fatalConsole = collector.consoleErrors.filter(
+      (e) =>
+        !e.includes("socket.io-client: disconnect") &&
+        !e.includes("WebSocket connection closed") &&
+        !e.includes("favicon.ico") &&
+        !e.includes("net::ERR_CONNECTION_REFUSED")
+    );
+    expect(collector.pageErrors, "Unhandled browser page errors detected").toHaveLength(
+      0
+    );
+    expect(fatalConsole, "Fatal browser console errors detected").toHaveLength(0);
+  }
+
   /* -------------------------------------------------------------------------- */
   /* GROUP A: CONNECTION & MEMBERSHIP                                           */
   /* -------------------------------------------------------------------------- */
@@ -122,26 +154,11 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       `bob.${Date.now()}@pairprep.com`
     );
 
-    const consoleErrors: string[] = [];
+    const errCollector: BrowserErrorCollector = { pageErrors: [], consoleErrors: [] };
     const hostPage = await hostUser.context.newPage();
     const guestPage = await guestUser.context.newPage();
-    hostPage.on("pageerror", (err) => console.log("[Host PageError]", err.message));
-    guestPage.on("pageerror", (err) => console.log("[Guest PageError]", err.message));
-    hostPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Host Console Error]", msg.text());
-    });
-    guestPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Guest Console Error]", msg.text());
-    });
-
-    hostPage.on(
-      "console",
-      (m) => m.type() === "error" && consoleErrors.push(`Host: ${m.text()}`)
-    );
-    guestPage.on(
-      "console",
-      (m) => m.type() === "error" && consoleErrors.push(`Guest: ${m.text()}`)
-    );
+    attachBrowserErrorListeners(hostPage, errCollector);
+    attachBrowserErrorListeners(guestPage, errCollector);
 
     try {
       // 1. Alice creates practice room
@@ -221,6 +238,7 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
 
       await guestTab2.close();
     } finally {
+      assertNoFatalBrowserErrors(errCollector);
       await hostUser.context.close();
       await guestUser.context.close();
       await hostUser.seed.cleanup();
@@ -249,21 +267,11 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       `bob.b.${Date.now()}@pairprep.com`
     );
 
+    const errCollector: BrowserErrorCollector = { pageErrors: [], consoleErrors: [] };
     const hostPage = await hostUser.context.newPage();
     const guestPage = await guestUser.context.newPage();
-    hostPage.on("pageerror", (err) => console.log("[Host PageError]", err.message));
-    guestPage.on("pageerror", (err) => console.log("[Guest PageError]", err.message));
-    hostPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Host Console Error]", msg.text());
-    });
-    guestPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Guest Console Error]", msg.text());
-    });
-
-    hostPage.on("console", (m) => console.log("[Host Console]", m.type(), m.text()));
-    guestPage.on("console", (m) => console.log("[Guest Console]", m.type(), m.text()));
-    hostPage.on("pageerror", (err) => console.log("[Host PageError]", err.message));
-    guestPage.on("pageerror", (err) => console.log("[Guest PageError]", err.message));
+    attachBrowserErrorListeners(hostPage, errCollector);
+    attachBrowserErrorListeners(guestPage, errCollector);
 
     const latencySamples: number[] = [];
 
@@ -442,6 +450,7 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
 
       // Bob rejoins room
       const guestPageReconnected = await guestUser.context.newPage();
+      attachBrowserErrorListeners(guestPageReconnected, errCollector);
       await guestPageReconnected.goto(roomUrl);
       await expect(guestPageReconnected.getByTestId("chat-trigger-button")).toBeVisible({
         timeout: 10000,
@@ -466,6 +475,123 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
 
       await guestPageReconnected.close();
     } finally {
+      assertNoFatalBrowserErrors(errCollector);
+      await hostUser.context.close();
+      await guestUser.context.close();
+      await hostUser.seed.cleanup();
+      await guestUser.seed.cleanup();
+    }
+  });
+
+  test("B12b: Real two-browser WhatsApp tick lifecycle (single grey -> double grey -> double blue)", async ({
+    browser,
+    baseURL,
+  }) => {
+    const hostUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Alice Host",
+      `alice.ticks.${Date.now()}@pairprep.com`
+    );
+    const guestUser = await createAuthContext(
+      browser,
+      baseURL,
+      "Bob Recipient",
+      `bob.ticks.${Date.now()}@pairprep.com`
+    );
+
+    const errCollector: BrowserErrorCollector = { pageErrors: [], consoleErrors: [] };
+    const hostPage = await hostUser.context.newPage();
+    const guestPage = await guestUser.context.newPage();
+    attachBrowserErrorListeners(hostPage, errCollector);
+    attachBrowserErrorListeners(guestPage, errCollector);
+
+    try {
+      // 1. Host creates room and opens chat
+      const { roomUrl } = await createRoomViaHost(
+        hostPage,
+        "B12b Real WhatsApp Tick Lifecycle"
+      );
+      await hostPage.getByTestId("chat-trigger-button").click();
+      await expect(hostPage.getByTestId("chat-panel")).toBeVisible({ timeout: 10000 });
+
+      // 2. Bob joins the room (chat panel closed by default) so he becomes an eligible recipient
+      await guestPage.goto(roomUrl);
+      await expect(
+        guestPage.getByRole("button", { name: /Join as Bob Recipient/i })
+      ).toBeVisible({ timeout: 10000 });
+      await guestPage.getByRole("button", { name: /Join as Bob Recipient/i }).click();
+      await expect(guestPage.getByTestId("chat-trigger-button")).toBeVisible({
+        timeout: 10000,
+      });
+
+      // 3. Bob disconnects without leaving room membership (closes tab)
+      await guestPage.close();
+
+      // 4. Alice sends one specific message while Bob is offline
+      const singleLifecycleMsg = `Lifecycle message ${Date.now()}`;
+      const hostComposer = hostPage.getByTestId("chat-composer-textarea");
+      await expect(hostComposer).toBeEnabled({ timeout: 10000 });
+      await hostComposer.fill(singleLifecycleMsg);
+      const hostSendBtn = hostPage.getByTestId("chat-composer-send-button");
+      await expect(hostSendBtn).toBeEnabled({ timeout: 10000 });
+      await hostSendBtn.click();
+
+      // Alice sees single grey tick (Sent) because Bob is offline and delivery quorum is not yet reached
+      const msgLocator = hostPage
+        .locator('[data-testid^="chat-message-"]')
+        .filter({ hasText: singleLifecycleMsg });
+      await expect(msgLocator).toBeVisible({ timeout: 10000 });
+      await expect(msgLocator.getByLabel("Sent")).toBeVisible({ timeout: 10000 });
+      await expect(msgLocator.getByLabel("Delivered")).not.toBeVisible();
+      await expect(msgLocator.getByLabel("Read")).not.toBeVisible();
+
+      // 5. Bob reconnects in a new tab within the same authenticated session
+      const bobReconnectPage = await guestUser.context.newPage();
+      attachBrowserErrorListeners(bobReconnectPage, errCollector);
+      await bobReconnectPage.goto(roomUrl);
+      await expect(bobReconnectPage.getByTestId("chat-trigger-button")).toBeVisible({
+        timeout: 15000,
+      });
+
+      // 6 & 7 & 8. Bob retrieves the message from history and automatically acknowledges delivery (chat panel closed)
+      // Alice observes real-time transition to double grey ticks (Delivered)
+      await expect(msgLocator.getByLabel("Delivered")).toBeVisible({
+        timeout: 15000,
+      });
+      // Crucial: NOT yet Read (no double blue tick) because Bob's chat panel is still closed!
+      await expect(msgLocator.getByLabel("Read")).not.toBeVisible();
+
+      // 9. Bob opens chat panel and message enters viewport (>= 50% visibility) -> read acknowledgement emitted
+      await bobReconnectPage.getByTestId("chat-trigger-button").click();
+      await expect(bobReconnectPage.getByTestId("chat-panel")).toBeVisible({
+        timeout: 10000,
+      });
+
+      // 10. Alice observes real-time transition of the same message to double blue ticks (Read)
+      await expect(msgLocator.getByLabel("Read")).toBeVisible({ timeout: 10000 });
+
+      // 11 & 12. Persistence check: Alice refreshes the page and opens chat -> the same message remains Read (double blue tick)
+      await hostPage.reload();
+      await expect(hostPage.getByTestId("chat-trigger-button")).toBeVisible({
+        timeout: 15000,
+      });
+      await hostPage.getByTestId("chat-trigger-button").click();
+      await expect(hostPage.getByTestId("chat-panel")).toBeVisible({ timeout: 10000 });
+
+      const reloadedMsg = hostPage
+        .locator('[data-testid^="chat-message-"]')
+        .filter({ hasText: singleLifecycleMsg });
+      await expect(reloadedMsg).toBeVisible({ timeout: 10000 });
+      await expect(reloadedMsg.getByLabel("Read")).toBeVisible({ timeout: 10000 });
+
+      await bobReconnectPage.close();
+    } finally {
+      assertNoFatalBrowserErrors(errCollector);
+      if (!guestPage.isClosed()) {
+        await guestPage.close();
+      }
+      await hostPage.close();
       await hostUser.context.close();
       await guestUser.context.close();
       await hostUser.seed.cleanup();
@@ -494,16 +620,11 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       `bob.c.${Date.now()}@pairprep.com`
     );
 
+    const errCollector: BrowserErrorCollector = { pageErrors: [], consoleErrors: [] };
     const hostPage = await hostUser.context.newPage();
     const guestPage = await guestUser.context.newPage();
-    hostPage.on("pageerror", (err) => console.log("[Host PageError]", err.message));
-    guestPage.on("pageerror", (err) => console.log("[Guest PageError]", err.message));
-    hostPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Host Console Error]", msg.text());
-    });
-    guestPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Guest Console Error]", msg.text());
-    });
+    attachBrowserErrorListeners(hostPage, errCollector);
+    attachBrowserErrorListeners(guestPage, errCollector);
 
     try {
       const { roomUrl, slug } = await createRoomViaHost(
@@ -609,6 +730,7 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
           .getByText(/editor/i)
       ).toBeVisible({ timeout: 10000 });
     } finally {
+      assertNoFatalBrowserErrors(errCollector);
       await hostUser.context.close();
       await guestUser.context.close();
       await hostUser.seed.cleanup();
@@ -637,16 +759,11 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       `bob.d.${Date.now()}@pairprep.com`
     );
 
+    const errCollector: BrowserErrorCollector = { pageErrors: [], consoleErrors: [] };
     const hostPage = await hostUser.context.newPage();
     const guestPage = await guestUser.context.newPage();
-    hostPage.on("pageerror", (err) => console.log("[Host PageError]", err.message));
-    guestPage.on("pageerror", (err) => console.log("[Guest PageError]", err.message));
-    hostPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Host Console Error]", msg.text());
-    });
-    guestPage.on("console", (msg) => {
-      if (msg.type() === "error") console.log("[Guest Console Error]", msg.text());
-    });
+    attachBrowserErrorListeners(hostPage, errCollector);
+    attachBrowserErrorListeners(guestPage, errCollector);
 
     try {
       const { roomUrl, slug } = await createRoomViaHost(
@@ -768,6 +885,7 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       await charlieUser.context.close();
       await charlieUser.seed.cleanup();
     } finally {
+      assertNoFatalBrowserErrors(errCollector);
       await hostUser.context.close();
       await guestUser.context.close();
       await hostUser.seed.cleanup();

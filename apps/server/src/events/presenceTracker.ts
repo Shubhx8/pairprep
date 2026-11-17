@@ -187,6 +187,7 @@ export class RoomPresenceTracker {
         if (info) {
           result.push({
             memberId: info.memberId,
+            memberDocId: info.memberDocId,
             displayName: info.displayName,
             role: info.role,
             color: info.color,

@@ -113,6 +113,8 @@ describe("RoomPresenceTracker (Authoritative In-Memory Registry)", () => {
     expect(snapshot).toHaveLength(2);
     expect(snapshot.map((m) => m.displayName)).toEqual(["Alice", "Bob"]);
     expect(snapshot.every((m) => m.isOnline)).toBe(true);
+    expect(snapshot[0]?.memberDocId).toBe("doc_1");
+    expect(snapshot[1]?.memberDocId).toBe("doc_2");
   });
 
   it("disconnectMemberSockets force-closes all sockets belonging to that member", () => {

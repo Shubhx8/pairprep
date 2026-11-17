@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { MembersPanel } from "../MembersPanel.js";
 import type { RoomMemberDetailDto } from "@pairprep/shared";
 
@@ -120,5 +120,87 @@ describe("MembersPanel component", () => {
     expect(onToggleMock).toHaveBeenCalled();
 
     triggerBtn.remove();
+  });
+
+  it("shows kick button only for owners on other non-owner participants", () => {
+    const onRemoveMember = vi.fn().mockResolvedValue(undefined);
+
+    // 1. Owner view
+    const { unmount } = render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember} // role: "owner", id: "mem-1"
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onRemoveMember={onRemoveMember}
+      />
+    );
+
+    // Owner should NOT have a remove button for themselves
+    expect(screen.queryByTestId("remove-member-mem-1")).toBeNull();
+    // Owner SHOULD have remove buttons for editor (mem-2) and viewer (mem-3)
+    expect(screen.getByTestId("remove-member-mem-2")).toBeInTheDocument();
+    expect(screen.getByTestId("remove-member-mem-3")).toBeInTheDocument();
+
+    unmount();
+
+    // 2. Non-owner view (editor)
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={sampleMembers[1]!} // role: "editor", id: "mem-2"
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onRemoveMember={onRemoveMember}
+      />
+    );
+
+    // Editor should not see any remove buttons
+    expect(screen.queryByTestId("remove-member-mem-1")).toBeNull();
+    expect(screen.queryByTestId("remove-member-mem-2")).toBeNull();
+    expect(screen.queryByTestId("remove-member-mem-3")).toBeNull();
+  });
+
+  it("opens confirmation modal and calls onRemoveMember on confirm", async () => {
+    const onRemoveMember = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember}
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onRemoveMember={onRemoveMember}
+      />
+    );
+
+    // Click remove button for Bob Candidate
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("remove-member-mem-2"));
+    });
+
+    // Modal should be displayed
+    const modal = screen.getByTestId("remove-member-modal");
+    expect(modal).toBeInTheDocument();
+    expect(within(modal).getByText(/Bob Candidate/)).toBeInTheDocument();
+
+    // Confirm removal
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("confirm-remove-button"));
+    });
+
+    expect(onRemoveMember).toHaveBeenCalledWith("mem-2");
   });
 });

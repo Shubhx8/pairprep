@@ -910,4 +910,177 @@ describe("T09 Phase 0 — Socket.IO Foundation Spike", () => {
       expect(limiter.getTrackedIpCount()).toBeLessThanOrEqual(5);
     });
   });
+
+  describe("T09-TEST-09, T09-TEST-10, T09-TEST-13: Transport and Engine.IO Security Configuration", () => {
+    it("T09-TEST-09: HTTP long-polling transport is rejected and WebSocket-only is enforced", async () => {
+      const port = await startServer();
+      const { cookieHeader } = await seedUserSession();
+
+      // 1. Attempt connection using polling transport
+      const pollingClient = ioClient(`http://127.0.0.1:${port}`, {
+        path: "/socket.io",
+        transports: ["polling"],
+        extraHeaders: {
+          origin: "http://localhost:3000",
+          cookie: cookieHeader,
+        },
+      });
+      activeClients.push(pollingClient);
+
+      const pollingError = await new Promise<Error>((resolve, reject) => {
+        const timeout = setTimeout(
+          () =>
+            reject(
+              new Error("Polling connection unexpectedly timed out without rejection")
+            ),
+          5000
+        );
+        pollingClient.on("connect", () => {
+          clearTimeout(timeout);
+          reject(new Error("Polling connection unexpectedly succeeded"));
+        });
+        pollingClient.on("connect_error", (err) => {
+          clearTimeout(timeout);
+          resolve(err);
+        });
+      });
+
+      expect(pollingClient.connected).toBe(false);
+      expect(pollingError).toBeDefined();
+
+      // Direct HTTP probe to /socket.io/?EIO=4&transport=polling
+      const pollingRes = await fetch(
+        `http://127.0.0.1:${port}/socket.io/?EIO=4&transport=polling`,
+        {
+          headers: {
+            origin: "http://localhost:3000",
+          },
+        }
+      );
+      expect(pollingRes.status).toBe(400);
+      const pollingBody = (await pollingRes.json()) as { code: number; message: string };
+      expect(pollingBody.code).toBe(0);
+      expect(pollingBody.message).toMatch(/transport unknown/i);
+
+      // 2. Normal WebSocket-only connection still succeeds cleanly
+      const wsClient = ioClient(`http://127.0.0.1:${port}`, {
+        path: "/socket.io",
+        transports: ["websocket"],
+        extraHeaders: {
+          origin: "http://localhost:3000",
+          cookie: cookieHeader,
+        },
+      });
+      activeClients.push(wsClient);
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("WebSocket connection timed out")),
+          5000
+        );
+        wsClient.on("connect", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        wsClient.on("connect_error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+
+      expect(wsClient.connected).toBe(true);
+    });
+
+    it("T09-TEST-10: serveClient: false and perMessageDeflate: false are configured and active", async () => {
+      const port = await startServer();
+
+      // 1. Verify runtime options on Socket.IO server
+      const serverOpts = (
+        socketServer!.io as unknown as { opts: Record<string, unknown> }
+      ).opts;
+      expect(serverOpts.serveClient).toBe(false);
+      expect(serverOpts.perMessageDeflate).toBe(false);
+
+      // 2. Verify /socket.io/socket.io.js is NOT served (serveClient: false)
+      const clientScriptRes = await fetch(
+        `http://127.0.0.1:${port}/socket.io/socket.io.js`,
+        {
+          headers: {
+            origin: "http://localhost:3000",
+          },
+        }
+      );
+      // Since serveClient is false, Socket.IO does not handle this route
+      expect(clientScriptRes.status).not.toBe(200);
+    });
+
+    it("T09-TEST-13: Inbound payload exceeding maxHttpBufferSize (16KB) is dropped/terminated", async () => {
+      const port = await startServer();
+      const { cookieHeader } = await seedUserSession();
+
+      const serverOpts = (
+        socketServer!.io as unknown as { opts: Record<string, unknown> }
+      ).opts;
+      expect(serverOpts.maxHttpBufferSize).toBe(16384);
+
+      const client = ioClient(`http://127.0.0.1:${port}`, {
+        path: "/socket.io",
+        transports: ["websocket"],
+        extraHeaders: {
+          origin: "http://localhost:3000",
+          cookie: cookieHeader,
+        },
+      });
+      activeClients.push(client);
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("WS connection timed out")),
+          5000
+        );
+        client.on("connect", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        client.on("connect_error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+
+      expect(client.connected).toBe(true);
+
+      // 1. Valid payload (< 16KB) remains accepted and does not cause disconnect
+      const validPayload = "a".repeat(1024); // 1KB
+      client.emit("ping", { data: validPayload });
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(client.connected).toBe(true);
+
+      // 2. Oversized payload (> 16KB limit, 20KB) causes Engine.IO to terminate connection
+      const oversizedPayload = "x".repeat(20 * 1024); // 20KB > 16384 bytes
+      const disconnectPromise = new Promise<string>((resolve) => {
+        client.on("disconnect", (reason) => {
+          resolve(reason);
+        });
+      });
+
+      client.emit("oversized_event", { data: oversizedPayload });
+
+      const disconnectReason = await Promise.race([
+        disconnectPromise,
+        new Promise<string>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error("Oversized payload did not disconnect client within timeout")
+              ),
+            5000
+          )
+        ),
+      ]);
+
+      expect(client.connected).toBe(false);
+      expect(disconnectReason).toBeDefined();
+    });
+  });
 });

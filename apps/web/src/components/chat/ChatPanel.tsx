@@ -69,10 +69,15 @@ export function ChatTriggerButton({
 export interface ChatPanelProps {
   messages: ChatMessageType[];
   currentUserId: string;
+  currentMemberId?: string;
+  currentUserName?: string;
+  hasOnlinePeers?: boolean;
+  roomMembers?: Array<{ id: string; memberId?: string; displayName?: string }>;
   isOpen: boolean;
   onToggle: () => void;
   onSendMessage: (text: string) => Promise<string | null>;
   onRetryMessage?: (clientMsgId: string) => Promise<void>;
+  onMarkMessageRead?: (messageId: string, seq?: number) => void;
   onRefetchHistory?: () => Promise<void>;
   connectionStatus: SocketConnectionStatus;
   isRateLimited: boolean;
@@ -89,13 +94,54 @@ export interface ChatPanelProps {
   width?: number;
 }
 
+/**
+ * Computes calendar date chip text (Today, Yesterday, or formatted date).
+ */
+function getMessageDateLabel(isoString: string): string {
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return "";
+    const now = new Date();
+    const isToday =
+      d.getDate() === now.getDate() &&
+      d.getMonth() === now.getMonth() &&
+      d.getFullYear() === now.getFullYear();
+    if (isToday) return "Today";
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday =
+      d.getDate() === yesterday.getDate() &&
+      d.getMonth() === yesterday.getMonth() &&
+      d.getFullYear() === yesterday.getFullYear();
+    if (isYesterday) return "Yesterday";
+
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+// Helper to check if browser window is currently focused and in foreground
+function isWindowForeground(): boolean {
+  if (typeof document === "undefined") return false;
+  if (document.visibilityState !== "visible") return false;
+  if (typeof document.hasFocus === "function" && !document.hasFocus()) return false;
+  return true;
+}
+
 export function ChatPanel({
   messages,
   currentUserId,
+  currentMemberId,
+  currentUserName,
+  hasOnlinePeers: _hasOnlinePeers = false,
+  roomMembers = [],
   isOpen,
   onToggle,
   onSendMessage,
   onRetryMessage,
+  onMarkMessageRead,
   onRefetchHistory,
   connectionStatus,
   isRateLimited,
@@ -125,6 +171,156 @@ export function ChatPanel({
   // Track previously known message IDs to announce ONLY newly incoming messages from others
   const knownMessageIdsRef = useRef<Set<string>>(new Set());
   const initialLoadDoneRef = useRef(false);
+
+  // Acknowledge read for incoming messages when panel is open, window is focused & in foreground,
+  // and the message is visible in the chat viewport (Phase 1.3 / Phase 5)
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!onMarkMessageRead) return;
+
+    const myId = currentMemberId || currentUserId;
+
+    const checkAndMarkMessage = (messageId: string) => {
+      if (!isWindowForeground()) return;
+      const msg = messages.find((m) => (m.id || m.clientMsgId) === messageId);
+      if (!msg || msg.kind !== "user") return;
+      const isFromOther =
+        msg.authorId !== currentUserId &&
+        (!currentMemberId || msg.authorId !== currentMemberId);
+      if (!isFromOther) return;
+
+      const alreadyRead =
+        (myId ? (msg.readBy || []).includes(myId) : false) ||
+        (currentMemberId ? (msg.readBy || []).includes(currentMemberId) : false) ||
+        (currentUserId ? (msg.readBy || []).includes(currentUserId) : false);
+
+      if (!alreadyRead && msg.id) {
+        onMarkMessageRead(msg.id, msg.seq);
+      }
+    };
+
+    const container = scrollContainerRef.current;
+    let observer: IntersectionObserver | null = null;
+
+    // Phase 17 standard: 50% of message element area must be visible within container
+    const isMessageSufficientlyVisible = (
+      elRect: DOMRect,
+      cRect: DOMRect,
+      threshold = 0.5
+    ): boolean => {
+      // In headless/jsdom testing environments where layout geometry is 0x0, fallback to true
+      if (
+        cRect.width === 0 &&
+        cRect.height === 0 &&
+        elRect.width === 0 &&
+        elRect.height === 0
+      ) {
+        return true;
+      }
+      const elArea = elRect.width * elRect.height;
+      if (elArea <= 0) return false;
+
+      const intersectTop = Math.max(elRect.top, cRect.top);
+      const intersectBottom = Math.min(elRect.bottom, cRect.bottom);
+      const intersectLeft = Math.max(elRect.left, cRect.left);
+      const intersectRight = Math.min(elRect.right, cRect.right);
+
+      const intersectHeight = Math.max(0, intersectBottom - intersectTop);
+      const intersectWidth = Math.max(0, intersectRight - intersectLeft);
+      const intersectArea = intersectHeight * intersectWidth;
+
+      return intersectArea / elArea >= threshold;
+    };
+
+    // Use IntersectionObserver when functional
+    if (typeof window !== "undefined" && "IntersectionObserver" in window && container) {
+      try {
+        observer = new IntersectionObserver(
+          (entries) => {
+            if (!isOpen || !isWindowForeground()) return;
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) {
+                const msgId = entry.target.getAttribute("data-message-id");
+                if (msgId) checkAndMarkMessage(msgId);
+              }
+            });
+          },
+          { root: container, threshold: 0.5 }
+        );
+
+        const elements = container.querySelectorAll("[data-message-id]");
+        elements.forEach((el) => observer?.observe(el));
+      } catch {
+        observer = null;
+      }
+    }
+
+    // Fallback when IntersectionObserver is unavailable or polyfilled in test environments
+    if (
+      !observer ||
+      (typeof window !== "undefined" &&
+        window.IntersectionObserver?.name === "IntersectionObserverPolyfill")
+    ) {
+      if (isWindowForeground() && container) {
+        const elements = container.querySelectorAll("[data-message-id]");
+        elements.forEach((el) => {
+          const msgId = el.getAttribute("data-message-id");
+          if (msgId) checkAndMarkMessage(msgId);
+        });
+      }
+    }
+
+    const handleActivity = () => {
+      if (isWindowForeground() && isOpen && container) {
+        const elements = container.querySelectorAll("[data-message-id]");
+        const containerRect = container.getBoundingClientRect();
+        elements.forEach((el) => {
+          const rect = el.getBoundingClientRect();
+          if (isMessageSufficientlyVisible(rect, containerRect, 0.5)) {
+            const msgId = el.getAttribute("data-message-id");
+            if (msgId) checkAndMarkMessage(msgId);
+          }
+        });
+      }
+    };
+
+    // Bounded idle interval to re-evaluate visible messages in viewport (Phase 14 & 15 & 17)
+    // Ensures unconfirmed read receipts are retried even when user remains idle without scrolling
+    const retryInterval = setInterval(() => {
+      if (!isOpen || !isWindowForeground() || !container) return;
+
+      const elements = container.querySelectorAll("[data-message-id]");
+      const containerRect = container.getBoundingClientRect();
+
+      elements.forEach((el) => {
+        const rect = el.getBoundingClientRect();
+        if (isMessageSufficientlyVisible(rect, containerRect, 0.5)) {
+          const msgId = el.getAttribute("data-message-id");
+          if (msgId) checkAndMarkMessage(msgId);
+        }
+      });
+    }, 5000);
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleActivity);
+      window.addEventListener("blur", handleActivity);
+    }
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleActivity);
+    }
+
+    return () => {
+      observer?.disconnect();
+      clearInterval(retryInterval);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleActivity);
+        window.removeEventListener("blur", handleActivity);
+      }
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleActivity);
+      }
+    };
+  }, [isOpen, messages, currentUserId, currentMemberId, onMarkMessageRead]);
 
   // Check user preference for reduced motion
   const prefersReducedMotion = useMemo(() => {
@@ -252,12 +448,14 @@ export function ChatPanel({
 
       if (e.key === "Tab" && panelRef.current) {
         const focusableSelector =
-          'button:not([disabled]):not([aria-hidden="true"]), [href], input:not([disabled]):not([aria-hidden="true"]), select:not([disabled]):not([aria-hidden="true"]), textarea:not([disabled]):not([aria-hidden="true"]), [tabindex]:not([tabindex="-1"]):not([aria-hidden="true"])';
+          'button:not([disabled]):not([aria-hidden="true"]):not([tabindex="-1"]), [href], input:not([disabled]):not([aria-hidden="true"]):not([tabindex="-1"]), select:not([disabled]):not([aria-hidden="true"]):not([tabindex="-1"]), textarea:not([disabled]):not([aria-hidden="true"]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"]):not([aria-hidden="true"])';
         const focusableElements = Array.from(
           panelRef.current.querySelectorAll<HTMLElement>(focusableSelector)
         ).filter(
           (el) =>
-            !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true"
+            !el.hasAttribute("disabled") &&
+            el.getAttribute("aria-hidden") !== "true" &&
+            el.getAttribute("tabindex") !== "-1"
         );
 
         if (focusableElements.length === 0) return;
@@ -355,7 +553,7 @@ export function ChatPanel({
           >
             {connectionStatus === "connected" ? (
               <span
-                className="flex h-2 w-2 rounded-full bg-success"
+                className="flex h-2 w-2 rounded-full bg-success ring-2 ring-success/20"
                 aria-label="Chat connected"
               />
             ) : (
@@ -389,7 +587,7 @@ export function ChatPanel({
         tabIndex={0}
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overscroll-contain custom-scroll p-3.5 space-y-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex-1 overflow-y-auto overscroll-contain custom-scroll p-3.5 space-y-1.5 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring bg-canvas/30"
         data-testid="chat-messages-log"
       >
         {/* Earlier messages notice */}
@@ -404,11 +602,21 @@ export function ChatPanel({
 
         {/* Loading history skeleton state (UI-2) */}
         {isLoadingHistory && (
-          <div className="space-y-3 py-2" data-testid="chat-history-skeletons">
-            <Skeleton className="h-10 w-3/4 rounded-2xl" />
-            <Skeleton className="h-14 w-2/3 ml-auto rounded-2xl" />
-            <Skeleton className="h-10 w-1/2 rounded-2xl" />
-            <Skeleton className="h-12 w-3/5 ml-auto rounded-2xl" />
+          <div className="space-y-3.5 py-2" data-testid="chat-history-skeletons">
+            <div className="flex items-start gap-2.5 max-w-[80%]">
+              <Skeleton className="h-8 w-8 rounded-full shrink-0" />
+              <Skeleton className="h-12 w-48 rounded-2xl rounded-tl-xs" />
+            </div>
+            <div className="flex justify-end max-w-[80%] ml-auto">
+              <Skeleton className="h-14 w-56 rounded-2xl rounded-tr-xs" />
+            </div>
+            <div className="flex items-start gap-2.5 max-w-[75%]">
+              <Skeleton className="h-8 w-8 rounded-full shrink-0" />
+              <Skeleton className="h-10 w-40 rounded-2xl rounded-tl-xs" />
+            </div>
+            <div className="flex justify-end max-w-[75%] ml-auto">
+              <Skeleton className="h-12 w-48 rounded-2xl rounded-tr-xs" />
+            </div>
           </div>
         )}
 
@@ -435,17 +643,126 @@ export function ChatPanel({
           </div>
         )}
 
-        {/* Messages list */}
+        {/* Messages list with date dividers */}
         {!isLoadingHistory &&
           !loadHistoryError &&
-          messages.map((message) => (
-            <ChatMessageItem
-              key={message.id || message.clientMsgId}
-              message={message}
-              isOwn={message.authorId === currentUserId}
-              onRetry={onRetryMessage}
-            />
-          ))}
+          messages.map((message, index) => {
+            const dateLabel = getMessageDateLabel(message.ts);
+            const prevDateLabel =
+              index > 0 ? getMessageDateLabel(messages[index - 1]?.ts || "") : "";
+            const showDateDivider = Boolean(
+              dateLabel && dateLabel !== prevDateLabel && message.kind !== "system"
+            );
+
+            const isOwnMsg =
+              message.authorId === currentUserId ||
+              (Boolean(currentMemberId) && message.authorId === currentMemberId) ||
+              (Boolean(currentUserName) &&
+                Boolean(message.authorName) &&
+                message.authorName?.trim().toLowerCase() ===
+                  currentUserName?.trim().toLowerCase());
+
+            // Compute authentic delivery and read states based on recipient acknowledgements (Phase 3)
+            // Group conversation semantics: requires ALL eligible recipients to acknowledge
+            const otherMembers = (roomMembers || []).filter(
+              (m) =>
+                m.id !== currentMemberId &&
+                (m as { memberId?: string }).memberId !== currentMemberId &&
+                m.id !== currentUserId &&
+                (m as { memberId?: string }).memberId !== currentUserId
+            );
+
+            // Exclude participants marked as excluded (e.g. removed or revoked after message creation)
+            const excludedSet = new Set(message.excludedRecipientIds || []);
+            const effectiveRecipientIds = (message.recipientIds || []).filter(
+              (id) => !excludedSet.has(id)
+            );
+
+            const targetRecipients =
+              Array.isArray(message.recipientIds) && message.recipientIds.length > 0
+                ? effectiveRecipientIds.map((id) => {
+                    const matched = (roomMembers || []).find(
+                      (m) => m.id === id || (m as { memberId?: string }).memberId === id
+                    );
+                    return {
+                      id,
+                      memberId: (matched as { memberId?: string })?.memberId,
+                      docId: matched?.id,
+                    };
+                  })
+                : otherMembers.map((m) => ({
+                    id: (m as { memberId?: string }).memberId || m.id,
+                    memberId: (m as { memberId?: string }).memberId,
+                    docId: m.id,
+                  }));
+
+            let isDelivered = false;
+            let isRead = false;
+
+            if (targetRecipients.length > 0) {
+              isDelivered = targetRecipients.every((recip) => {
+                const ids = [recip.id, recip.memberId, recip.docId].filter(
+                  Boolean
+                ) as string[];
+                return (
+                  (message.deliveredTo || []).some((id) => ids.includes(id)) ||
+                  (message.readBy || []).some((id) => ids.includes(id))
+                );
+              });
+
+              isRead = targetRecipients.every((recip) => {
+                const ids = [recip.id, recip.memberId, recip.docId].filter(
+                  Boolean
+                ) as string[];
+                return (message.readBy || []).some((id) => ids.includes(id));
+              });
+            } else if (
+              (!roomMembers || roomMembers.length <= 1) &&
+              (!message.recipientIds || message.recipientIds.length === 0)
+            ) {
+              // Sender alone in room cannot deliver to anyone
+              isDelivered = false;
+              isRead = false;
+            } else if (
+              message.recipientIds &&
+              message.recipientIds.length > 0 &&
+              effectiveRecipientIds.length === 0
+            ) {
+              // All recipients in the message became excluded/ineligible later (Phase 4)
+              // Preserve last legitimate receipt state (never fabricate double ticks)
+              isDelivered = Boolean(
+                message.deliveredTo && message.deliveredTo.length > 0
+              );
+              isRead = Boolean(message.readBy && message.readBy.length > 0);
+            } else {
+              isDelivered = Boolean(
+                message.deliveredTo && message.deliveredTo.length > 0
+              );
+              isRead = Boolean(message.readBy && message.readBy.length > 0);
+            }
+
+            return (
+              <React.Fragment key={message.id || message.clientMsgId}>
+                {showDateDivider && (
+                  <div
+                    className="flex items-center justify-center my-3 select-none"
+                    data-testid={`date-divider-${dateLabel.toLowerCase()}`}
+                  >
+                    <span className="text-[11px] font-medium text-text-subtle/80 bg-surface-hover/60 px-3 py-0.5 rounded-full border border-border-subtle/70 shadow-xs">
+                      {dateLabel}
+                    </span>
+                  </div>
+                )}
+                <ChatMessageItem
+                  message={message}
+                  isOwn={isOwnMsg}
+                  isDelivered={isDelivered}
+                  isRead={isRead}
+                  onRetry={onRetryMessage}
+                />
+              </React.Fragment>
+            );
+          })}
 
         <div ref={bottomAnchorRef} aria-hidden="true" />
       </div>

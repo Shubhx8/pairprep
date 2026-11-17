@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { MessageDtoSchema } from "../index.js";
 import {
   ObjectIdSchema,
   EventErrorCode,
@@ -14,6 +15,13 @@ import {
   ChatSendPayloadSchema,
   ChatSendAckDataSchema,
   ChatSendAckSchema,
+  ChatDeliveredPayloadSchema,
+  ChatDeliveredAckDataSchema,
+  ChatReadPayloadSchema,
+  ChatReadAckDataSchema,
+  ChatReadBatchPayloadSchema,
+  ChatReadBatchAckDataSchema,
+  ChatReadBatchBroadcastPayloadSchema,
   RoomMemberJoinedPayloadSchema,
   RoomMemberLeftPayloadSchema,
   RoomRoleChangedPayloadSchema,
@@ -34,6 +42,9 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
       expect(ClientEventName.ROOM_JOIN).toBe("room:join");
       expect(ClientEventName.ROOM_LEAVE).toBe("room:leave");
       expect(ClientEventName.CHAT_SEND).toBe("chat:send");
+      expect(ClientEventName.CHAT_DELIVERED).toBe("chat:delivered");
+      expect(ClientEventName.CHAT_READ).toBe("chat:read");
+      expect(ClientEventName.CHAT_READ_BATCH).toBe("chat:read_batch");
     });
 
     it("defines standard server-to-client event names", () => {
@@ -43,6 +54,9 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
       expect(ServerEventName.ROOM_STATUS_CHANGED).toBe("room:status_changed");
       expect(ServerEventName.ROOM_DELETED).toBe("room:deleted");
       expect(ServerEventName.CHAT_MESSAGE).toBe("chat:message");
+      expect(ServerEventName.CHAT_DELIVERED).toBe("chat:delivered");
+      expect(ServerEventName.CHAT_READ).toBe("chat:read");
+      expect(ServerEventName.CHAT_READ_BATCH).toBe("chat:read_batch");
       expect(ServerEventName.ERROR).toBe("room:error");
     });
   });
@@ -310,6 +324,99 @@ describe("T09 Phase 1 Shared Event Protocol & Schemas", () => {
         data: ackData,
       };
       expect(ChatSendAckSchema.parse(fullAck)).toEqual(fullAck);
+    });
+
+    it("validates chat:delivered payload and acknowledgement", () => {
+      const deliveredPayload = {
+        roomId: validObjectId,
+        messageId: validObjectId,
+        seq: 42,
+      };
+      expect(ChatDeliveredPayloadSchema.parse(deliveredPayload)).toEqual(
+        deliveredPayload
+      );
+
+      const deliveredAck = {
+        messageId: validObjectId,
+        delivered: true as const,
+      };
+      expect(ChatDeliveredAckDataSchema.parse(deliveredAck)).toEqual(deliveredAck);
+    });
+
+    it("validates chat:read payload and acknowledgement", () => {
+      const readPayload = {
+        roomId: validObjectId,
+        messageId: validObjectId,
+        seq: 42,
+      };
+      expect(ChatReadPayloadSchema.parse(readPayload)).toEqual(readPayload);
+
+      const readAck = {
+        messageId: validObjectId,
+        read: true as const,
+      };
+      expect(ChatReadAckDataSchema.parse(readAck)).toEqual(readAck);
+    });
+
+    it("validates chat:read_batch payload and acknowledgement", () => {
+      const batchPayload = {
+        roomId: validObjectId,
+        messageIds: [validObjectId, "507f1f77bcf86cd799439022"],
+      };
+      expect(ChatReadBatchPayloadSchema.parse(batchPayload)).toEqual(batchPayload);
+
+      const batchAck = {
+        messageIds: [validObjectId, "507f1f77bcf86cd799439022"],
+        readCount: 2,
+      };
+      expect(ChatReadBatchAckDataSchema.parse(batchAck)).toEqual(batchAck);
+
+      const broadcastPayload = {
+        roomId: validObjectId,
+        messageIds: [validObjectId, "507f1f77bcf86cd799439022"],
+        memberId: "user_bob",
+        readAt: validIsoDate,
+      };
+      expect(ChatReadBatchBroadcastPayloadSchema.parse(broadcastPayload)).toEqual(
+        broadcastPayload
+      );
+
+      // Rejects empty messageIds
+      expect(() =>
+        ChatReadBatchPayloadSchema.parse({
+          roomId: validObjectId,
+          messageIds: [],
+        })
+      ).toThrow();
+
+      // Rejects batch > 50 messages
+      const oversized = Array.from({ length: 51 }, () => validObjectId);
+      expect(() =>
+        ChatReadBatchPayloadSchema.parse({
+          roomId: validObjectId,
+          messageIds: oversized,
+        })
+      ).toThrow();
+    });
+
+    it("validates MessageDtoSchema with recipientIds, deliveredTo, and readBy arrays", () => {
+      const msgDto = {
+        id: validObjectId,
+        roomId: validObjectId,
+        authorId: "usr_alice",
+        authorName: "Alice",
+        seq: 1,
+        text: "Hello team",
+        ts: validIsoDate,
+        kind: "user" as const,
+        recipientIds: ["usr_bob", "usr_charlie"],
+        deliveredTo: ["usr_bob"],
+        readBy: ["usr_bob"],
+      };
+      const parsed = MessageDtoSchema.parse(msgDto);
+      expect(parsed.recipientIds).toEqual(["usr_bob", "usr_charlie"]);
+      expect(parsed.deliveredTo).toEqual(["usr_bob"]);
+      expect(parsed.readBy).toEqual(["usr_bob"]);
     });
   });
 

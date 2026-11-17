@@ -141,3 +141,24 @@ export const apiClient = {
     return apiRequest<T>(path, { ...options, method: "DELETE" });
   },
 };
+
+export const roomApi = {
+  leaveRoom: (slug: string, options?: ApiRequestOptions): Promise<{ status: string }> => {
+    return apiClient.post<{ status: string }>(`/rooms/${slug}/leave`, undefined, options);
+  },
+
+  removeMember: (
+    slug: string,
+    memberDocId: string,
+    options?: ApiRequestOptions
+  ): Promise<{ status: string }> => {
+    return apiClient.delete<{ status: string }>(
+      `/rooms/${slug}/members/${memberDocId}`,
+      options
+    );
+  },
+
+  endRoom: (slug: string, options?: ApiRequestOptions): Promise<{ room: unknown }> => {
+    return apiClient.post<{ room: unknown }>(`/rooms/${slug}/end`, undefined, options);
+  },
+};

@@ -7,9 +7,9 @@ import {
   Suspense,
   type FormEvent,
 } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/authContext.js";
-import { apiClient, ApiClientError } from "../lib/apiClient.js";
+import { apiClient, ApiClientError, roomApi } from "../lib/apiClient.js";
 import type {
   RoomDto,
   PublicRoomDto,
@@ -22,6 +22,14 @@ import { Input } from "../components/ui/Input.js";
 import { Skeleton } from "../components/ui/Skeleton.js";
 import { EmptyState } from "../components/ui/EmptyState.js";
 import { ErrorState } from "../components/ui/ErrorState.js";
+import {
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalFooter,
+} from "../components/ui/Modal.js";
 import type { SupportedEditorLanguage } from "../components/CodeEditor.js";
 import { useRoomSync } from "../hooks/useRoomSync.js";
 import { useParticipantSync } from "../hooks/useParticipantSync.js";
@@ -48,10 +56,13 @@ import {
   Clock,
   Keyboard,
   X,
+  LogOut,
+  StopCircle,
 } from "lucide-react";
 
 export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
+  const navigate = useNavigate();
   const { user } = useAuth();
 
   const [room, setRoom] = useState<RoomDto | PublicRoomDto | null>(null);
@@ -73,6 +84,14 @@ export default function RoomPage() {
   const [selectedLanguage, setSelectedLanguage] =
     useState<SupportedEditorLanguage | null>(null);
 
+  // Leave & End Session state
+  const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const [isEndModalOpen, setIsEndModalOpen] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
+
   // Three-column collaborative workspace layout states
   // On desktop (>= 1024px) start with members panel open; on mobile (< 1024px) start with drawers closed
   const [isMembersOpen, setIsMembersOpen] = useState(() =>
@@ -82,19 +101,53 @@ export default function RoomPage() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(320);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [sessionSeconds, setSessionSeconds] = useState<number | null>(null);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const membersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const chatTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const serverOffsetRef = useRef<number>(0);
 
+  // Derive authoritative room session duration from server creation timestamp
   useEffect(() => {
-    const timer = setInterval(() => {
-      setSessionSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+    if (!room || !("createdAt" in room) || !room.createdAt) {
+      setSessionSeconds(null);
+      return;
+    }
 
-  const formatTimer = (totalSec: number) => {
+    const startMs = new Date(room.createdAt).getTime();
+    if (isNaN(startMs)) {
+      setSessionSeconds(null);
+      return;
+    }
+
+    // Freeze duration if room has ended (Phase 5 / PRD ROOM-6)
+    if (room.status === "ended") {
+      const endedAt =
+        "endedAt" in room ? (room as { endedAt?: string }).endedAt : undefined;
+      const endedMs = endedAt ? new Date(endedAt).getTime() : Date.now();
+      const frozenSeconds = Math.max(0, Math.floor((endedMs - startMs) / 1000));
+      setSessionSeconds(frozenSeconds);
+      return;
+    }
+
+    // Monotonic client ticking using performance.now()
+    const initialPerf = performance.now();
+    const initialNow = Date.now() + (serverOffsetRef.current || 0);
+
+    const updateTimer = () => {
+      const perfElapsed = performance.now() - initialPerf;
+      const currentNow = initialNow + perfElapsed;
+      const elapsed = Math.max(0, Math.floor((currentNow - startMs) / 1000));
+      setSessionSeconds(elapsed);
+    };
+
+    updateTimer();
+    const timer = setInterval(updateTimer, 1000);
+    return () => clearInterval(timer);
+  }, [room]);
+
+  const formatTimer = (totalSec: number | null) => {
+    if (totalSec === null) return "--:--";
     const mins = Math.floor(totalSec / 60);
     const secs = totalSec % 60;
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
@@ -120,9 +173,24 @@ export default function RoomPage() {
     });
   }, []);
 
-  // Global workspace keyboard shortcuts (Ctrl+B, Ctrl+J)
+  // Global workspace keyboard shortcuts (Ctrl+B, Ctrl+J) with safe input isolation
   useEffect(() => {
     const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tagName = target.tagName;
+        if (
+          tagName === "INPUT" ||
+          tagName === "TEXTAREA" ||
+          tagName === "SELECT" ||
+          target.isContentEditable ||
+          Boolean(target.closest?.(".monaco-editor")) ||
+          Boolean(target.closest?.("[role='textbox']"))
+        ) {
+          return; // Never hijack typing or Monaco editor navigation
+        }
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
         e.preventDefault();
         toggleMembers();
@@ -158,22 +226,38 @@ export default function RoomPage() {
     enabled: isSocketEnabled,
     onRoleChanged: (newRole: UserRole, memberId?: string) => {
       const myId = currentMemberRef.current?.id;
-      if (!memberId || (myId && memberId === myId)) {
+      const myMemberId = (currentMemberRef.current as { memberId?: string })?.memberId;
+      if (
+        !memberId ||
+        (myId && memberId === myId) ||
+        (myMemberId && memberId === myMemberId)
+      ) {
         setCurrentMember((prev) => (prev ? { ...prev, role: newRole } : prev));
       }
       setMembers((prev) =>
-        prev.map((m) => (!memberId || m.id === memberId ? { ...m, role: newRole } : m))
+        prev.map((m) =>
+          !memberId ||
+          m.id === memberId ||
+          (m as { memberId?: string }).memberId === memberId
+            ? { ...m, role: newRole }
+            : m
+        )
       );
     },
     onMemberRemoved: (memberId: string) => {
       const myId = currentMemberRef.current?.id;
-      if (myId && memberId === myId) {
+      const myMemberId = (currentMemberRef.current as { memberId?: string })?.memberId;
+      if ((myId && memberId === myId) || (myMemberId && memberId === myMemberId)) {
         setLifecycleNotice({
           type: "removed",
           message: "You have been removed from this room by the host.",
         });
       } else {
-        setMembers((prev) => prev.filter((m) => m.id !== memberId));
+        setMembers((prev) =>
+          prev.filter(
+            (m) => m.id !== memberId && (m as { memberId?: string }).memberId !== memberId
+          )
+        );
       }
     },
     onMemberJoined: (newMember) => {
@@ -183,11 +267,18 @@ export default function RoomPage() {
       if (!memberId) return;
 
       setMembers((prev) => {
-        if (prev.some((m) => m.id === memberId)) return prev;
+        if (
+          prev.some(
+            (m) => m.id === memberId || (m as { memberId?: string }).memberId === memberId
+          )
+        ) {
+          return prev;
+        }
         return [
           ...prev,
           {
             id: memberId,
+            memberId,
             displayName: newMember.displayName || "Member",
             role: newMember.role || "editor",
             isGuest: Boolean(newMember.isGuest),
@@ -197,16 +288,55 @@ export default function RoomPage() {
           },
         ];
       });
+      void refreshRoom().catch(() => {});
+    },
+    onPresenceSnapshot: (payload) => {
+      const onlineSet = new Set<string>();
+      for (const p of payload.members) {
+        if (p.isOnline) {
+          if (p.memberId) onlineSet.add(p.memberId);
+          if ((p as { memberDocId?: string }).memberDocId) {
+            onlineSet.add((p as { memberDocId?: string }).memberDocId!);
+          }
+        }
+      }
+      setMembers((prev) =>
+        prev.map((m) => {
+          const isOnline =
+            onlineSet.has(m.id) || (m.memberId ? onlineSet.has(m.memberId) : false);
+          return { ...m, isOnline };
+        })
+      );
+    },
+    onPresenceStatus: (payload) => {
+      const docId = (payload as { memberDocId?: string }).memberDocId;
+      setMembers((prev) =>
+        prev.map((m) => {
+          const matches =
+            (docId && m.id === docId) ||
+            m.id === payload.memberId ||
+            (m as { memberId?: string }).memberId === payload.memberId;
+          return matches ? { ...m, isOnline: payload.isOnline } : m;
+        })
+      );
     },
     onMemberLeft: (memberId: string, reason?: string) => {
       const myId = currentMemberRef.current?.id;
-      if (myId && memberId === myId && reason === "removed") {
+      const myMemberId = (currentMemberRef.current as { memberId?: string })?.memberId;
+      if (
+        (myId && memberId === myId && reason === "removed") ||
+        (myMemberId && memberId === myMemberId && reason === "removed")
+      ) {
         setLifecycleNotice({
           type: "removed",
           message: "You have been removed from this room by the host.",
         });
       } else {
-        setMembers((prev) => prev.filter((m) => m.id !== memberId));
+        setMembers((prev) =>
+          prev.filter(
+            (m) => m.id !== memberId && (m as { memberId?: string }).memberId !== memberId
+          )
+        );
       }
     },
     onRoomEnded: () => {
@@ -286,12 +416,21 @@ export default function RoomPage() {
     setError(null);
 
     try {
+      const reqStart = performance.now();
       const res = await apiClient.get<{
         room: RoomDto | PublicRoomDto;
         currentMember?: RoomMemberDetailDto;
         members?: RoomMemberDetailDto[];
         onlineMemberCount?: number;
+        serverTime?: string;
       }>(`/rooms/${slug}`);
+      const reqEnd = performance.now();
+
+      if (res.serverTime) {
+        const roundTripMs = reqEnd - reqStart;
+        const serverMs = new Date(res.serverTime).getTime();
+        serverOffsetRef.current = serverMs - (Date.now() - roundTripMs / 2);
+      }
 
       setRoom(res.room);
       setCurrentMember(res.currentMember ?? null);
@@ -302,6 +441,28 @@ export default function RoomPage() {
       document.title = `${res.room.title} · PairPrep`;
     } catch (err) {
       if (err instanceof ApiClientError) {
+        if (
+          err.code === "MEMBER_BANNED" ||
+          (err.status === 403 && err.code === "MEMBER_BANNED")
+        ) {
+          setLifecycleNotice({
+            type: "removed",
+            message:
+              "You have been removed from this room by the host and cannot rejoin.",
+          });
+          return;
+        }
+        if (
+          err.code === "MEMBER_BANNED" ||
+          (err.status === 403 && err.code === "MEMBER_BANNED")
+        ) {
+          setLifecycleNotice({
+            type: "removed",
+            message:
+              "You have been removed from this room by the host and cannot rejoin.",
+          });
+          return;
+        }
         setError({
           code: err.code,
           message: err.message,
@@ -329,12 +490,21 @@ export default function RoomPage() {
   const refreshRoom = useCallback(async () => {
     if (!slug) return;
     try {
+      const reqStart = performance.now();
       const res = await apiClient.get<{
         room: RoomDto | PublicRoomDto;
         currentMember?: RoomMemberDetailDto;
         members?: RoomMemberDetailDto[];
         onlineMemberCount?: number;
+        serverTime?: string;
       }>(`/rooms/${slug}`);
+      const reqEnd = performance.now();
+
+      if (res.serverTime) {
+        const roundTripMs = reqEnd - reqStart;
+        const serverMs = new Date(res.serverTime).getTime();
+        serverOffsetRef.current = serverMs - (Date.now() - roundTripMs / 2);
+      }
 
       setRoom(res.room);
       setCurrentMember(res.currentMember ?? null);
@@ -363,7 +533,7 @@ export default function RoomPage() {
     debounceMs: 500,
   });
 
-  // When WebSocket connects or reconnects, immediately refresh room to sync live presence without waiting (Phase 4.3)
+  // When Hocuspocus connects or reconnects, refresh room to sync live presence without waiting (Phase 4.3)
   const prevSyncStatusRef = useRef(sync.status);
   useEffect(() => {
     if (prevSyncStatusRef.current !== "connected" && sync.status === "connected") {
@@ -403,6 +573,28 @@ export default function RoomPage() {
       fetchRoom();
     } catch (err) {
       if (err instanceof ApiClientError) {
+        if (
+          err.code === "MEMBER_BANNED" ||
+          (err.status === 403 && err.code === "MEMBER_BANNED")
+        ) {
+          setLifecycleNotice({
+            type: "removed",
+            message:
+              "You have been removed from this room by the host and cannot rejoin.",
+          });
+          return;
+        }
+        if (
+          err.code === "MEMBER_BANNED" ||
+          (err.status === 403 && err.code === "MEMBER_BANNED")
+        ) {
+          setLifecycleNotice({
+            type: "removed",
+            message:
+              "You have been removed from this room by the host and cannot rejoin.",
+          });
+          return;
+        }
         if (err.code === "ROOM_FULL" || err.status === 409) {
           setRoom((prev) => (prev ? { ...prev, memberCount: 6 } : prev));
           setError({
@@ -421,6 +613,48 @@ export default function RoomPage() {
     } finally {
       setIsJoining(false);
     }
+  };
+
+  const handleLeaveRoom = async () => {
+    if (!slug || isLeaving) return;
+    try {
+      setIsLeaving(true);
+      setLeaveError(null);
+      await roomApi.leaveRoom(slug);
+      setIsLeaveModalOpen(false);
+      navigate("/dashboard");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to leave room";
+      setLeaveError(message);
+    } finally {
+      setIsLeaving(false);
+    }
+  };
+
+  const handleEndRoom = async () => {
+    if (!slug || isEnding) return;
+    try {
+      setIsEnding(true);
+      setEndError(null);
+      await roomApi.endRoom(slug);
+      setRoom((prev) => (prev ? { ...prev, status: "ended" } : prev));
+      setLifecycleNotice({
+        type: "ended",
+        message: "This room has ended and is now in read-only mode.",
+      });
+      setIsEndModalOpen(false);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to end session";
+      setEndError(message);
+    } finally {
+      setIsEnding(false);
+    }
+  };
+
+  const handleRemoveMember = async (memberDocId: string) => {
+    if (!slug) return;
+    await roomApi.removeMember(slug, memberDocId);
+    setMembers((prev) => prev.filter((m) => m.id !== memberDocId));
   };
 
   // 1. Loading State
@@ -717,15 +951,22 @@ export default function RoomPage() {
     sync.status === "connected" || roomSocket.connectionStatus === "connected";
 
   const isMemberOnline = (m: RoomMemberDetailDto) => {
-    const isCurrent = currentMember?.id ? m.id === currentMember.id : false;
+    const isCurrent = currentMember?.id
+      ? m.id === currentMember.id ||
+        Boolean(
+          m.memberId &&
+          (currentMember as { memberId?: string }).memberId &&
+          m.memberId === (currentMember as { memberId?: string }).memberId
+        )
+      : false;
     if (isCurrent) {
       return isLocalConnected;
     }
     if (
-      roomSocket.connectionStatus === "connected" &&
-      roomSocket.onlineMemberIds.size > 0
+      roomSocket.onlineMemberIds.has(m.id) ||
+      (m.memberId ? roomSocket.onlineMemberIds.has(m.memberId) : false)
     ) {
-      return roomSocket.onlineMemberIds.has(m.id);
+      return true;
     }
     return Boolean(m.isOnline);
   };
@@ -755,7 +996,10 @@ export default function RoomPage() {
       )}
 
       {/* Room Application Header */}
-      <header className="border-b border-border-subtle bg-surface/90 backdrop-blur-md sticky top-0 z-20 h-14 px-3 sm:px-4 flex items-center justify-between shrink-0 select-none">
+      <header
+        data-testid="room-header"
+        className="border-b border-border-subtle bg-surface/90 backdrop-blur-md sticky top-0 z-20 h-14 px-3 sm:px-4 flex items-center justify-between shrink-0 select-none"
+      >
         <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
           <Link
             to="/dashboard"
@@ -794,7 +1038,7 @@ export default function RoomPage() {
             {/* Live Session Timer */}
             <span
               className="hidden xl:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono border border-primary/20 bg-primary/5 text-primary shrink-0"
-              title="Session Duration"
+              title="Session Duration (from room creation)"
             >
               <Clock className="h-3 w-3" />
               <span>LIVE {formatTimer(sessionSeconds)}</span>
@@ -884,6 +1128,42 @@ export default function RoomPage() {
             )}
           </Button>
 
+          {/* Voluntary Leave Room (Non-owner member) */}
+          {currentMember && currentMember.role !== "owner" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLeaveError(null);
+                setIsLeaveModalOpen(true);
+              }}
+              className="gap-1.5 text-xs h-8 px-2.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+              title="Leave Room"
+              data-testid="leave-room-button"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Leave</span>
+            </Button>
+          )}
+
+          {/* End Practice Session (Owner only, when not ended) */}
+          {currentMember?.role === "owner" && !isEnded && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setEndError(null);
+                setIsEndModalOpen(true);
+              }}
+              className="gap-1.5 text-xs h-8 px-2.5"
+              title="End Practice Session"
+              data-testid="end-session-button"
+            >
+              <StopCircle className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">End Session</span>
+            </Button>
+          )}
+
           {/* Room Capacity Badge */}
           <div
             className="flex items-center gap-1 bg-surface-subtle border border-border-subtle rounded-lg px-2.5 py-1 text-xs"
@@ -931,8 +1211,10 @@ export default function RoomPage() {
             isMemberOnline={isMemberOnline}
             isOpen={isMembersOpen}
             onToggle={() => setIsMembersOpen(false)}
+            onRemoveMember={handleRemoveMember}
             triggerRef={membersTriggerRef}
             width={membersWidth}
+            socketStatus={roomSocket.connectionStatus}
             className="fixed inset-y-0 left-0 z-50 w-full sm:w-80 lg:static lg:shrink-0 lg:z-auto h-full"
           />
         )}
@@ -1020,11 +1302,18 @@ export default function RoomPage() {
         {/* Right Column: Live Chat Panel */}
         <ChatPanel
           messages={roomSocket.messages}
-          currentUserId={currentMember?.id || ""}
+          currentUserId={user?.id || currentMember?.id || ""}
+          currentMemberId={currentMember?.id}
+          currentUserName={
+            currentMember?.displayName || user?.displayName || guestName || ""
+          }
+          hasOnlinePeers={Boolean(onlineCount > 1)}
+          roomMembers={members}
           isOpen={isChatOpen}
           onToggle={() => setIsChatOpen((prev) => !prev)}
           onSendMessage={roomSocket.sendMessage}
           onRetryMessage={roomSocket.retryMessage}
+          onMarkMessageRead={roomSocket.markMessageRead}
           onRefetchHistory={roomSocket.refetchHistory}
           connectionStatus={roomSocket.connectionStatus}
           isRateLimited={roomSocket.isRateLimited}
@@ -1110,65 +1399,118 @@ export default function RoomPage() {
         </div>
       )}
 
-      {/* Keyboard Shortcuts Cheatsheet Modal */}
-      {isShortcutsOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Keyboard Shortcuts"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-overlay/70 backdrop-blur-xs animate-in fade-in duration-150"
-          onClick={() => setIsShortcutsOpen(false)}
+      {/* Leave Room Modal */}
+      {isLeaveModalOpen && (
+        <Modal
+          open={isLeaveModalOpen}
+          onOpenChange={(open) => {
+            if (!open && !isLeaving) {
+              setIsLeaveModalOpen(false);
+              setLeaveError(null);
+            }
+          }}
         >
-          <div
-            className="bg-surface border border-border-subtle rounded-2xl p-5 max-w-sm w-full shadow-2xl space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-border-subtle pb-3">
-              <div className="flex items-center gap-2">
-                <Keyboard className="h-4 w-4 text-primary" />
-                <h3 className="text-sm font-semibold text-text-primary">
-                  Workspace Shortcuts
-                </h3>
+          <ModalContent data-testid="leave-room-modal" className="sm:max-w-md">
+            <ModalHeader>
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                <ModalTitle>Leave Room</ModalTitle>
               </div>
+              <ModalDescription className="text-text-subtle text-xs mt-2">
+                Are you sure you want to leave this practice room? You can rejoin later
+                using the invite link.
+              </ModalDescription>
+            </ModalHeader>
+            {leaveError && (
+              <p
+                data-testid="leave-error-message"
+                className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
+              >
+                {leaveError}
+              </p>
+            )}
+            <ModalFooter className="mt-4 gap-2">
               <Button
                 variant="ghost"
-                size="icon"
-                onClick={() => setIsShortcutsOpen(false)}
-                aria-label="Close shortcuts dialog"
-                className="h-7 w-7 text-text-subtle hover:text-text-primary"
+                size="sm"
+                disabled={isLeaving}
+                onClick={() => {
+                  setIsLeaveModalOpen(false);
+                  setLeaveError(null);
+                }}
+                data-testid="cancel-leave-button"
               >
-                <X className="h-4 w-4" />
+                Cancel
               </Button>
-            </div>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isLeaving}
+                onClick={handleLeaveRoom}
+                data-testid="confirm-leave-button"
+              >
+                {isLeaving ? "Leaving..." : "Leave Room"}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+      )}
 
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
-                <span className="text-text-secondary">Toggle Participants Panel</span>
-                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
-                  Ctrl + B
-                </kbd>
+      {/* End Session Modal */}
+      {isEndModalOpen && (
+        <Modal
+          open={isEndModalOpen}
+          onOpenChange={(open) => {
+            if (!open && !isEnding) {
+              setIsEndModalOpen(false);
+              setEndError(null);
+            }
+          }}
+        >
+          <ModalContent data-testid="end-session-modal" className="sm:max-w-md">
+            <ModalHeader>
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                <ModalTitle>End Practice Session</ModalTitle>
               </div>
-              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
-                <span className="text-text-secondary">Toggle Room Chat Panel</span>
-                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
-                  Ctrl + J
-                </kbd>
-              </div>
-              <div className="flex items-center justify-between py-1.5 border-b border-border-subtle/50">
-                <span className="text-text-secondary">Run Code in Sandbox</span>
-                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-primary">
-                  Ctrl + Enter
-                </kbd>
-              </div>
-              <div className="flex items-center justify-between py-1.5">
-                <span className="text-text-secondary">Close Open Drawers</span>
-                <kbd className="px-2 py-0.5 rounded bg-canvas border border-border-subtle font-mono text-[11px] text-text-subtle">
-                  Escape
-                </kbd>
-              </div>
-            </div>
-          </div>
-        </div>
+              <ModalDescription className="text-text-subtle text-xs mt-2">
+                Are you sure you want to end this session? The room will become
+                permanently read-only for all participants.
+              </ModalDescription>
+            </ModalHeader>
+            {endError && (
+              <p
+                data-testid="end-error-message"
+                className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
+              >
+                {endError}
+              </p>
+            )}
+            <ModalFooter className="mt-4 gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isEnding}
+                onClick={() => {
+                  setIsEndModalOpen(false);
+                  setEndError(null);
+                }}
+                data-testid="cancel-end-button"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isEnding}
+                onClick={handleEndRoom}
+                data-testid="confirm-end-button"
+              >
+                {isEnding ? "Ending..." : "End Session"}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
       )}
     </div>
   );

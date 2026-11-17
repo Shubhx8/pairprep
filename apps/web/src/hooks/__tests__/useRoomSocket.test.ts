@@ -743,4 +743,472 @@ describe("useRoomSocket Hook (Vitest Unit & Timing Tests)", () => {
 
     unmount();
   });
+
+  it("15. presence:snapshot updates onlineMemberIds with memberId, memberDocId, and onlineMemberNames", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    await act(async () => {
+      trigger("presence:snapshot", {
+        roomId: "507f1f77bcf86cd799439011",
+        members: [
+          {
+            memberId: "user_alice",
+            memberDocId: "doc_alice",
+            displayName: "Alice Tester",
+            role: "owner",
+            isOnline: true,
+          },
+          {
+            memberId: "user_bob",
+            memberDocId: "doc_bob",
+            displayName: "Bob Editor",
+            role: "editor",
+            isOnline: true,
+          },
+        ],
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.onlineMemberIds.has("user_alice")).toBe(true);
+    expect(result.current.onlineMemberIds.has("doc_alice")).toBe(true);
+    expect(result.current.onlineMemberIds.has("user_bob")).toBe(true);
+    expect(result.current.onlineMemberIds.has("doc_bob")).toBe(true);
+
+    unmount();
+  });
+
+  it("16. presence:status adds and removes onlineMemberIds for both memberId and memberDocId", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    // Bob comes online
+    await act(async () => {
+      trigger("presence:status", {
+        roomId: "507f1f77bcf86cd799439011",
+        memberId: "user_bob",
+        memberDocId: "doc_bob",
+        isOnline: true,
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.onlineMemberIds.has("user_bob")).toBe(true);
+    expect(result.current.onlineMemberIds.has("doc_bob")).toBe(true);
+
+    // Bob goes offline
+    await act(async () => {
+      trigger("presence:status", {
+        roomId: "507f1f77bcf86cd799439011",
+        memberId: "user_bob",
+        memberDocId: "doc_bob",
+        isOnline: false,
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.onlineMemberIds.has("user_bob")).toBe(false);
+    expect(result.current.onlineMemberIds.has("doc_bob")).toBe(false);
+
+    unmount();
+  });
+
+  it("17. updates message deliveredTo when chat:delivered event is received", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    // Populate a message
+    await act(async () => {
+      trigger("chat:message", {
+        roomId: "507f1f77bcf86cd799439011",
+        message: {
+          id: "msg-test-1",
+          clientMsgId: "c-1",
+          roomId: "507f1f77bcf86cd799439011",
+          authorId: dummyMember.id,
+          text: "Hello",
+          ts: new Date().toISOString(),
+          kind: "user",
+          seq: 1,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.messages[0]?.deliveredTo).toEqual([]);
+
+    // Trigger chat:delivered from peer
+    await act(async () => {
+      trigger("chat:delivered", {
+        roomId: "507f1f77bcf86cd799439011",
+        messageId: "msg-test-1",
+        seq: 1,
+        memberId: "peer-bob",
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.messages[0]?.deliveredTo).toContain("peer-bob");
+
+    unmount();
+  });
+
+  it("18. updates message readBy and deliveredTo when chat:read event is received", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    // Populate a message
+    await act(async () => {
+      trigger("chat:message", {
+        roomId: "507f1f77bcf86cd799439011",
+        message: {
+          id: "msg-test-2",
+          clientMsgId: "c-2",
+          roomId: "507f1f77bcf86cd799439011",
+          authorId: dummyMember.id,
+          text: "Hello 2",
+          ts: new Date().toISOString(),
+          kind: "user",
+          seq: 2,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    // Trigger chat:read from peer
+    await act(async () => {
+      trigger("chat:read", {
+        roomId: "507f1f77bcf86cd799439011",
+        messageId: "msg-test-2",
+        seq: 2,
+        memberId: "peer-bob",
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.messages[0]?.readBy).toContain("peer-bob");
+    expect(result.current.messages[0]?.deliveredTo).toContain("peer-bob");
+
+    unmount();
+  });
+
+  it("19. automatically emits chat:delivered when incoming message from peer arrives", async () => {
+    const { unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    // Incoming message from peer
+    await act(async () => {
+      trigger("chat:message", {
+        roomId: "507f1f77bcf86cd799439011",
+        message: {
+          id: "msg-peer-incoming",
+          clientMsgId: "c-peer",
+          roomId: "507f1f77bcf86cd799439011",
+          authorId: "user_bob",
+          text: "Peer message",
+          ts: new Date().toISOString(),
+          kind: "user",
+          seq: 3,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    // Check that mockSocket.emit was called with chat:delivered and server ack callback
+    expect(mockSocket.emit).toHaveBeenCalledWith(
+      "chat:delivered",
+      {
+        roomId: "507f1f77bcf86cd799439011",
+        messageId: "msg-peer-incoming",
+        seq: 3,
+      },
+      expect.any(Function)
+    );
+
+    unmount();
+  });
+
+  it("20. automatically emits chat:delivered for unacknowledged historical peer messages", async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      messages: [
+        {
+          id: "msg-history-peer",
+          roomId: "507f1f77bcf86cd799439011",
+          authorId: "user_bob",
+          text: "Historical peer message",
+          ts: new Date().toISOString(),
+          kind: "user",
+          seq: 10,
+          deliveredTo: [],
+          readBy: [],
+        },
+      ],
+      hasMore: false,
+    });
+
+    const { unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    // Simulate successful room:join ack
+    act(() => {
+      const joinCall = mockSocket.emit.mock.calls.find((call) => call[0] === "room:join");
+      if (joinCall && typeof joinCall[2] === "function") {
+        joinCall[2]({ ok: true, data: {} });
+      }
+    });
+
+    // Wait for history fetch to resolve and trigger room:join ack
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockSocket.emit).toHaveBeenCalledWith(
+      "chat:delivered",
+      {
+        roomId: "507f1f77bcf86cd799439011",
+        messageId: "msg-history-peer",
+        seq: 10,
+      },
+      expect.any(Function)
+    );
+
+    unmount();
+  });
+
+  it("21. delivery acknowledgement retry recovery: failed ack permits retry on subsequent call", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    // First attempt: simulate server error response
+    act(() => {
+      result.current.markMessageDelivered("msg-retry-test", 5);
+    });
+
+    const firstEmit = mockSocket.emit.mock.calls.find(
+      (c) => c[0] === "chat:delivered" && c[1]?.messageId === "msg-retry-test"
+    );
+    expect(firstEmit).toBeDefined();
+
+    // Invoke callback with error
+    act(() => {
+      if (firstEmit && typeof firstEmit[2] === "function") {
+        firstEmit[2]({
+          ok: false,
+          error: { code: "INTERNAL_ERROR", message: "DB timeout" },
+        });
+      }
+    });
+
+    // Second attempt: because previous ack failed, in-flight was released, permitting retry
+    mockSocket.emit.mockClear();
+    act(() => {
+      result.current.markMessageDelivered("msg-retry-test", 5);
+    });
+
+    const retryEmit = mockSocket.emit.mock.calls.find(
+      (c) => c[0] === "chat:delivered" && c[1]?.messageId === "msg-retry-test"
+    );
+    expect(retryEmit).toBeDefined();
+
+    // Confirm second attempt
+    act(() => {
+      if (retryEmit && typeof retryEmit[2] === "function") {
+        retryEmit[2]({
+          ok: true,
+          data: { messageId: "msg-retry-test", delivered: true },
+        });
+      }
+    });
+
+    // Third attempt: should NOT emit because message is now server-confirmed
+    mockSocket.emit.mockClear();
+    act(() => {
+      result.current.markMessageDelivered("msg-retry-test", 5);
+    });
+    expect(mockSocket.emit).not.toHaveBeenCalledWith(
+      "chat:delivered",
+      expect.objectContaining({ messageId: "msg-retry-test" }),
+      expect.any(Function)
+    );
+
+    unmount();
+  });
+
+  it("22. read acknowledgement with server confirmation and in-flight deduplication", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    act(() => {
+      result.current.markMessageRead("msg-read-test", 8);
+    });
+
+    const readCall = mockSocket.emit.mock.calls.find(
+      (c) => c[0] === "chat:read" && c[1]?.messageId === "msg-read-test"
+    );
+    expect(readCall).toBeDefined();
+
+    // Duplicate call while in flight is deduplicated
+    mockSocket.emit.mockClear();
+    act(() => {
+      result.current.markMessageRead("msg-read-test", 8);
+    });
+    expect(mockSocket.emit).not.toHaveBeenCalledWith(
+      "chat:read",
+      expect.objectContaining({ messageId: "msg-read-test" }),
+      expect.any(Function)
+    );
+
+    // Confirm server ack
+    act(() => {
+      if (readCall && typeof readCall[2] === "function") {
+        readCall[2]({ ok: true, data: { messageId: "msg-read-test", read: true } });
+      }
+    });
+
+    unmount();
+  });
+
+  it("23. socket disconnect clears in-flight locks to allow reconnection retry", async () => {
+    const { result, unmount } = renderHook(() =>
+      useRoomSocket({
+        roomId: "507f1f77bcf86cd799439011",
+        slug: "test-slug-123",
+        currentMember: dummyMember,
+        enabled: true,
+      })
+    );
+
+    await waitForSocketReady();
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    act(() => {
+      result.current.markMessageDelivered("msg-disconnect-test", 12);
+    });
+
+    // Simulate connection drop before ack arrives
+    act(() => {
+      mockSocket.connected = false;
+      trigger("disconnect", "transport close");
+    });
+
+    // Reconnect
+    act(() => {
+      mockSocket.connected = true;
+      trigger("connect");
+    });
+
+    mockSocket.emit.mockClear();
+    // After reconnect, in-flight was cleared, so markMessageDelivered can retry
+    act(() => {
+      result.current.markMessageDelivered("msg-disconnect-test", 12);
+    });
+
+    expect(mockSocket.emit).toHaveBeenCalledWith(
+      "chat:delivered",
+      expect.objectContaining({ messageId: "msg-disconnect-test" }),
+      expect.any(Function)
+    );
+
+    unmount();
+  });
 });

@@ -10,6 +10,10 @@ export interface IMessage extends Document {
   ts: Date;
   kind: "user" | "system";
   opId?: string;
+  recipientIds?: string[];
+  excludedRecipientIds?: string[];
+  deliveredTo?: string[];
+  readBy?: string[];
 }
 
 const MessageSchema = new Schema<IMessage>(
@@ -23,6 +27,10 @@ const MessageSchema = new Schema<IMessage>(
     ts: { type: Date, default: Date.now },
     kind: { type: String, enum: ["user", "system"], default: "user" },
     opId: { type: String, trim: true },
+    recipientIds: { type: [String], default: [] },
+    excludedRecipientIds: { type: [String], default: [] },
+    deliveredTo: { type: [String], default: [] },
+    readBy: { type: [String], default: [] },
   },
   { collection: "messages" }
 );

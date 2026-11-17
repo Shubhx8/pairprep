@@ -11,6 +11,7 @@ import {
   ChatHistoryQuerySchema,
 } from "@pairprep/shared";
 import { roomRepo } from "../repos/roomRepo.js";
+import { roomBanRepo } from "../repos/roomBanRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { guestRepo } from "../repos/guestRepo.js";
 import { messageRepo } from "../repos/messageRepo.js";
@@ -21,6 +22,7 @@ import {
   requireUser,
   requirePrincipal,
   setGuestCookie,
+  clearGuestCookie,
   UserPrincipal,
 } from "../middleware/identity.js";
 import {
@@ -195,13 +197,31 @@ roomsRouter.get(
         throw new AppError("Room not found", 404, "ROOM_NOT_FOUND");
       }
 
-      const currentPrincipalId = req.principal?.id;
-      const member = currentPrincipalId
-        ? await roomMemberRepo.findMember(room.id, currentPrincipalId)
+      const currentPrincipal = req.principal;
+      if (currentPrincipal) {
+        const isBanned = await roomBanRepo.isBanned(
+          room.id,
+          currentPrincipal.type,
+          currentPrincipal.id
+        );
+        if (isBanned) {
+          throw new AppError(
+            "You have been removed from this room and cannot rejoin",
+            403,
+            "MEMBER_BANNED"
+          );
+        }
+      }
+
+      const member = currentPrincipal
+        ? await roomMemberRepo.findMember(room.id, currentPrincipal.id)
         : null;
 
       if (!member) {
-        res.json({ room: toPublicRoomDto(room) });
+        res.json({
+          room: toPublicRoomDto(room),
+          serverTime: new Date().toISOString(),
+        });
         return;
       }
 
@@ -215,18 +235,37 @@ roomsRouter.get(
         }
       }
 
-      const onlineMemberCount = activeMemberIds.size;
+      const onlinePresenceMembers = presenceTracker.getOnlineMembers(room.id);
+      for (const p of onlinePresenceMembers) {
+        if (p.memberId) activeMemberIds.add(p.memberId);
+        if (p.memberDocId) activeMemberIds.add(p.memberDocId);
+      }
+
+      const distinctPrincipalIds = new Set<string>();
+      for (const conn of activeConns) {
+        if (conn.memberId) distinctPrincipalIds.add(conn.memberId);
+      }
+      for (const p of onlinePresenceMembers) {
+        if (p.memberId) distinctPrincipalIds.add(p.memberId);
+      }
+      const onlineMemberCount = distinctPrincipalIds.size;
 
       res.json({
         room: toRoomDto(room),
+        serverTime: new Date().toISOString(),
         currentMember: toRoomMemberDto(member, {
-          isOnline: activeMemberIds.has(member.memberId),
+          isOnline:
+            activeMemberIds.has(member.memberId) ||
+            activeMemberIds.has(String(member._id ?? member.id ?? "")),
         }),
-        members: allMembers.map((m) =>
-          toRoomMemberDto(m, {
-            isOnline: activeMemberIds.has(m.memberId),
-          })
-        ),
+        members: allMembers.map((m) => {
+          const docId = String(m._id ?? m.id ?? "");
+          return toRoomMemberDto(m, {
+            isOnline:
+              activeMemberIds.has(m.memberId) ||
+              (docId ? activeMemberIds.has(docId) : false),
+          });
+        }),
         onlineMemberCount,
       });
     } catch (err) {
@@ -257,6 +296,22 @@ roomsRouter.post(
           409,
           "ROOM_CLOSED"
         );
+      }
+
+      // Check if principal is banned from this room (P0-D re-entry prevention via canonical roomBanRepo)
+      if (req.principal) {
+        const isBanned = await roomBanRepo.isBanned(
+          room.id,
+          req.principal.type,
+          req.principal.id
+        );
+        if (isBanned) {
+          throw new AppError(
+            "You have been removed from this room by the host and cannot rejoin",
+            403,
+            "MEMBER_BANNED"
+          );
+        }
       }
 
       // 1. Signed-in user join (takes precedence over any guest cookie)
@@ -398,10 +453,33 @@ roomsRouter.post(
       // Set new cookie for Room B
       setGuestCookie(res, guestDoc.id);
 
-      // Await cleanup of old Room A membership before responding (Item 13)
+      // Await cleanup of old Room A membership before responding (Item 13 & Phase 17)
       if (oldRoomId && oldGuestId) {
         try {
-          await roomMemberRepo.removeByMemberId(oldRoomId, oldGuestId);
+          const io = getSocketServer();
+          const departureOpId = outboxService.generateOpId(
+            "remove",
+            oldRoomId,
+            oldGuestId,
+            String(Date.now())
+          );
+          await outboxService.executeDurableOperation({
+            opId: departureOpId,
+            type: "remove",
+            roomId: oldRoomId,
+            payload: {
+              memberId: oldGuestId,
+              memberDocId: oldGuestId,
+            },
+            io,
+            mutation: async () => {
+              return roomMemberRepo.removeByMemberId(
+                oldRoomId,
+                oldGuestId,
+                departureOpId
+              );
+            },
+          });
           await guestRepo.deleteGuest(oldGuestId);
         } catch (err) {
           const errorName = err instanceof Error ? err.name : "UnknownError";
@@ -416,6 +494,78 @@ roomsRouter.post(
         room: toRoomDto(updatedRoom || room),
         currentMember: toRoomMemberDto(member),
       });
+    } catch (err) {
+      handleRouteError(err, req, res, next);
+    }
+  }
+);
+
+/**
+ * PRD 13.1 / P0-A: Voluntary room departure
+ */
+roomsRouter.post(
+  "/:slug/leave",
+  requirePrincipal,
+  idempotencyMiddleware,
+  requireMember,
+  requireOpenRoom,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const room = req.room!;
+      const member = req.roomMember!;
+
+      if (member.role === "owner" || member.memberId === room.ownerId) {
+        throw new AppError(
+          "The room owner cannot leave the room. End or delete the session instead.",
+          400,
+          "CANNOT_LEAVE_AS_OWNER"
+        );
+      }
+
+      // Immediately terminate active WebSocket connections for departing member (< 1s revocation)
+      syncRegistry.closeConnectionsForMember(room.id, member.memberId, 1000, "left");
+
+      // Durable outbox operation for voluntary departure (reason: "left")
+      const io = getSocketServer();
+      const opId = outboxService.generateOpId(
+        "remove",
+        room.id,
+        member.id,
+        String(Date.now())
+      );
+
+      await outboxService.executeDurableOperation({
+        opId,
+        type: "remove",
+        roomId: room.id,
+        payload: {
+          memberDocId: member.id,
+          memberId: member.memberId,
+          reason: "left",
+        },
+        messageText: `${member.displayName} left the room`,
+        io,
+        mutation: async () => {
+          return roomMemberRepo.removeMember(room.id, member.id, opId);
+        },
+      });
+
+      // Disconnect member Socket.IO sockets after broadcast has gone out (< 1s revocation)
+      presenceTracker.disconnectMemberSockets(room.id, member.id);
+
+      // Clear guest cookie and delete guest identity if guest
+      if (req.principal?.type === "guest") {
+        clearGuestCookie(res);
+        try {
+          await guestRepo.deleteGuest(member.memberId);
+        } catch (err) {
+          rootLogger.warn({ err }, "Failed to delete departing guest document");
+        }
+      }
+
+      await roomRepo.touchActivity(room.id);
+
+      res.json({ status: "ok" });
     } catch (err) {
       handleRouteError(err, req, res, next);
     }
@@ -537,6 +687,24 @@ roomsRouter.delete(
 
       assertCanModifyMember(room, targetMember, "remove");
 
+      // Prevent owner self-ban explicitly
+      if (targetMember.memberId === req.principal!.id) {
+        throw new AppError(
+          "Room owner cannot remove or ban themselves",
+          400,
+          "CANNOT_REMOVE_OWNER"
+        );
+      }
+
+      // Record permanent ban in canonical room_bans collection before destructive removal (P0-D)
+      const targetPrincipalType = targetMember.isGuest ? "guest" : "user";
+      await roomBanRepo.banPrincipal(
+        room.id,
+        { id: targetMember.memberId, type: targetPrincipalType },
+        req.principal!.id,
+        "kicked_by_owner"
+      );
+
       // Immediately terminate active WebSocket connections for removed member (< 1s revocation)
       syncRegistry.closeConnectionsForMember(
         room.id,
@@ -561,6 +729,7 @@ roomsRouter.delete(
         payload: {
           memberDocId: targetMember.id,
           memberId: targetMember.memberId,
+          reason: "removed",
         },
         messageText: `${targetMember.displayName} was removed from the room by the owner`,
         io,

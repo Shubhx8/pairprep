@@ -6,6 +6,7 @@ import { RoomMemberModel, type IRoomMember } from "../models/room_members.js";
 import { UserModel } from "../models/users.js";
 import { GuestModel } from "../models/guests.js";
 import { syncRegistry } from "../sync/syncRegistry.js";
+import { roomBanRepo } from "../repos/roomBanRepo.js";
 
 export interface AuthorizeRoomEventOptions {
   principal?: Principal | null;
@@ -121,6 +122,16 @@ export async function authorizeRoomEvent(
     };
   }
 
+  // 4b. Permanent ban verification (P0-D / AC-10)
+  const isBanned = await roomBanRepo.isBanned(room.id, principal.type, principal.id);
+  if (isBanned) {
+    return {
+      authorized: false,
+      code: EventErrorCode.FORBIDDEN,
+      message: "Banned from room",
+    };
+  }
+
   // 5. Writable room check (PRD ROOM-6 / ED-6)
   if (requireWritable) {
     if (
@@ -136,10 +147,11 @@ export async function authorizeRoomEvent(
     }
   }
 
-  // 6. Active membership verification
+  // 6. Active membership verification (rejects tombstoned departing members)
   const member = await RoomMemberModel.findOne({
     roomId: room.id,
     memberId: principal.id,
+    tombstoneOpId: { $exists: false },
   }).exec();
 
   if (!member) {

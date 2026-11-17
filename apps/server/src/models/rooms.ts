@@ -20,6 +20,7 @@ export interface IRoom extends Document {
   deletedAt?: Date;
   lastRemovedMember?: { memberDocId: string; opId: string };
   removedMembers?: { memberDocId: string; opId: string; removedAt: Date }[];
+  bannedMemberIds?: string[];
   appliedOpIds?: string[];
   version?: number;
   startedAt?: Date;
@@ -65,6 +66,7 @@ const RoomSchema = new Schema<IRoom>(
       ],
       default: [],
     },
+    bannedMemberIds: { type: [String], default: [] },
     appliedOpIds: { type: [String], default: [] },
     version: { type: Number, default: 0 },
     startedAt: { type: Date },

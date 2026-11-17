@@ -41,6 +41,7 @@ import {
   type PersistenceStats,
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
+import { roomBanRepo } from "../repos/roomBanRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { clientMapRepo } from "../repos/clientMapRepo.js";
 import { rootLogger } from "../middleware/logger.js";
@@ -329,6 +330,18 @@ export function createSyncServer(
             room.type,
             room.startedAt
           );
+
+          // Verify principal is not permanently banned from the room (P0-D / AC-10)
+          const isBanned = await roomBanRepo.isBanned(
+            roomId,
+            principal.type,
+            principal.id
+          );
+          if (isBanned) {
+            const err = new Error("Forbidden: permanently banned from this room");
+            (err as unknown as { reason: string }).reason = "banned";
+            throw err;
+          }
 
           // Verify member is part of the room
           const member = await roomMemberRepo.findMember(roomId, principal.id);

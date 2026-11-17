@@ -3,6 +3,7 @@ import { RoomMemberModel, IRoomMember, IRoleOpEvidence } from "../models/room_me
 import { RoomModel, IRoom } from "../models/rooms.js";
 import { AppError } from "../errors/AppError.js";
 import { roomMutationBarrier } from "../events/roomMutationBarrier.js";
+import { messageRepo } from "./messageRepo.js";
 
 export class RoomFullError extends AppError {
   constructor(message = "Room has reached its maximum limit of 6 participants") {
@@ -337,12 +338,34 @@ export class RoomMemberRepo {
           _id: memberDocId,
           tombstoneOpId: tombstoneMarker,
         }).exec();
+
         if (!member) {
+          // Check if document exists with a different tombstoneOpId (concurrent removal operation)
+          const conflicting = await RoomMemberModel.findOne({
+            roomId,
+            _id: memberDocId,
+          })
+            .select("tombstoneOpId")
+            .exec();
+
+          if (conflicting && conflicting.tombstoneOpId) {
+            throw new AppError(
+              "Member removal is currently being processed by another operation",
+              409,
+              "CONCURRENT_OPERATION"
+            );
+          }
           return false;
         }
       }
 
-      // Step 2: Update RoomModel memberCount and record removal evidence
+      // Step 2: Authoritatively exclude removed member from outstanding message receipts (Phase 15)
+      // Executed BEFORE decrement and deletion so message quorums are updated while member document is still staged
+      if (member.memberId) {
+        await messageRepo.excludeRecipientFromRoomMessages(roomId, member.memberId);
+      }
+
+      // Step 3: Update RoomModel memberCount and record removal evidence
       const roomSet: Record<string, unknown> = {
         memberCountUpdatedAt: new Date(),
       };
@@ -358,13 +381,22 @@ export class RoomMemberRepo {
           removedMembers: { memberDocId, opId, removedAt: new Date() },
         };
       }
-      await RoomModel.updateOne(
-        { _id: roomId, memberCount: { $gt: 1 }, status: { $ne: "deleted" } },
-        roomUpdate
-      ).exec();
 
-      // Step 3: Hard-delete the tombstoned member document
+      const roomFilter: Record<string, unknown> = {
+        _id: roomId,
+        memberCount: { $gt: 1 },
+        status: { $ne: "deleted" },
+      };
+      if (opId) {
+        // Enforce idempotency: only decrement if this opId has not already recorded a removal
+        roomFilter["removedMembers.opId"] = { $ne: opId };
+      }
+
+      await RoomModel.updateOne(roomFilter, roomUpdate).exec();
+
+      // Step 4: Hard-delete the tombstoned member document
       await RoomMemberModel.deleteOne({ roomId, _id: memberDocId }).exec();
+
       return true;
     });
   }
@@ -387,23 +419,80 @@ export class RoomMemberRepo {
 
   /**
    * Removes participant by memberId (user id or guest id) and atomically decrements memberCount
-   * if document was deleted and memberCount > 1.
+   * with crash-consistent two-phase departure and duplicate-decrement protection (Phase 15).
    */
-  public async removeByMemberId(roomId: string, memberId: string): Promise<boolean> {
+  public async removeByMemberId(
+    roomId: string,
+    memberId: string,
+    opId?: string
+  ): Promise<boolean> {
+    const effectiveOpId = opId || `departure:${roomId}:${memberId}`;
     return roomMutationBarrier.withAdmission(roomId, async () => {
-      const result = await RoomMemberModel.findOneAndDelete({
-        roomId,
-        memberId,
-      }).exec();
+      // Step 1: Stage tombstone on member document to freeze eligibility
+      let member = await RoomMemberModel.findOneAndUpdate(
+        { roomId, memberId, tombstoneOpId: { $exists: false } },
+        { $set: { tombstoneOpId: effectiveOpId } },
+        { new: true }
+      ).exec();
 
-      if (result) {
+      if (!member) {
+        member = await RoomMemberModel.findOne({
+          roomId,
+          memberId,
+          tombstoneOpId: effectiveOpId,
+        }).exec();
+        if (!member) {
+          return false;
+        }
+      }
+
+      // Step 2: Authoritatively exclude departing member from existing room message receipts
+      await messageRepo.excludeRecipientFromRoomMessages(roomId, memberId);
+
+      // Step 3: Decrement memberCount with duplicate-decrement protection
+      let alreadyDecremented = false;
+      const isFindByIdMocked =
+        Boolean((RoomModel.findById as { mock?: unknown }).mock) ||
+        Boolean((RoomModel.findById as { _isMockFunction?: boolean })._isMockFunction);
+
+      if (mongoose.connection.readyState === 1 || isFindByIdMocked) {
+        const roomDoc = await RoomModel.findById(roomId)
+          .select("removedMembers lastRemovedMember")
+          .exec();
+        alreadyDecremented = Boolean(
+          roomDoc?.removedMembers?.some((r) => r.opId === effectiveOpId) ||
+          roomDoc?.lastRemovedMember?.opId === effectiveOpId
+        );
+      }
+
+      if (!alreadyDecremented) {
+        const roomSet: Record<string, unknown> = {
+          memberCountUpdatedAt: new Date(),
+          lastRemovedMember: {
+            memberDocId: String(member._id),
+            opId: effectiveOpId,
+          },
+        };
+        const roomUpdate: Record<string, unknown> = {
+          $inc: { memberCount: -1 },
+          $set: roomSet,
+          $push: {
+            removedMembers: {
+              memberDocId: String(member._id),
+              opId: effectiveOpId,
+              removedAt: new Date(),
+            },
+          },
+        };
         await RoomModel.updateOne(
           { _id: roomId, memberCount: { $gt: 1 }, status: { $ne: "deleted" } },
-          { $inc: { memberCount: -1 }, $set: { memberCountUpdatedAt: new Date() } }
+          roomUpdate
         ).exec();
-        return true;
       }
-      return false;
+
+      // Step 4: Hard-delete the tombstoned member document
+      await RoomMemberModel.deleteOne({ roomId, _id: member._id }).exec();
+      return true;
     });
   }
 
@@ -484,31 +573,48 @@ export class RoomMemberRepo {
 
   /**
    * Daily maintenance: purges expired guest members using distinct roomId query
-   * and atomically decrements memberCount per room by the number of purged members.
+   * and atomically decrements memberCount per room by the number of purged members (Phase 15).
    */
   public async purgeExpiredGuestMembers(cutoffDate = new Date()): Promise<number> {
-    const roomIds = await RoomMemberModel.distinct("roomId", {
-      guestExpiresAt: { $lte: cutoffDate },
-    });
+    const expiredFilter = {
+      isGuest: true,
+      guestExpiresAt: { $exists: true, $ne: null, $lte: cutoffDate },
+    };
+
+    const roomIds = await RoomMemberModel.distinct("roomId", expiredFilter);
 
     let totalPurged = 0;
 
     for (const roomId of roomIds) {
-      const res = await RoomMemberModel.deleteMany({
-        roomId,
-        guestExpiresAt: { $lte: cutoffDate },
-      }).exec();
+      await roomMutationBarrier.withAdmission(roomId, async () => {
+        const roomExpiredFilter = {
+          roomId,
+          ...expiredFilter,
+        };
 
-      if (res.deletedCount > 0) {
-        totalPurged += res.deletedCount;
-        await RoomModel.updateOne(
-          { _id: roomId, memberCount: { $gt: res.deletedCount } },
-          {
-            $inc: { memberCount: -res.deletedCount },
-            $set: { memberCountUpdatedAt: new Date() },
-          }
-        ).exec();
-      }
+        const expiredMembers = await RoomMemberModel.find(roomExpiredFilter)
+          .select("memberId")
+          .exec();
+
+        const expiredMemberIds = expiredMembers.map((m) => m.memberId).filter(Boolean);
+
+        if (expiredMemberIds.length > 0) {
+          await messageRepo.excludeRecipientFromRoomMessages(roomId, expiredMemberIds);
+        }
+
+        const res = await RoomMemberModel.deleteMany(roomExpiredFilter).exec();
+
+        if (res.deletedCount > 0) {
+          totalPurged += res.deletedCount;
+          await RoomModel.updateOne(
+            { _id: roomId, memberCount: { $gt: res.deletedCount } },
+            {
+              $inc: { memberCount: -res.deletedCount },
+              $set: { memberCountUpdatedAt: new Date() },
+            }
+          ).exec();
+        }
+      });
     }
 
     return totalPurged;

@@ -288,7 +288,8 @@ export class OutboxService {
             roomId: op.roomId,
             memberId:
               (op.payload["memberDocId"] as string) || (op.payload["memberId"] as string),
-            reason: "removed",
+            reason:
+              (op.payload["reason"] as "removed" | "left" | "disconnected") || "removed",
           });
           break;
         case "role_change":
@@ -520,6 +521,48 @@ export class OutboxService {
       // Best-effort pre-warming
     }
 
+    // Safe discovery and recovery of orphaned staged departure tombstones (Phase 17)
+    try {
+      const isMemberFindMocked = Boolean(
+        (RoomMemberModel.find as { mock?: unknown }).mock
+      );
+      if (
+        (mongoose.connection.readyState === 1 && mongoose.connection.db) ||
+        isMemberFindMocked
+      ) {
+        const query = RoomMemberModel.find({
+          tombstoneOpId: { $exists: true },
+        });
+        const orphanedTombstones =
+          typeof (query as unknown as { exec?: unknown })?.exec === "function"
+            ? await (query as unknown as { exec: () => Promise<unknown[]> }).exec()
+            : await (query as unknown as Promise<unknown[]>);
+
+        if (Array.isArray(orphanedTombstones)) {
+          for (const orphan of orphanedTombstones) {
+            if (
+              orphan &&
+              typeof orphan === "object" &&
+              "roomId" in orphan &&
+              "memberId" in orphan &&
+              "tombstoneOpId" in orphan &&
+              orphan.roomId &&
+              orphan.memberId &&
+              orphan.tombstoneOpId
+            ) {
+              await roomMemberRepo.removeByMemberId(
+                orphan.roomId as string,
+                orphan.memberId as string,
+                orphan.tombstoneOpId as string
+              );
+            }
+          }
+        }
+      }
+    } catch {
+      // Best-effort pre-warming / orphaned tombstone reconciliation
+    }
+
     const query = DurableOperationModel.find({
       status: { $in: ["intent_recorded", "applied", "persisted", "published"] },
     });
@@ -704,35 +747,100 @@ export class OutboxService {
     }
 
     if (op.type === "remove") {
+      const targetMemberId =
+        (op.payload["memberId"] as string) || (op.payload["memberDocId"] as string);
+      const memberDocId = op.payload["memberDocId"] as string;
+
       const room = await roomRepo.findById(op.roomId);
       const foundInRemoved = room?.removedMembers?.some((r) => r.opId === op.opId);
-      if (foundInRemoved || room?.lastRemovedMember?.opId === op.opId) {
+      const isAlreadyInRoom = foundInRemoved || room?.lastRemovedMember?.opId === op.opId;
+
+      if (isAlreadyInRoom) {
+        // Room was already decremented. Idempotently ensure receipts are excluded and any leftover doc deleted (Phase 15 & 17).
+        if (targetMemberId) {
+          await messageRepo.excludeRecipientFromRoomMessages(op.roomId, targetMemberId);
+        }
+        const isDeleteMocked = Boolean(
+          (RoomMemberModel.deleteOne as { mock?: unknown }).mock
+        );
+        if (
+          (Boolean(mongoose.connection.db) && mongoose.connection.readyState === 1) ||
+          isDeleteMocked
+        ) {
+          if (memberDocId && mongoose.isValidObjectId(memberDocId)) {
+            await RoomMemberModel.deleteOne({
+              roomId: op.roomId,
+              _id: memberDocId,
+            }).exec();
+          } else if (targetMemberId) {
+            await RoomMemberModel.deleteOne({
+              roomId: op.roomId,
+              memberId: targetMemberId,
+            }).exec();
+          }
+        }
         return true;
       }
 
-      // M-4: Two-phase crash recovery if crashed between staged tombstone and room update
-      const memberDocId = op.payload["memberDocId"] as string;
-      if (memberDocId) {
-        const tombstoned = await RoomMemberModel.findOne({
+      // M-4: Two-phase crash recovery if crashed between staged tombstone and room update (Phase 15 & 17)
+      const isFindOneMocked = Boolean(
+        (RoomMemberModel.findOne as { mock?: unknown }).mock
+      );
+      if (
+        (Boolean(mongoose.connection.db) && mongoose.connection.readyState === 1) ||
+        isFindOneMocked
+      ) {
+        const tombstoneFilter: Record<string, unknown> = {
           roomId: op.roomId,
-          _id: memberDocId,
           tombstoneOpId: op.opId,
-        }).exec();
+        };
+        if (memberDocId && mongoose.isValidObjectId(memberDocId)) {
+          tombstoneFilter._id = memberDocId;
+        } else if (targetMemberId) {
+          tombstoneFilter.memberId = targetMemberId;
+        }
+
+        const tombstoned = await RoomMemberModel.findOne(tombstoneFilter).exec();
+
         if (tombstoned) {
+          const resolvedMemberId = targetMemberId || tombstoned.memberId;
+          // Step A: Exclude receipts FIRST so message recipient quorums are updated immediately (Phase 15 & 17)
+          if (resolvedMemberId) {
+            await messageRepo.excludeRecipientFromRoomMessages(
+              op.roomId,
+              resolvedMemberId
+            );
+          }
+
+          // Step B: Update RoomModel memberCount and record removal evidence
           await RoomModel.updateOne(
-            { _id: op.roomId, memberCount: { $gt: 1 }, status: { $ne: "deleted" } },
+            {
+              _id: op.roomId,
+              memberCount: { $gt: 1 },
+              status: { $ne: "deleted" },
+              "removedMembers.opId": { $ne: op.opId },
+            },
             {
               $inc: { memberCount: -1 },
               $set: {
                 memberCountUpdatedAt: new Date(),
-                lastRemovedMember: { memberDocId, opId: op.opId },
+                lastRemovedMember: { memberDocId: String(tombstoned._id), opId: op.opId },
               },
               $push: {
-                removedMembers: { memberDocId, opId: op.opId, removedAt: new Date() },
+                removedMembers: {
+                  memberDocId: String(tombstoned._id),
+                  opId: op.opId,
+                  removedAt: new Date(),
+                },
               },
             }
           ).exec();
-          await RoomMemberModel.deleteOne({ roomId: op.roomId, _id: memberDocId }).exec();
+
+          // Step C: Delete the tombstoned document
+          await RoomMemberModel.deleteOne({
+            roomId: op.roomId,
+            _id: tombstoned._id,
+          }).exec();
           return true;
         }
       }

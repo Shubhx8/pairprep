@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { ChatPanel } from "../ChatPanel.js";
 import type { ChatMessageItem } from "../../../hooks/useRoomSocket.js";
 
@@ -800,5 +800,758 @@ describe("ChatPanel component", () => {
     // Clicking the pill scrolls to bottom and dismisses the pill
     fireEvent.click(pill);
     expect(screen.queryByTestId("new-messages-pill")).toBeNull();
+  });
+
+  it("renders WhatsApp single tick (✓) for own message when pending delivery", () => {
+    const sentMsg: ChatMessageItem = {
+      id: "msg-offline-1",
+      clientMsgId: "c-off-1",
+      roomId: "room-abc",
+      authorId: currentUserId,
+      text: "Hello offline peer",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+      deliveredTo: [],
+      readBy: [],
+    };
+
+    render(
+      <ChatPanel
+        messages={[sentMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer" },
+        ]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    const singleTick = screen.getByTestId("tick-single-msg-offline-1");
+    expect(singleTick).toBeInTheDocument();
+    expect(singleTick).toHaveAttribute("aria-label", "Sent");
+    expect(screen.queryByTestId("tick-read-msg-offline-1")).toBeNull();
+    expect(screen.queryByTestId("tick-delivered-msg-offline-1")).toBeNull();
+  });
+
+  it("renders WhatsApp double grey tick (✓✓) when recipient acknowledges delivery", () => {
+    const deliveredMsg: ChatMessageItem = {
+      id: "msg-del-1",
+      clientMsgId: "c-del-1",
+      roomId: "room-abc",
+      authorId: currentUserId,
+      text: "Delivered to peer",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+      deliveredTo: ["peer-1"],
+      readBy: [],
+    };
+
+    render(
+      <ChatPanel
+        messages={[deliveredMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer" },
+        ]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    const deliveredTick = screen.getByTestId("tick-delivered-msg-del-1");
+    expect(deliveredTick).toBeInTheDocument();
+    expect(deliveredTick).toHaveAttribute("aria-label", "Delivered");
+    expect(screen.queryByTestId("tick-read-msg-del-1")).toBeNull();
+  });
+
+  it("renders WhatsApp double blue tick when recipient acknowledges read", () => {
+    const ownMsg: ChatMessageItem = {
+      id: "msg-read-1",
+      clientMsgId: "c-read-1",
+      roomId: "room-abc",
+      authorId: currentUserId,
+      text: "Are you ready?",
+      ts: new Date(Date.now() - 5000).toISOString(),
+      kind: "user",
+      status: "sent",
+      deliveredTo: ["peer-1"],
+      readBy: ["peer-1"],
+    };
+
+    render(
+      <ChatPanel
+        messages={[ownMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer" },
+        ]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    const readTick = screen.getByTestId("tick-read-msg-read-1");
+    expect(readTick).toBeInTheDocument();
+    expect(readTick).toHaveAttribute("aria-label", "Read");
+  });
+
+  it("triggers onMarkMessageRead when unread peer message is presented in open chat panel", () => {
+    const onMarkMessageReadMock = vi.fn();
+    const peerMsg: ChatMessageItem = {
+      id: "msg-incoming-1",
+      clientMsgId: "c-inc-1",
+      roomId: "room-abc",
+      authorId: "peer-1",
+      authorName: "Bob",
+      seq: 42,
+      text: "Hey there!",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+      deliveredTo: [],
+      readBy: [],
+    };
+
+    render(
+      <ChatPanel
+        messages={[peerMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer" },
+        ]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onMarkMessageRead={onMarkMessageReadMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    expect(onMarkMessageReadMock).toHaveBeenCalledWith("msg-incoming-1", 42);
+  });
+
+  it("does NOT trigger onMarkMessageRead when chat panel is closed", () => {
+    const onMarkMessageReadMock = vi.fn();
+    const peerMsg: ChatMessageItem = {
+      id: "msg-closed-1",
+      clientMsgId: "c-closed-1",
+      roomId: "room-abc",
+      authorId: "peer-1",
+      authorName: "Bob",
+      seq: 43,
+      text: "Unread while closed",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+      deliveredTo: [],
+      readBy: [],
+    };
+
+    render(
+      <ChatPanel
+        messages={[peerMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer" },
+        ]}
+        isOpen={false}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onMarkMessageRead={onMarkMessageReadMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    expect(onMarkMessageReadMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT trigger onMarkMessageRead when browser tab is hidden in background", () => {
+    const onMarkMessageReadMock = vi.fn();
+    const originalVisibility = document.visibilityState;
+    Object.defineProperty(document, "visibilityState", {
+      value: "hidden",
+      configurable: true,
+    });
+
+    try {
+      const peerMsg: ChatMessageItem = {
+        id: "msg-hidden-1",
+        clientMsgId: "c-hidden-1",
+        roomId: "room-abc",
+        authorId: "peer-1",
+        authorName: "Bob",
+        seq: 44,
+        text: "Unread while hidden",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+        deliveredTo: [],
+        readBy: [],
+      };
+
+      render(
+        <ChatPanel
+          messages={[peerMsg]}
+          currentUserId={currentUserId}
+          roomMembers={[
+            { id: currentUserId, displayName: "Self" },
+            { id: "peer-1", displayName: "Peer" },
+          ]}
+          isOpen={true}
+          onToggle={onToggleMock}
+          onSendMessage={onSendMessageMock}
+          onMarkMessageRead={onMarkMessageReadMock}
+          connectionStatus="connected"
+          isRateLimited={false}
+          rateLimitCountdown={0}
+          isRoomEnded={false}
+          isLoadingHistory={false}
+          loadHistoryError={null}
+          hasEarlierMessages={false}
+        />
+      );
+
+      expect(onMarkMessageReadMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(document, "visibilityState", {
+        value: originalVisibility,
+        configurable: true,
+      });
+    }
+  });
+
+  it("does NOT trigger onMarkMessageRead when browser window is not focused", () => {
+    const onMarkMessageReadMock = vi.fn();
+    const originalHasFocus = document.hasFocus;
+    document.hasFocus = vi.fn().mockReturnValue(false);
+
+    try {
+      const peerMsg: ChatMessageItem = {
+        id: "msg-unfocused-1",
+        clientMsgId: "c-unf-1",
+        roomId: "room-abc",
+        authorId: "peer-1",
+        authorName: "Bob",
+        seq: 45,
+        text: "Unread while unfocused",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+        deliveredTo: [],
+        readBy: [],
+      };
+
+      render(
+        <ChatPanel
+          messages={[peerMsg]}
+          currentUserId={currentUserId}
+          roomMembers={[
+            { id: currentUserId, displayName: "Self" },
+            { id: "peer-1", displayName: "Peer" },
+          ]}
+          isOpen={true}
+          onToggle={onToggleMock}
+          onSendMessage={onSendMessageMock}
+          onMarkMessageRead={onMarkMessageReadMock}
+          connectionStatus="connected"
+          isRateLimited={false}
+          rateLimitCountdown={0}
+          isRoomEnded={false}
+          isLoadingHistory={false}
+          loadHistoryError={null}
+          hasEarlierMessages={false}
+        />
+      );
+
+      expect(onMarkMessageReadMock).not.toHaveBeenCalled();
+    } finally {
+      document.hasFocus = originalHasFocus;
+    }
+  });
+
+  it("group semantics: displays single tick until all eligible recipients have received message", () => {
+    const groupMsg: ChatMessageItem = {
+      id: "msg-group-1",
+      clientMsgId: "c-grp-1",
+      roomId: "room-abc",
+      authorId: currentUserId,
+      text: "Notice to all 3 peers",
+      ts: new Date().toISOString(),
+      kind: "user",
+      status: "sent",
+      recipientIds: ["peer-1", "peer-2"],
+      deliveredTo: ["peer-1"], // only 1 of 2 delivered
+      readBy: [],
+    };
+
+    render(
+      <ChatPanel
+        messages={[groupMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer 1" },
+          { id: "peer-2", displayName: "Peer 2" },
+        ]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // Should remain single tick because peer-2 hasn't acknowledged delivery yet
+    expect(screen.getByTestId("tick-single-msg-group-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("tick-delivered-msg-group-1")).toBeNull();
+  });
+
+  it("retroactive safety: new member joining does NOT revert older message double blue ticks", () => {
+    // Message was created when only peer-1 existed in the room
+    const pastMsg: ChatMessageItem = {
+      id: "msg-past-1",
+      clientMsgId: "c-past-1",
+      roomId: "room-abc",
+      authorId: currentUserId,
+      text: "Older message viewed by original peer",
+      ts: new Date(Date.now() - 60000).toISOString(),
+      kind: "user",
+      status: "sent",
+      recipientIds: ["peer-1"], // recipient eligibility fixed at message creation
+      deliveredTo: ["peer-1"],
+      readBy: ["peer-1"],
+    };
+
+    render(
+      <ChatPanel
+        messages={[pastMsg]}
+        currentUserId={currentUserId}
+        roomMembers={[
+          { id: currentUserId, displayName: "Self" },
+          { id: "peer-1", displayName: "Peer 1" },
+          { id: "peer-new", displayName: "New Peer Joined Later" }, // joined after message was sent
+        ]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    // Remains double blue tick because peer-1 was the only eligible recipient when sent
+    const readTick = screen.getByTestId("tick-read-msg-past-1");
+    expect(readTick).toBeInTheDocument();
+  });
+
+  it("Phase 14: re-evaluates and marks visible unread messages on 5s idle interval", () => {
+    vi.useFakeTimers();
+    try {
+      const onMarkMessageReadMock = vi.fn();
+      const peerMsg: ChatMessageItem = {
+        id: "msg-idle-retry-1",
+        clientMsgId: "c-idle-1",
+        roomId: "room-abc",
+        authorId: "peer-1",
+        authorName: "Bob",
+        seq: 99,
+        text: "Idle retry test",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+        deliveredTo: [],
+        readBy: [],
+      };
+
+      render(
+        <ChatPanel
+          messages={[peerMsg]}
+          currentUserId={currentUserId}
+          roomMembers={[
+            { id: currentUserId, displayName: "Self" },
+            { id: "peer-1", displayName: "Peer" },
+          ]}
+          isOpen={true}
+          onToggle={onToggleMock}
+          onSendMessage={onSendMessageMock}
+          onMarkMessageRead={onMarkMessageReadMock}
+          connectionStatus="connected"
+          isRateLimited={false}
+          rateLimitCountdown={0}
+          isRoomEnded={false}
+          isLoadingHistory={false}
+          loadHistoryError={null}
+          hasEarlierMessages={false}
+        />
+      );
+
+      // Initial render marked it
+      expect(onMarkMessageReadMock).toHaveBeenCalledTimes(1);
+      expect(onMarkMessageReadMock).toHaveBeenCalledWith("msg-idle-retry-1", 99);
+
+      // Advance time by 5s idle interval
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+
+      // The 5s interval triggered retry evaluation
+      expect(onMarkMessageReadMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Phase 15: does NOT mark message read when element is clipped outside container bounds", () => {
+    vi.useFakeTimers();
+    try {
+      const onMarkMessageReadMock = vi.fn();
+      const peerMsg: ChatMessageItem = {
+        id: "msg-clipped-1",
+        clientMsgId: "c-clip-1",
+        roomId: "room-abc",
+        authorId: "peer-1",
+        authorName: "Bob",
+        seq: 100,
+        text: "Clipped message",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+        deliveredTo: [],
+        readBy: [],
+      };
+
+      const { container } = render(
+        <ChatPanel
+          messages={[peerMsg]}
+          currentUserId={currentUserId}
+          roomMembers={[
+            { id: currentUserId, displayName: "Self" },
+            { id: "peer-1", displayName: "Peer" },
+          ]}
+          isOpen={true}
+          onToggle={onToggleMock}
+          onSendMessage={onSendMessageMock}
+          onMarkMessageRead={onMarkMessageReadMock}
+          connectionStatus="connected"
+          isRateLimited={false}
+          rateLimitCountdown={0}
+          isRoomEnded={false}
+          isLoadingHistory={false}
+          loadHistoryError={null}
+          hasEarlierMessages={false}
+        />
+      );
+
+      onMarkMessageReadMock.mockClear();
+
+      // Mock scroll container rect to 300x400 at (0, 0)
+      const scrollContainer = container.querySelector(
+        "[data-testid='chat-messages-log']"
+      ) as HTMLElement | null;
+      const msgElement = container.querySelector(
+        "[data-message-id='msg-clipped-1']"
+      ) as HTMLElement | null;
+
+      expect(scrollContainer).not.toBeNull();
+      expect(msgElement).not.toBeNull();
+
+      if (scrollContainer && msgElement) {
+        vi.spyOn(scrollContainer, "getBoundingClientRect").mockReturnValue({
+          top: 0,
+          bottom: 400,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 400,
+          x: 0,
+          y: 0,
+          toJSON: () => {},
+        });
+
+        // Message is positioned vertically outside (top: 500, bottom: 600)
+        vi.spyOn(msgElement, "getBoundingClientRect").mockReturnValue({
+          top: 500,
+          bottom: 600,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 100,
+          x: 0,
+          y: 500,
+          toJSON: () => {},
+        });
+
+        // Trigger 5s interval check
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+
+        // Must NOT mark read because it is clipped out of the viewport
+        expect(onMarkMessageReadMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Phase 15: cleans up idle retry interval upon unmount", () => {
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval");
+    const { unmount } = render(
+      <ChatPanel
+        messages={[]}
+        currentUserId={currentUserId}
+        roomMembers={[{ id: currentUserId, displayName: "Self" }]}
+        isOpen={true}
+        onToggle={onToggleMock}
+        onSendMessage={onSendMessageMock}
+        onMarkMessageRead={vi.fn()}
+        connectionStatus="connected"
+        isRateLimited={false}
+        rateLimitCountdown={0}
+        isRoomEnded={false}
+        isLoadingHistory={false}
+        loadHistoryError={null}
+        hasEarlierMessages={false}
+      />
+    );
+
+    unmount();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+
+  it("Phase 17: does NOT mark message read when only 10% of message is visible (under 50% threshold)", () => {
+    vi.useFakeTimers();
+    try {
+      const onMarkMessageReadMock = vi.fn();
+      const peerMsg: ChatMessageItem = {
+        id: "msg-partial-10",
+        clientMsgId: "c-part-10",
+        roomId: "room-abc",
+        authorId: "peer-1",
+        authorName: "Bob",
+        seq: 101,
+        text: "Partially visible message",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+        deliveredTo: [],
+        readBy: [],
+      };
+
+      const { container } = render(
+        <ChatPanel
+          messages={[peerMsg]}
+          currentUserId={currentUserId}
+          roomMembers={[
+            { id: currentUserId, displayName: "Self" },
+            { id: "peer-1", displayName: "Peer" },
+          ]}
+          isOpen={true}
+          onToggle={onToggleMock}
+          onSendMessage={onSendMessageMock}
+          onMarkMessageRead={onMarkMessageReadMock}
+          connectionStatus="connected"
+          isRateLimited={false}
+          rateLimitCountdown={0}
+          isRoomEnded={false}
+          isLoadingHistory={false}
+          loadHistoryError={null}
+          hasEarlierMessages={false}
+        />
+      );
+
+      onMarkMessageReadMock.mockClear();
+
+      const scrollContainer = container.querySelector(
+        "[data-testid='chat-messages-log']"
+      ) as HTMLElement | null;
+      const msgElement = container.querySelector(
+        "[data-message-id='msg-partial-10']"
+      ) as HTMLElement | null;
+
+      expect(scrollContainer).not.toBeNull();
+      expect(msgElement).not.toBeNull();
+
+      if (scrollContainer && msgElement) {
+        // Container: 300x400 (top: 0, bottom: 400)
+        vi.spyOn(scrollContainer, "getBoundingClientRect").mockReturnValue({
+          top: 0,
+          bottom: 400,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 400,
+          x: 0,
+          y: 0,
+          toJSON: () => {},
+        });
+
+        // Message: height 100px (top: 390, bottom: 490). Only 10px (top: 390 to 400) inside container = 10% visible
+        vi.spyOn(msgElement, "getBoundingClientRect").mockReturnValue({
+          top: 390,
+          bottom: 490,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 100,
+          x: 0,
+          y: 390,
+          toJSON: () => {},
+        });
+
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+
+        expect(onMarkMessageReadMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Phase 17: DOES mark message read when 60% of message is visible (exceeds 50% threshold)", () => {
+    vi.useFakeTimers();
+    try {
+      const onMarkMessageReadMock = vi.fn();
+      const peerMsg: ChatMessageItem = {
+        id: "msg-partial-60",
+        clientMsgId: "c-part-60",
+        roomId: "room-abc",
+        authorId: "peer-1",
+        authorName: "Bob",
+        seq: 102,
+        text: "60% visible message",
+        ts: new Date().toISOString(),
+        kind: "user",
+        status: "sent",
+        deliveredTo: [],
+        readBy: [],
+      };
+
+      const { container } = render(
+        <ChatPanel
+          messages={[peerMsg]}
+          currentUserId={currentUserId}
+          roomMembers={[
+            { id: currentUserId, displayName: "Self" },
+            { id: "peer-1", displayName: "Peer" },
+          ]}
+          isOpen={true}
+          onToggle={onToggleMock}
+          onSendMessage={onSendMessageMock}
+          onMarkMessageRead={onMarkMessageReadMock}
+          connectionStatus="connected"
+          isRateLimited={false}
+          rateLimitCountdown={0}
+          isRoomEnded={false}
+          isLoadingHistory={false}
+          loadHistoryError={null}
+          hasEarlierMessages={false}
+        />
+      );
+
+      onMarkMessageReadMock.mockClear();
+
+      const scrollContainer = container.querySelector(
+        "[data-testid='chat-messages-log']"
+      ) as HTMLElement | null;
+      const msgElement = container.querySelector(
+        "[data-message-id='msg-partial-60']"
+      ) as HTMLElement | null;
+
+      expect(scrollContainer).not.toBeNull();
+      expect(msgElement).not.toBeNull();
+
+      if (scrollContainer && msgElement) {
+        // Container: 300x400 (top: 0, bottom: 400)
+        vi.spyOn(scrollContainer, "getBoundingClientRect").mockReturnValue({
+          top: 0,
+          bottom: 400,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 400,
+          x: 0,
+          y: 0,
+          toJSON: () => {},
+        });
+
+        // Message: height 100px (top: 340, bottom: 440). 60px (top: 340 to 400) inside container = 60% visible
+        vi.spyOn(msgElement, "getBoundingClientRect").mockReturnValue({
+          top: 340,
+          bottom: 440,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 100,
+          x: 0,
+          y: 340,
+          toJSON: () => {},
+        });
+
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+
+        expect(onMarkMessageReadMock).toHaveBeenCalledWith("msg-partial-60", 102);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

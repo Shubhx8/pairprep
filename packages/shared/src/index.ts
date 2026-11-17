@@ -292,6 +292,10 @@ export const MessageDtoSchema = z.object({
   ts: z.string(),
   kind: z.enum(["user", "system"]),
   opId: z.string().optional(),
+  recipientIds: z.array(z.string()).optional(),
+  excludedRecipientIds: z.array(z.string()).optional(),
+  deliveredTo: z.array(z.string()).optional(),
+  readBy: z.array(z.string()).optional(),
 });
 
 export type MessageDto = z.infer<typeof MessageDtoSchema>;
@@ -383,6 +387,7 @@ export type UpdateMemberRoleRequest = z.infer<typeof UpdateMemberRoleRequestSche
 export const RoomMemberDetailDtoSchema = z
   .object({
     id: z.string(), // membership document _id
+    memberId: z.string().optional(),
     displayName: z.string(),
     role: UserRoleSchema,
     isGuest: z.boolean(),
@@ -565,6 +570,7 @@ export function toRoomMemberDto(
   member: {
     _id?: unknown;
     id?: string;
+    memberId?: string;
     displayName: string;
     role: "owner" | "interviewer" | "candidate" | "editor" | "viewer";
     isGuest: boolean;
@@ -584,6 +590,10 @@ export function toRoomMemberDto(
         ? member.joinedAt
         : member.joinedAt.toISOString(),
   };
+
+  if (member.memberId) {
+    dto["memberId"] = String(member.memberId);
+  }
 
   if (member.lastSeenAt) {
     dto["lastSeenAt"] =
@@ -611,6 +621,10 @@ export function toMessageDto(msg: {
   ts: string | Date;
   kind?: "user" | "system";
   opId?: string;
+  recipientIds?: string[];
+  excludedRecipientIds?: string[];
+  deliveredTo?: string[];
+  readBy?: string[];
 }): MessageDto {
   const messageId = msg.id ? String(msg.id) : String(msg._id ?? "");
   const dto: Record<string, unknown> = {
@@ -626,6 +640,11 @@ export function toMessageDto(msg: {
   if (msg.seq !== undefined) dto["seq"] = msg.seq;
   if (msg.clientMsgId !== undefined) dto["clientMsgId"] = msg.clientMsgId;
   if (msg.opId !== undefined) dto["opId"] = msg.opId;
+  if (Array.isArray(msg.recipientIds)) dto["recipientIds"] = msg.recipientIds.map(String);
+  if (Array.isArray(msg.excludedRecipientIds))
+    dto["excludedRecipientIds"] = msg.excludedRecipientIds.map(String);
+  if (Array.isArray(msg.deliveredTo)) dto["deliveredTo"] = msg.deliveredTo.map(String);
+  if (Array.isArray(msg.readBy)) dto["readBy"] = msg.readBy.map(String);
 
   return MessageDtoSchema.parse(dto);
 }

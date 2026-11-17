@@ -5,6 +5,8 @@ import type {
   UserRole,
   EventAck,
   ChatSendAckData,
+  ChatDeliveredAckData,
+  ChatReadAckData,
   ChatHistoryResponse,
   PresenceSnapshotPayload,
   PresenceStatusPayload,
@@ -30,6 +32,10 @@ export interface ChatMessageItem {
   kind: "user" | "system";
   status: "sending" | "sent" | "failed";
   opId?: string;
+  recipientIds?: string[];
+  excludedRecipientIds?: string[];
+  deliveredTo?: string[];
+  readBy?: string[];
 }
 
 export type SocketConnectionStatus =
@@ -47,6 +53,8 @@ export interface UseRoomSocketOptions {
   onMembersUpdated?: (members: RoomMemberDetailDto[]) => void;
   onMemberJoined?: (member: RoomMemberJoinedPayload["member"]) => void;
   onMemberLeft?: (memberId: string, reason?: string) => void;
+  onPresenceSnapshot?: (payload: PresenceSnapshotPayload) => void;
+  onPresenceStatus?: (payload: PresenceStatusPayload) => void;
   syncProvider?: { disconnect: () => void; destroy: () => void } | null;
   // Optional test override for custom socket URL/factory
   serverUrl?: string;
@@ -64,6 +72,8 @@ export interface UseRoomSocketReturn {
   hasEarlierMessages: boolean;
   sendMessage: (text: string) => Promise<string | null>; // returns clientMsgId
   retryMessage: (clientMsgId: string) => Promise<void>;
+  markMessageDelivered: (messageId: string, seq?: number) => void;
+  markMessageRead: (messageId: string, seq?: number) => void;
   refetchHistory: () => Promise<void>;
   socketRef: React.MutableRefObject<Socket | null>;
 }
@@ -88,6 +98,8 @@ export function useRoomSocket({
   onMembersUpdated,
   onMemberJoined,
   onMemberLeft,
+  onPresenceSnapshot,
+  onPresenceStatus,
   syncProvider,
   serverUrl,
 }: UseRoomSocketOptions): UseRoomSocketReturn {
@@ -109,6 +121,18 @@ export function useRoomSocket({
   const liveBufferRef = useRef<ChatMessageItem[]>([]);
   const isCatchingUpRef = useRef(false);
   const deliberatelyClosedRef = useRef(false);
+  const currentMemberRef = useRef(currentMember);
+  currentMemberRef.current = currentMember;
+  const currentMemberId = currentMember?.id;
+  const inFlightDeliveredIdsRef = useRef<Set<string>>(new Set());
+  const confirmedDeliveredIdsRef = useRef<Set<string>>(new Set());
+  const inFlightReadIdsRef = useRef<Set<string>>(new Set());
+  const confirmedReadIdsRef = useRef<Set<string>>(new Set());
+  const messagesRef = useRef<ChatMessageItem[]>(messages);
+  messagesRef.current = messages;
+  const acknowledgeUndeliveredMessagesRef = useRef<(items?: ChatMessageItem[]) => void>(
+    () => {}
+  );
 
   // Callbacks ref to prevent stale closures
   const callbacksRef = useRef({
@@ -119,6 +143,8 @@ export function useRoomSocket({
     onMembersUpdated,
     onMemberJoined,
     onMemberLeft,
+    onPresenceSnapshot,
+    onPresenceStatus,
     syncProvider,
   });
   callbacksRef.current = {
@@ -129,6 +155,8 @@ export function useRoomSocket({
     onMembersUpdated,
     onMemberJoined,
     onMemberLeft,
+    onPresenceSnapshot,
+    onPresenceStatus,
     syncProvider,
   };
 
@@ -189,6 +217,10 @@ export function useRoomSocket({
           kind: m.kind,
           status: "sent" as const,
           opId: m.opId,
+          recipientIds: m.recipientIds || [],
+          excludedRecipientIds: m.excludedRecipientIds || [],
+          deliveredTo: m.deliveredTo || [],
+          readBy: m.readBy || [],
         }));
         return historyItems;
       } catch (err: unknown) {
@@ -238,9 +270,10 @@ export function useRoomSocket({
         }>(`/api/v1/rooms/${targetSlug}`);
 
         // A. Check if current member was removed while offline
-        if (!roomRes.currentMember && currentMember) {
+        const curMember = currentMemberRef.current;
+        if (!roomRes.currentMember && curMember) {
           teardownOnTerminalEvent();
-          callbacksRef.current.onMemberRemoved?.(currentMember.id);
+          callbacksRef.current.onMemberRemoved?.(curMember.id);
           return;
         }
 
@@ -253,8 +286,8 @@ export function useRoomSocket({
         // C. Check if role changed while offline
         if (
           roomRes.currentMember &&
-          currentMember &&
-          roomRes.currentMember.role !== currentMember.role
+          curMember &&
+          roomRes.currentMember.role !== curMember.role
         ) {
           callbacksRef.current.onRoleChanged?.(roomRes.currentMember.role);
         }
@@ -336,14 +369,15 @@ export function useRoomSocket({
         liveBufferRef.current = [];
       }
     },
-    [currentMember, fetchChatHistory, teardownOnTerminalEvent]
+    [fetchChatHistory, teardownOnTerminalEvent]
   );
 
   // Send message with optimistic preview, 8s ack timeout, and echo-before-ack deduplication
   const sendMessage = useCallback(
     async (text: string): Promise<string | null> => {
       const socket = socketRef.current;
-      if (!socket || !roomId || !currentMember || isRateLimited || isRoomEnded) {
+      const curMember = currentMemberRef.current;
+      if (!socket || !roomId || !curMember || isRateLimited || isRoomEnded) {
         return null;
       }
 
@@ -352,8 +386,8 @@ export function useRoomSocket({
         id: clientMsgId,
         clientMsgId,
         roomId,
-        authorId: currentMember.id,
-        authorName: currentMember.displayName,
+        authorId: curMember.id,
+        authorName: curMember.displayName,
         text: text.trim(),
         ts: new Date().toISOString(),
         kind: "user",
@@ -425,7 +459,7 @@ export function useRoomSocket({
 
       return clientMsgId;
     },
-    [roomId, currentMember, isRateLimited, isRoomEnded, triggerRateLimitCountdown]
+    [roomId, isRateLimited, isRoomEnded, triggerRateLimitCountdown]
   );
 
   // Retry sending a previously failed message with the exact same clientMsgId
@@ -500,9 +534,137 @@ export function useRoomSocket({
     [messages, isRateLimited, triggerRateLimitCountdown]
   );
 
+  // Acknowledge receipt/delivery of a message with server confirmation & retry recovery (Phase 1 & 2)
+  const markMessageDelivered = useCallback(
+    (messageId: string, seq?: number) => {
+      const socket = socketRef.current;
+      if (!socket?.connected || !roomId || !messageId) return;
+
+      // Skip if already server-confirmed or currently in-flight
+      if (
+        confirmedDeliveredIdsRef.current.has(messageId) ||
+        inFlightDeliveredIdsRef.current.has(messageId)
+      ) {
+        return;
+      }
+
+      inFlightDeliveredIdsRef.current.add(messageId);
+
+      // Bounded ack timeout (8s) to release in-flight lock on network silence
+      const timer = setTimeout(() => {
+        inFlightDeliveredIdsRef.current.delete(messageId);
+      }, 8000);
+
+      socket.emit(
+        "chat:delivered",
+        {
+          roomId,
+          messageId,
+          seq,
+        },
+        (ack: EventAck<ChatDeliveredAckData>) => {
+          clearTimeout(timer);
+          inFlightDeliveredIdsRef.current.delete(messageId);
+          if (ack && ack.ok) {
+            confirmedDeliveredIdsRef.current.add(messageId);
+          }
+        }
+      );
+    },
+    [roomId]
+  );
+
+  // Acknowledge view/read of a message with server confirmation & retry recovery (Phase 1 & 2)
+  const markMessageRead = useCallback(
+    (messageId: string, seq?: number) => {
+      const socket = socketRef.current;
+      if (!socket?.connected || !roomId || !messageId) return;
+
+      if (
+        confirmedReadIdsRef.current.has(messageId) ||
+        inFlightReadIdsRef.current.has(messageId)
+      ) {
+        return;
+      }
+
+      inFlightReadIdsRef.current.add(messageId);
+
+      const timer = setTimeout(() => {
+        inFlightReadIdsRef.current.delete(messageId);
+      }, 8000);
+
+      socket.emit(
+        "chat:read",
+        {
+          roomId,
+          messageId,
+          seq,
+        },
+        (ack: EventAck<ChatReadAckData>) => {
+          clearTimeout(timer);
+          inFlightReadIdsRef.current.delete(messageId);
+          if (ack && ack.ok) {
+            confirmedReadIdsRef.current.add(messageId);
+            confirmedDeliveredIdsRef.current.add(messageId);
+          }
+        }
+      );
+    },
+    [roomId]
+  );
+
+  // Acknowledge delivery for historical/unacknowledged peer messages (Phase 1.2, 2.3 & Phase 4)
+  const acknowledgeUndeliveredMessages = useCallback(
+    (items?: ChatMessageItem[]) => {
+      const socket = socketRef.current;
+      if (!socket?.connected || !roomId) return;
+      const curMember = currentMemberRef.current;
+      if (!curMember) return;
+      const myId = (curMember as { memberId?: string }).memberId || curMember.id;
+
+      const msgsToCheck = items ?? messagesRef.current;
+      msgsToCheck.forEach((m) => {
+        if (m.kind !== "user") return;
+        const isOwn = m.authorId === myId || m.authorId === curMember.id;
+        if (isOwn) return;
+
+        // Skip if excluded
+        if (
+          m.excludedRecipientIds &&
+          (m.excludedRecipientIds.includes(myId) ||
+            m.excludedRecipientIds.includes(curMember.id))
+        ) {
+          return;
+        }
+
+        if (
+          m.recipientIds &&
+          m.recipientIds.length > 0 &&
+          !m.recipientIds.includes(myId) &&
+          !m.recipientIds.includes(curMember.id)
+        ) {
+          return;
+        }
+
+        const alreadyDelivered =
+          (m.deliveredTo || []).includes(myId) ||
+          (m.deliveredTo || []).includes(curMember.id) ||
+          (m.readBy || []).includes(myId) ||
+          (m.readBy || []).includes(curMember.id) ||
+          confirmedDeliveredIdsRef.current.has(m.id);
+
+        if (!alreadyDelivered && !inFlightDeliveredIdsRef.current.has(m.id)) {
+          markMessageDelivered(m.id, m.seq);
+        }
+      });
+    },
+    [roomId, markMessageDelivered]
+  );
+  acknowledgeUndeliveredMessagesRef.current = acknowledgeUndeliveredMessages;
+
   // Main socket lifecycle effect: lazy load socket.io-client inside room chunk only
   useEffect(() => {
-    if (!enabled || !roomId || !slug || !currentMember) {
+    if (!enabled || !roomId || !slug || !currentMemberId) {
       setConnectionStatus("idle");
       return;
     }
@@ -513,7 +675,9 @@ export function useRoomSocket({
     // Load initial chat history on mount
     fetchChatHistory(slug).then((initialHistory) => {
       if (!isCancelled) {
+        messagesRef.current = initialHistory;
         setMessages(initialHistory);
+        acknowledgeUndeliveredMessagesRef.current(initialHistory);
       }
     });
 
@@ -551,6 +715,8 @@ export function useRoomSocket({
                 setConnectionStatus("fatal_error");
                 socket?.disconnect();
               }
+            } else {
+              acknowledgeUndeliveredMessagesRef.current(messagesRef.current);
             }
           });
 
@@ -565,12 +731,17 @@ export function useRoomSocket({
 
         const onDisconnect = (_reason: string) => {
           if (isCancelled) return;
+          // Clear in-flight tracking so interrupted receipts can be retried on reconnect (Phase 2.2)
+          inFlightDeliveredIdsRef.current.clear();
+          inFlightReadIdsRef.current.clear();
           if (deliberatelyClosedRef.current) {
             setConnectionStatus("disconnected");
+            setOnlineMemberIds(new Set());
             return;
           }
           isReconnectingRef.current = true;
           setConnectionStatus("disconnected");
+          setOnlineMemberIds(new Set());
         };
 
         const onConnectError = (err: Error & { data?: unknown }) => {
@@ -611,7 +782,21 @@ export function useRoomSocket({
             kind: msg.kind,
             status: "sent",
             opId: msg.opId,
+            recipientIds: msg.recipientIds || [],
+            excludedRecipientIds: msg.excludedRecipientIds || [],
+            deliveredTo: msg.deliveredTo || [],
+            readBy: msg.readBy || [],
           };
+
+          // Automatically acknowledge delivery for messages sent by others via reliable protocol (Phase 1 & 2)
+          const curMember = currentMemberRef.current;
+          const isOwn =
+            curMember &&
+            (msg.authorId === curMember.id ||
+              (curMember as { memberId?: string }).memberId === msg.authorId);
+          if (!isOwn && socket?.connected) {
+            markMessageDelivered(msg.id, msg.seq);
+          }
 
           // If catch-up REST refresh is running, buffer live event
           if (isCatchingUpRef.current) {
@@ -646,25 +831,80 @@ export function useRoomSocket({
           });
         };
 
+        const onChatDelivered = (payload: {
+          roomId: string;
+          messageId: string;
+          seq?: number;
+          memberId: string;
+        }) => {
+          if (payload.roomId !== roomId) return;
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id === payload.messageId || (m.seq && m.seq === payload.seq)) {
+                const currentDelivered = new Set(m.deliveredTo || []);
+                currentDelivered.add(payload.memberId);
+                return { ...m, deliveredTo: Array.from(currentDelivered) };
+              }
+              return m;
+            })
+          );
+        };
+
+        const onChatRead = (payload: {
+          roomId: string;
+          messageId: string;
+          seq?: number;
+          memberId: string;
+        }) => {
+          if (payload.roomId !== roomId) return;
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id === payload.messageId || (m.seq && m.seq === payload.seq)) {
+                const currentRead = new Set(m.readBy || []);
+                currentRead.add(payload.memberId);
+                const currentDelivered = new Set(m.deliveredTo || []);
+                currentDelivered.add(payload.memberId);
+                return {
+                  ...m,
+                  readBy: Array.from(currentRead),
+                  deliveredTo: Array.from(currentDelivered),
+                };
+              }
+              return m;
+            })
+          );
+        };
+
         const onPresenceSnapshot = (payload: PresenceSnapshotPayload) => {
           if (payload.roomId !== roomId) return;
-          const onlineIds = new Set(
-            payload.members.filter((m) => m.isOnline).map((m) => m.memberId)
-          );
+          const onlineIds = new Set<string>();
+          for (const m of payload.members) {
+            if (m.isOnline) {
+              if (m.memberId) onlineIds.add(m.memberId);
+              if ((m as { memberDocId?: string }).memberDocId) {
+                onlineIds.add((m as { memberDocId?: string }).memberDocId!);
+              }
+            }
+          }
           setOnlineMemberIds(onlineIds);
+          callbacksRef.current.onPresenceSnapshot?.(payload);
         };
 
         const onPresenceStatus = (payload: PresenceStatusPayload) => {
           if (payload.roomId !== roomId) return;
           setOnlineMemberIds((prev) => {
             const next = new Set(prev);
+            const docId = (payload as { memberDocId?: string }).memberDocId;
             if (payload.isOnline) {
-              next.add(payload.memberId);
+              if (payload.memberId) next.add(payload.memberId);
+              if (docId) next.add(docId);
             } else {
-              next.delete(payload.memberId);
+              if (payload.memberId) next.delete(payload.memberId);
+              if (docId) next.delete(docId);
             }
             return next;
           });
+          callbacksRef.current.onPresenceStatus?.(payload);
         };
 
         const onRoomMemberJoined = (payload: RoomMemberJoinedPayload) => {
@@ -676,7 +916,6 @@ export function useRoomSocket({
               ? payload.member.memberId.trim()
               : "";
           if (!memberId) return;
-
           setOnlineMemberIds((prev) => new Set(prev).add(memberId));
           callbacksRef.current.onMemberJoined?.(payload.member);
         };
@@ -693,7 +932,10 @@ export function useRoomSocket({
 
           // Check if current member was removed
           if (payload.reason === "removed") {
-            const isMe = currentMember && payload.memberId === currentMember.id;
+            const isMe =
+              currentMember &&
+              (payload.memberId === currentMember.id ||
+                (currentMember as { memberId?: string }).memberId === payload.memberId);
             if (isMe) {
               teardownOnTerminalEvent();
               callbacksRef.current.onMemberRemoved?.(payload.memberId);
@@ -737,6 +979,8 @@ export function useRoomSocket({
         socket.on("disconnect", onDisconnect);
         socket.on("connect_error", onConnectError);
         socket.on("chat:message", onChatMessage);
+        socket.on("chat:delivered", onChatDelivered);
+        socket.on("chat:read", onChatRead);
         socket.on("presence:snapshot", onPresenceSnapshot);
         socket.on("presence:status", onPresenceStatus);
         socket.on("room:member_joined", onRoomMemberJoined);
@@ -752,6 +996,8 @@ export function useRoomSocket({
           socket?.off("disconnect", onDisconnect);
           socket?.off("connect_error", onConnectError);
           socket?.off("chat:message", onChatMessage);
+          socket?.off("chat:delivered", onChatDelivered);
+          socket?.off("chat:read", onChatRead);
           socket?.off("presence:snapshot", onPresenceSnapshot);
           socket?.off("presence:status", onPresenceStatus);
           socket?.off("room:member_joined", onRoomMemberJoined);
@@ -799,7 +1045,7 @@ export function useRoomSocket({
     enabled,
     roomId,
     slug,
-    currentMember,
+    currentMemberId,
     serverUrl,
     fetchChatHistory,
     reconcileOnReconnect,
@@ -819,6 +1065,8 @@ export function useRoomSocket({
     hasEarlierMessages,
     sendMessage,
     retryMessage,
+    markMessageDelivered,
+    markMessageRead,
     refetchHistory,
     socketRef,
   };

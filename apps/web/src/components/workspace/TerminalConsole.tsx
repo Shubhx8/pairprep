@@ -7,7 +7,6 @@ import {
   Minimize2,
   CheckCircle2,
   Loader2,
-  Check,
 } from "lucide-react";
 import { Button } from "../ui/Button.js";
 import { cn } from "../../lib/utils.js";
@@ -36,12 +35,20 @@ export function TerminalConsole({
   const [activeTab, setActiveTab] = useState<TabType>("console");
   const [isExpanded, setIsExpanded] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [lastExecutionTime, setLastExecutionTime] = useState<number | null>(null);
   const [logs, setLogs] = useState<ExecutionLog[]>([
     {
       id: "init-1",
       type: "info",
-      text: "$ Ready for code execution. Output will appear here.",
+      text: "$ Terminal & execution console initialized (Preview). Code execution runner is not configured.",
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    },
+    {
+      id: "init-2",
+      type: "info",
+      text: "ℹ Collaborative code synchronization (Yjs CRDT) is active.",
       timestamp: new Date().toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
@@ -54,21 +61,19 @@ export function TerminalConsole({
       {
         id: `clear-${Date.now()}`,
         type: "info",
-        text: "$ Console cleared. Ready for execution.",
+        text: "$ Console cleared. Code runner is in preview mode.",
         timestamp: new Date().toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
         }),
       },
     ]);
-    setLastExecutionTime(null);
   }, []);
 
   const handleRun = useCallback(() => {
     if (isRunning) return;
     setIsRunning(true);
 
-    const startTs = performance.now();
     const timeStr = new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -82,6 +87,7 @@ export function TerminalConsole({
           ? "node main.js"
           : "g++ -O3 main.cpp && ./a.out";
 
+    // Immediate honest feedback: no fake container startup, no canned Two Sum
     setLogs((prev) => [
       ...prev,
       {
@@ -93,50 +99,18 @@ export function TerminalConsole({
       {
         id: `run-${Date.now()}-2`,
         type: "info",
-        text: "⚡ Spawning disposable sandbox container (128 MB RAM, 0.5 CPU)...",
+        text: "ℹ Code execution runner is not configured in this environment.",
+        timestamp: timeStr,
+      },
+      {
+        id: `run-${Date.now()}-3`,
+        type: "info",
+        text: "ℹ Collaborative editing, language syntax highlighting, and real-time synchronization remain active.",
         timestamp: timeStr,
       },
     ]);
 
-    setTimeout(() => {
-      const elapsed = Math.round(performance.now() - startTs + 28);
-      setLastExecutionTime(elapsed);
-      setIsRunning(false);
-
-      setLogs((prev) => [
-        ...prev,
-        {
-          id: `out-${Date.now()}-1`,
-          type: "stdout",
-          text: `>>> Running test suite against shared collaborative code...`,
-          timestamp: timeStr,
-        },
-        {
-          id: `out-${Date.now()}-2`,
-          type: "stdout",
-          text: `[Test 1] Input: nums = [2, 7, 11, 15], target = 9  -> Result: [0, 1]  (Passed ✓)`,
-          timestamp: timeStr,
-        },
-        {
-          id: `out-${Date.now()}-3`,
-          type: "stdout",
-          text: `[Test 2] Input: nums = [3, 2, 4], target = 6        -> Result: [1, 2]  (Passed ✓)`,
-          timestamp: timeStr,
-        },
-        {
-          id: `out-${Date.now()}-4`,
-          type: "success",
-          text: `✓ All test assertions passed successfully.`,
-          timestamp: timeStr,
-        },
-        {
-          id: `out-${Date.now()}-5`,
-          type: "info",
-          text: `Process finished with exit code 0 | Wall time: ${elapsed}ms | Memory: 14.8 MB`,
-          timestamp: timeStr,
-        },
-      ]);
-    }, 450);
+    setIsRunning(false);
   }, [isRunning, language]);
 
   return (
@@ -209,7 +183,7 @@ export function TerminalConsole({
                   : "text-text-subtle hover:text-text-primary hover:bg-surface/50"
               )}
             >
-              Sandbox Stats
+              Environment
             </button>
           </div>
         </div>
@@ -217,23 +191,9 @@ export function TerminalConsole({
         {/* Right: Actions (Run, Clear, Expand) */}
         <div className="flex items-center gap-1.5 shrink-0">
           {/* Execution Status Badge */}
-          <div className="hidden lg:flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono border border-border-subtle bg-canvas/40 text-text-subtle">
-            {isRunning ? (
-              <>
-                <Loader2 className="h-3 w-3 animate-spin text-warning" />
-                <span className="text-warning">Running...</span>
-              </>
-            ) : lastExecutionTime !== null ? (
-              <>
-                <Check className="h-3 w-3 text-success" />
-                <span className="text-success">{lastExecutionTime}ms</span>
-              </>
-            ) : (
-              <>
-                <span className="h-1.5 w-1.5 rounded-full bg-text-subtle/50" />
-                <span>Idle</span>
-              </>
-            )}
+          <div className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border border-border-subtle bg-canvas/40 text-text-subtle">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary/60" />
+            <span>Runner (Preview)</span>
           </div>
 
           {/* Run Code Button */}
@@ -334,30 +294,30 @@ export function TerminalConsole({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-1 text-xs">
             <div className="bg-surface/80 border border-border-subtle rounded-lg p-2.5">
               <span className="text-text-subtle block text-[11px] mb-1">
-                Memory Limit
-              </span>
-              <span className="font-semibold text-text-primary text-xs">128 MB RAM</span>
-            </div>
-            <div className="bg-surface/80 border border-border-subtle rounded-lg p-2.5">
-              <span className="text-text-subtle block text-[11px] mb-1">
-                CPU Allocation
+                Execution Runner
               </span>
               <span className="font-semibold text-text-primary text-xs">
-                0.5 vCPU Core
+                Preview Mode
               </span>
             </div>
             <div className="bg-surface/80 border border-border-subtle rounded-lg p-2.5">
-              <span className="text-text-subtle block text-[11px] mb-1">
-                Wall Clock Timeout
-              </span>
-              <span className="font-semibold text-text-primary text-xs">5.0 Seconds</span>
+              <span className="text-text-subtle block text-[11px] mb-1">CRDT Sync</span>
+              <span className="font-semibold text-success text-xs">Active (Yjs)</span>
             </div>
             <div className="bg-surface/80 border border-border-subtle rounded-lg p-2.5">
               <span className="text-text-subtle block text-[11px] mb-1">
-                Network Security
+                Real-Time Events
               </span>
               <span className="font-semibold text-success text-xs">
-                Isolated (No egress)
+                Active (Socket.IO)
+              </span>
+            </div>
+            <div className="bg-surface/80 border border-border-subtle rounded-lg p-2.5">
+              <span className="text-text-subtle block text-[11px] mb-1">
+                Editor Engine
+              </span>
+              <span className="font-semibold text-text-primary text-xs">
+                Monaco Editor
               </span>
             </div>
           </div>

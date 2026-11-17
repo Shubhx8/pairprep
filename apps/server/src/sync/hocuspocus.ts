@@ -42,6 +42,7 @@ import {
 } from "./persistence.js";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomBanRepo } from "../repos/roomBanRepo.js";
+import { roomKickRepo } from "../repos/roomKickRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { clientMapRepo } from "../repos/clientMapRepo.js";
 import { rootLogger } from "../middleware/logger.js";
@@ -340,6 +341,18 @@ export function createSyncServer(
           if (isBanned) {
             const err = new Error("Forbidden: permanently banned from this room");
             (err as unknown as { reason: string }).reason = "banned";
+            throw err;
+          }
+
+          // Verify principal is not temporarily kicked from the room
+          const isKicked = await roomKickRepo.isKicked(
+            roomId,
+            principal.type,
+            principal.id
+          );
+          if (isKicked) {
+            const err = new Error("Forbidden: temporarily kicked from this room");
+            (err as unknown as { reason: string }).reason = "kicked";
             throw err;
           }
 

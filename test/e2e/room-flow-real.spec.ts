@@ -105,9 +105,10 @@ test.describe("Real-Stack Room Creation & Multi-Context Guest Join", () => {
       await expect(guestPage.getByText("Collaborative Code Editor")).toBeVisible({
         timeout: 10000,
       });
-      await expect(guestPage.getByText(/2\/6/)).toBeVisible({
-        timeout: 10000,
-      });
+      await expect(guestPage.getByTestId("participant-counts")).toContainText(
+        /2\s+members/,
+        { timeout: 10000 }
+      );
     } finally {
       await hostContext.close();
       await guestContext.close();
@@ -186,7 +187,10 @@ test.describe("Real-Stack Room Creation & Multi-Context Guest Join", () => {
       await guestPage.getByRole("button", { name: /Join as Guest/i }).click();
 
       await expect(guestPage.getByTestId("room-header")).toBeVisible({ timeout: 10000 });
-      await expect(guestPage.getByText(/2\/6/)).toBeVisible({ timeout: 10000 });
+      await expect(guestPage.getByTestId("participant-counts")).toContainText(
+        /2\s+members/,
+        { timeout: 10000 }
+      );
 
       // 3. Voluntary Leave: Guest leaves room
       const leaveBtn = guestPage.getByTestId("leave-room-button");
@@ -201,8 +205,11 @@ test.describe("Real-Stack Room Creation & Multi-Context Guest Join", () => {
       // Guest redirected to /dashboard
       await guestPage.waitForURL(/\/dashboard/, { timeout: 10000 });
 
-      // Host sees member count decrement to 1/6
-      await expect(hostPage.getByText(/1\/6/)).toBeVisible({ timeout: 10000 });
+      // Host sees member count decrement to 1 member
+      await expect(hostPage.getByTestId("participant-counts")).toContainText(
+        /1\s+member/,
+        { timeout: 10000 }
+      );
 
       // 4. Voluntary leaver can rejoin
       await guestPage.goto(roomUrl);
@@ -212,7 +219,10 @@ test.describe("Real-Stack Room Creation & Multi-Context Guest Join", () => {
       await guestPage.getByRole("button", { name: /Join as Guest/i }).click();
 
       await expect(guestPage.getByTestId("room-header")).toBeVisible({ timeout: 10000 });
-      await expect(hostPage.getByText(/2\/6/)).toBeVisible({ timeout: 10000 });
+      await expect(hostPage.getByTestId("participant-counts")).toContainText(
+        /2\s+members/,
+        { timeout: 10000 }
+      );
 
       // 5. Host Kicks Guest & Ban Re-entry Enforcement
       // Open members panel on host if not open
@@ -222,15 +232,27 @@ test.describe("Real-Stack Room Creation & Multi-Context Guest Join", () => {
       }
       await expect(membersPanel).toBeVisible({ timeout: 5000 });
 
-      // Find kick button for Guest Charlie Rejoined
-      const kickButton = hostPage.locator('[data-testid^="remove-member-"]').first();
-      await expect(kickButton).toBeVisible({ timeout: 5000 });
-      await kickButton.click();
+      // Find remove/action menu button for Guest Charlie Rejoined
+      const actionButton = hostPage.locator('[data-testid^="member-actions-"]').first();
+      if (await actionButton.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await actionButton.click();
+        const banOption = hostPage.locator('[data-testid^="ban-member-option-"]').first();
+        await expect(banOption).toBeVisible({ timeout: 5000 });
+        await banOption.click();
 
-      // Kick confirmation modal
-      const removeModal = hostPage.getByTestId("remove-member-modal");
-      await expect(removeModal).toBeVisible({ timeout: 5000 });
-      await hostPage.getByTestId("confirm-remove-button").click();
+        // Ban confirmation modal
+        const banModal = hostPage.getByTestId("ban-member-modal");
+        await expect(banModal).toBeVisible({ timeout: 5000 });
+        await hostPage.getByTestId("confirm-ban-button").click();
+      } else {
+        await hostPage
+          .locator('[data-testid^="remove-member-"]')
+          .first()
+          .click({ force: true });
+        const removeModal = hostPage.getByTestId("remove-member-modal");
+        await expect(removeModal).toBeVisible({ timeout: 5000 });
+        await hostPage.getByTestId("confirm-remove-button").click();
+      }
 
       // Guest immediately receives removed notice and lands on removed-screen
       await expect(guestPage.getByTestId("removed-screen")).toBeVisible({

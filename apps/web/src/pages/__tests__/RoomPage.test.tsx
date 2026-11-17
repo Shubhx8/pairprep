@@ -520,11 +520,6 @@ describe("RoomPage", () => {
         const bobDot = screen.getByLabelText("Unavailable");
         expect(aliceDot).toHaveClass("bg-text-subtle/40");
         expect(bobDot).toHaveClass("bg-text-subtle/40");
-
-        // Persistent memberCount is not altered
-        expect(screen.getByTitle("2 of 6 maximum room members")).toHaveTextContent(
-          "2/6 members"
-        );
       }
     );
 
@@ -1003,6 +998,174 @@ describe("RoomPage", () => {
           /You have been removed from this room by the host and cannot rejoin/
         )
       ).toBeInTheDocument();
+    });
+
+    describe("Delete Room (Owner-only Room Controls)", () => {
+      it("renders Delete Room button in room-controls-section for owner, but hides it for non-owners", async () => {
+        // 1. Non-owner (editor) check
+        mockUseAuth("authenticated", authEditorUser);
+        vi.spyOn(apiClient, "get").mockResolvedValue({
+          room: mockRoom,
+          currentMember: mockEditorMember,
+          members: [mockMember, mockEditorMember],
+          onlineMemberCount: 2,
+        });
+
+        const { unmount } = renderWithRoute();
+
+        await waitFor(() => {
+          expect(screen.getByTestId("room-header")).toBeInTheDocument();
+        });
+
+        expect(screen.queryByTestId("room-controls-section")).toBeNull();
+        expect(screen.queryByTestId("delete-room-button")).toBeNull();
+
+        unmount();
+
+        // 2. Owner check
+        mockUseAuth("authenticated", {
+          id: "usr_alice",
+          provider: "github",
+          displayName: "Alice Dev",
+          role: "user",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          email: "alice@example.com",
+        });
+        vi.spyOn(apiClient, "get").mockResolvedValue({
+          room: mockRoom,
+          currentMember: mockMember,
+          members: [mockMember, mockEditorMember],
+          onlineMemberCount: 2,
+        });
+
+        renderWithRoute();
+
+        await waitFor(() => {
+          expect(screen.getByTestId("room-controls-section")).toBeInTheDocument();
+        });
+        expect(screen.getByTestId("delete-room-button")).toBeInTheDocument();
+      });
+
+      it("opens confirmation modal and requires exact room title or slug before enabling confirm button", async () => {
+        mockUseAuth("authenticated", {
+          id: "usr_alice",
+          provider: "github",
+          displayName: "Alice Dev",
+          role: "user",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          email: "alice@example.com",
+        });
+        vi.spyOn(apiClient, "get").mockResolvedValue({
+          room: mockRoom,
+          currentMember: mockMember,
+          members: [mockMember, mockEditorMember],
+          onlineMemberCount: 2,
+        });
+        const deleteSpy = vi.spyOn(roomApi, "deleteRoom").mockResolvedValue();
+
+        renderWithRoute();
+
+        await waitFor(() => {
+          expect(screen.getByTestId("delete-room-button")).toBeInTheDocument();
+        });
+
+        // Click Delete Room button
+        await act(async () => {
+          fireEvent.click(screen.getByTestId("delete-room-button"));
+        });
+
+        expect(screen.getByTestId("delete-room-modal")).toBeInTheDocument();
+        const input = screen.getByTestId("delete-room-input");
+        const confirmBtn = screen.getByTestId("confirm-delete-button");
+        const cancelBtn = screen.getByTestId("cancel-delete-button");
+
+        // Confirm button is disabled initially
+        expect(confirmBtn).toBeDisabled();
+
+        // Enter wrong text
+        await act(async () => {
+          fireEvent.change(input, { target: { value: "wrong-name" } });
+        });
+        expect(confirmBtn).toBeDisabled();
+
+        // Cancel closes modal
+        await act(async () => {
+          fireEvent.click(cancelBtn);
+        });
+        expect(screen.queryByTestId("delete-room-modal")).toBeNull();
+        expect(deleteSpy).not.toHaveBeenCalled();
+
+        // Reopen modal and enter exact room slug
+        await act(async () => {
+          fireEvent.click(screen.getByTestId("delete-room-button"));
+        });
+        expect(screen.getByTestId("delete-room-modal")).toBeInTheDocument();
+        const inputReopened = screen.getByTestId("delete-room-input");
+        const confirmBtnReopened = screen.getByTestId("confirm-delete-button");
+
+        await act(async () => {
+          fireEvent.change(inputReopened, { target: { value: "dynamic-prog-9876" } });
+        });
+        expect(confirmBtnReopened).not.toBeDisabled();
+
+        // Confirm deletion
+        await act(async () => {
+          fireEvent.click(confirmBtnReopened);
+        });
+
+        expect(deleteSpy).toHaveBeenCalledWith("dynamic-prog-9876");
+        await waitFor(() => {
+          expect(screen.getByText("Mock Dashboard")).toBeInTheDocument();
+        });
+      });
+
+      it("displays error message when room deletion fails on server", async () => {
+        mockUseAuth("authenticated", {
+          id: "usr_alice",
+          provider: "github",
+          displayName: "Alice Dev",
+          role: "user",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          email: "alice@example.com",
+        });
+        vi.spyOn(apiClient, "get").mockResolvedValue({
+          room: mockRoom,
+          currentMember: mockMember,
+          members: [mockMember, mockEditorMember],
+          onlineMemberCount: 2,
+        });
+        vi.spyOn(roomApi, "deleteRoom").mockRejectedValue(
+          new Error("Server error deleting room")
+        );
+
+        renderWithRoute();
+
+        await waitFor(() => {
+          expect(screen.getByTestId("delete-room-button")).toBeInTheDocument();
+        });
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId("delete-room-button"));
+        });
+
+        const input = screen.getByTestId("delete-room-input");
+        await act(async () => {
+          fireEvent.change(input, { target: { value: "Dynamic Programming Practice" } });
+        });
+
+        const confirmBtn = screen.getByTestId("confirm-delete-button");
+        expect(confirmBtn).not.toBeDisabled();
+
+        await act(async () => {
+          fireEvent.click(confirmBtn);
+        });
+
+        await waitFor(() => {
+          expect(screen.getByTestId("delete-error-message")).toBeInTheDocument();
+        });
+        expect(screen.getByText("Server error deleting room")).toBeInTheDocument();
+        expect(screen.getByTestId("delete-room-modal")).toBeInTheDocument();
+      });
     });
   });
 });

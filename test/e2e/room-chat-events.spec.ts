@@ -119,14 +119,27 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
     });
   }
 
-  function assertNoFatalBrowserErrors(collector: BrowserErrorCollector) {
-    const fatalConsole = collector.consoleErrors.filter(
-      (e) =>
-        !e.includes("socket.io-client: disconnect") &&
-        !e.includes("WebSocket connection closed") &&
-        !e.includes("favicon.ico") &&
-        !e.includes("net::ERR_CONNECTION_REFUSED")
-    );
+  function assertNoFatalBrowserErrors(
+    collector: BrowserErrorCollector,
+    options: { allowDeletedRoom404?: boolean } = {}
+  ) {
+    const fatalConsole = collector.consoleErrors.filter((e) => {
+      if (
+        e.includes("socket.io-client: disconnect") ||
+        e.includes("WebSocket connection closed") ||
+        e.includes("favicon.ico") ||
+        e.includes("net::ERR_CONNECTION_REFUSED")
+      ) {
+        return false;
+      }
+      if (
+        options.allowDeletedRoom404 &&
+        (e.includes("404 (Not Found)") || e.includes("status of 404"))
+      ) {
+        return false;
+      }
+      return true;
+    });
     expect(collector.pageErrors, "Unhandled browser page errors detected").toHaveLength(
       0
     );
@@ -885,7 +898,7 @@ test.describe("Real Multi-Browser Acceptance: Room Events & Chat (T09 Phase D3)"
       await charlieUser.context.close();
       await charlieUser.seed.cleanup();
     } finally {
-      assertNoFatalBrowserErrors(errCollector);
+      assertNoFatalBrowserErrors(errCollector, { allowDeletedRoom404: true });
       await hostUser.context.close();
       await guestUser.context.close();
       await hostUser.seed.cleanup();

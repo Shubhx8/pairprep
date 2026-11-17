@@ -7,6 +7,7 @@ import { UserModel } from "../models/users.js";
 import { GuestModel } from "../models/guests.js";
 import { syncRegistry } from "../sync/syncRegistry.js";
 import { roomBanRepo } from "../repos/roomBanRepo.js";
+import { roomKickRepo } from "../repos/roomKickRepo.js";
 
 export interface AuthorizeRoomEventOptions {
   principal?: Principal | null;
@@ -129,6 +130,16 @@ export async function authorizeRoomEvent(
       authorized: false,
       code: EventErrorCode.FORBIDDEN,
       message: "Banned from room",
+    };
+  }
+
+  // 4c. Temporary kick restriction verification
+  const isKicked = await roomKickRepo.isKicked(room.id, principal.type, principal.id);
+  if (isKicked) {
+    return {
+      authorized: false,
+      code: EventErrorCode.FORBIDDEN,
+      message: "Temporarily kicked from room",
     };
   }
 

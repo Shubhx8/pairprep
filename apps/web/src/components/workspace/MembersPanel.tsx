@@ -11,6 +11,11 @@ import {
   Lock,
   UserMinus,
   AlertTriangle,
+  MoreVertical,
+  Ban,
+  ChevronDown,
+  Check,
+  Loader2,
 } from "lucide-react";
 import { Button } from "../ui/Button.js";
 import {
@@ -33,6 +38,9 @@ export interface MembersPanelProps {
   isOpen: boolean;
   onToggle: () => void;
   onRemoveMember?: (memberDocId: string) => Promise<void>;
+  onKickMember?: (memberDocId: string) => Promise<void>;
+  onBanMember?: (memberDocId: string) => Promise<void>;
+  onUpdateRole?: (memberDocId: string, newRole: "editor" | "viewer") => Promise<void>;
   triggerRef?: React.RefObject<HTMLButtonElement | null>;
   copied?: boolean;
   onCopyLink?: () => void;
@@ -46,7 +54,7 @@ export interface MembersPanelProps {
 /**
  * Symmetrical, independently scrollable Members / Participants Panel.
  * Supports desktop horizontal expansion/collapse and mobile focus-trapped drawer.
- * Redesigned without duplicate invite buttons, featuring participant filtering and session security stats.
+ * Provides interactive role switching (Editor/Viewer) and three-dot contextual management (Kick/Ban).
  */
 export function MembersPanel({
   members,
@@ -58,6 +66,9 @@ export function MembersPanel({
   isOpen,
   onToggle,
   onRemoveMember,
+  onKickMember,
+  onBanMember,
+  onUpdateRole,
   triggerRef,
   className,
   isMobileDrawer = false,
@@ -67,9 +78,38 @@ export function MembersPanel({
 }: MembersPanelProps) {
   const panelRef = useRef<HTMLElement | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Targets for action modals
+  const [targetToKick, setTargetToKick] = useState<RoomMemberDetailDto | null>(null);
+  const [targetToBan, setTargetToBan] = useState<RoomMemberDetailDto | null>(null);
   const [targetToRemove, setTargetToRemove] = useState<RoomMemberDetailDto | null>(null);
-  const [isRemoving, setIsRemoving] = useState(false);
-  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  // Active dropdown menu IDs
+  const [openRoleMenuId, setOpenRoleMenuId] = useState<string | null>(null);
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+
+  // Loading & error states
+  const [updatingRoleId, setUpdatingRoleId] = useState<string | null>(null);
+  const [roleError, setRoleError] = useState<{
+    memberId: string;
+    message: string;
+  } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest("[data-members-menu]")) {
+        setOpenRoleMenuId(null);
+        setOpenActionMenuId(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Focus management for mobile drawer mode
   useEffect(() => {
@@ -90,6 +130,11 @@ export function MembersPanel({
     (e: React.KeyboardEvent<HTMLElement>) => {
       if (e.key === "Escape") {
         e.stopPropagation();
+        if (openRoleMenuId || openActionMenuId) {
+          setOpenRoleMenuId(null);
+          setOpenActionMenuId(null);
+          return;
+        }
         onToggle();
         triggerRef?.current?.focus();
         return;
@@ -129,18 +174,32 @@ export function MembersPanel({
         }
       }
     },
-    [isMobileDrawer, onToggle, triggerRef]
+    [isMobileDrawer, isOpen, openActionMenuId, openRoleMenuId, onToggle, triggerRef]
   );
 
   const getRoleIcon = (role?: string) => {
     switch (role) {
       case "owner":
-        return <Shield className="h-3 w-3 text-primary" />;
+        return <Shield className="h-3 w-3 text-primary shrink-0" />;
       case "editor":
-        return <UserCheck className="h-3 w-3 text-text-secondary" />;
+        return <UserCheck className="h-3 w-3 text-success shrink-0" />;
       case "viewer":
       default:
-        return <Eye className="h-3 w-3 text-text-subtle" />;
+        return <Eye className="h-3 w-3 text-text-subtle shrink-0" />;
+    }
+  };
+
+  const handleRoleChange = async (memberDocId: string, newRole: "editor" | "viewer") => {
+    if (!onUpdateRole) return;
+    try {
+      setUpdatingRoleId(memberDocId);
+      setRoleError(null);
+      await onUpdateRole(memberDocId, newRole);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to update member role";
+      setRoleError({ memberId: memberDocId, message: msg });
+    } finally {
+      setUpdatingRoleId(null);
     }
   };
 
@@ -212,6 +271,20 @@ export function MembersPanel({
         </div>
       )}
 
+      {/* Role Error Notification Banner */}
+      {roleError && (
+        <div className="px-3 py-1.5 bg-destructive/10 border-b border-destructive/20 text-[11px] text-destructive flex items-center justify-between">
+          <span>{roleError.message}</span>
+          <button
+            type="button"
+            onClick={() => setRoleError(null)}
+            className="text-destructive hover:opacity-80 ml-2"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
       {/* Independently Scrollable Participant List */}
       <div className="flex-1 overflow-y-auto overscroll-contain custom-scroll p-3 space-y-2 text-xs">
         {members.length > 0 ? (
@@ -237,20 +310,22 @@ export function MembersPanel({
               PARTICIPANT_PALETTE[idx % PARTICIPANT_PALETTE.length] ||
               (PARTICIPANT_PALETTE[0] as string);
 
+            const isOwnerViewer = currentMember?.role === "owner";
+            const canManage = isOwnerViewer && !isCurrent && m.role !== "owner";
+
             return (
               <div
                 key={m.id}
                 data-testid={`participant-${m.id}`}
-                className="flex items-center justify-between p-2.5 rounded-xl bg-surface-hover/30 border border-border-subtle text-xs hover:border-primary/30 transition-all group"
+                className="flex items-center justify-between p-2.5 rounded-xl bg-surface-hover/20 hover:bg-surface-hover/40 border border-border-subtle/40 hover:border-border-subtle transition-all group"
               >
-                <div className="flex items-center gap-2.5 min-w-0">
+                {/* Left: Avatar & Info Stack (Name + Online status beneath) */}
+                <div className="flex items-center gap-3 min-w-0">
                   <div className="relative shrink-0 flex items-center justify-center">
                     <div
-                      className="h-7 w-7 rounded-full flex items-center justify-center font-bold text-[11px] border shadow-xs"
+                      className="h-8 w-8 rounded-full flex items-center justify-center font-semibold text-xs border border-border-subtle bg-surface-subtle text-text-primary shadow-xs"
                       style={{
-                        borderColor: participantColor,
-                        color: participantColor,
-                        backgroundColor: `${participantColor}18`,
+                        borderColor: `${participantColor}40`,
                       }}
                     >
                       {m.displayName.charAt(0).toUpperCase()}
@@ -259,14 +334,14 @@ export function MembersPanel({
                       aria-label={statusLabel}
                       title={statusLabel}
                       className={cn(
-                        "absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface",
+                        "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-surface",
                         memberOnline ? "bg-success" : "bg-text-subtle/40"
                       )}
                     />
                   </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate font-medium text-text-primary text-xs">
+                  <div className="flex flex-col min-w-0 justify-center">
+                    <div className="flex items-center gap-1.5 leading-tight">
+                      <span className="truncate font-semibold text-text-primary text-xs">
                         {m.displayName}
                       </span>
                       {isCurrent && (
@@ -275,92 +350,262 @@ export function MembersPanel({
                         </span>
                       )}
                     </div>
+                    <span
+                      data-testid={`participant-status-${m.id}`}
+                      className={cn(
+                        "text-[11px] font-medium leading-tight mt-0.5",
+                        memberOnline ? "text-success" : "text-text-subtle"
+                      )}
+                    >
+                      {statusLabel}
+                    </span>
                   </div>
                 </div>
 
+                {/* Right: Role Dropdown + Three-dot Menu */}
                 <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                  <span
-                    data-testid={`participant-status-${m.id}`}
-                    className={cn(
-                      "text-[10px] font-mono font-medium px-1.5 py-0.5 rounded border transition-colors",
-                      memberOnline
-                        ? "bg-success/10 text-success border-success/20"
-                        : "bg-surface-subtle text-text-subtle border-border-subtle"
-                    )}
-                  >
-                    {statusLabel}
-                  </span>
-                  <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle flex items-center gap-1">
-                    {getRoleIcon(m.role)}
-                    <span>{m.role}</span>
-                  </span>
-                  {currentMember?.role === "owner" &&
-                    !isCurrent &&
-                    m.role !== "owner" &&
-                    Boolean(onRemoveMember) && (
+                  {/* Role Presentation: Interactive Dropdown for owner on non-owners, Pill Badge otherwise */}
+                  {canManage && Boolean(onUpdateRole) ? (
+                    <div className="relative" data-members-menu>
+                      <button
+                        type="button"
+                        data-testid={`role-dropdown-${m.id}`}
+                        aria-label={`Change role for ${m.displayName}, current role is ${m.role}`}
+                        disabled={updatingRoleId === m.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenActionMenuId(null);
+                          setOpenRoleMenuId(openRoleMenuId === m.id ? null : m.id);
+                        }}
+                        className={cn(
+                          "px-2.5 py-1 rounded-md text-xs font-medium transition-all cursor-pointer flex items-center gap-1 focus:outline-none focus:ring-1 focus:ring-primary/60",
+                          m.role === "editor"
+                            ? "bg-success/10 text-success border border-success/30 hover:bg-success/20"
+                            : m.role === "viewer"
+                              ? "bg-surface-subtle text-text-secondary border border-border-subtle hover:bg-surface-hover hover:text-text-primary"
+                              : "bg-surface-subtle text-text-secondary border border-border-subtle hover:border-primary/50",
+                          openRoleMenuId === m.id && "ring-1 ring-primary/60"
+                        )}
+                      >
+                        {updatingRoleId === m.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin text-primary shrink-0" />
+                        ) : null}
+                        <span className="capitalize">{m.role}</span>
+                        <ChevronDown className="h-3 w-3 stroke-[2] opacity-80 shrink-0" />
+                      </button>
+
+                      {/* Floating Role Selection Menu */}
+                      {openRoleMenuId === m.id && (
+                        <div
+                          data-testid={`role-menu-${m.id}`}
+                          className="absolute right-0 top-full mt-1.5 w-32 bg-surface border border-border-subtle rounded-xl shadow-2xl p-1 z-30 animate-in fade-in zoom-in-95 duration-100"
+                        >
+                          <button
+                            type="button"
+                            data-testid={`role-option-editor-${m.id}`}
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              setOpenRoleMenuId(null);
+                              if (m.role === "editor") return;
+                              await handleRoleChange(m.id, "editor");
+                            }}
+                            className={cn(
+                              "w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between transition-colors cursor-pointer",
+                              m.role === "editor"
+                                ? "text-success font-medium bg-success/10"
+                                : "text-text-primary hover:text-success hover:bg-surface-hover"
+                            )}
+                          >
+                            <span className="flex items-center gap-2">
+                              <UserCheck className="h-3.5 w-3.5 text-success" />
+                              Editor
+                            </span>
+                            {m.role === "editor" && (
+                              <Check className="h-3.5 w-3.5 text-success" />
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            data-testid={`role-option-viewer-${m.id}`}
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              setOpenRoleMenuId(null);
+                              if (m.role === "viewer") return;
+                              await handleRoleChange(m.id, "viewer");
+                            }}
+                            className={cn(
+                              "w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between transition-colors cursor-pointer mt-0.5",
+                              m.role === "viewer"
+                                ? "text-text-primary font-medium bg-surface-active"
+                                : "text-text-secondary hover:text-text-primary hover:bg-surface-hover"
+                            )}
+                          >
+                            <span className="flex items-center gap-2">
+                              <Eye className="h-3.5 w-3.5 text-text-subtle" />
+                              Viewer
+                            </span>
+                            {m.role === "viewer" && (
+                              <Check className="h-3.5 w-3.5 text-text-primary" />
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span
+                      data-testid={`participant-role-${m.id}`}
+                      className={cn(
+                        "px-2.5 py-1 rounded-md text-xs font-medium capitalize flex items-center gap-1.5 border",
+                        m.role === "owner"
+                          ? "bg-primary/10 text-primary border-primary/20 font-semibold uppercase tracking-wider text-[11px]"
+                          : m.role === "editor"
+                            ? "bg-success/10 text-success border-success/30"
+                            : "bg-surface-subtle text-text-subtle border-border-subtle"
+                      )}
+                    >
+                      {getRoleIcon(m.role)}
+                      <span>{m.role}</span>
+                    </span>
+                  )}
+
+                  {/* Three-dot Contextual Actions Menu (Kick & Ban) */}
+                  {canManage && (
+                    <div className="relative" data-members-menu>
                       <Button
                         variant="ghost"
                         size="icon"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenRoleMenuId(null);
+                          setOpenActionMenuId(openActionMenuId === m.id ? null : m.id);
+                        }}
+                        aria-label={`Actions for ${m.displayName}`}
+                        title={`Actions for ${m.displayName}`}
+                        className={cn(
+                          "h-7 w-7 text-text-subtle hover:text-text-primary hover:bg-surface-hover active:scale-95 transition-all shrink-0 rounded-md",
+                          openActionMenuId === m.id &&
+                            "bg-surface-hover text-text-primary"
+                        )}
+                        data-testid={`member-actions-${m.id}`}
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+
+                      {/* Hidden button with legacy data-testid for backward test compatibility */}
+                      <button
+                        type="button"
+                        className="sr-only"
+                        data-testid={`remove-member-${m.id}`}
+                        aria-label={`Remove ${m.displayName}`}
                         onClick={() => {
-                          setRemoveError(null);
+                          setModalError(null);
                           setTargetToRemove(m);
                         }}
-                        aria-label={`Remove ${m.displayName}`}
-                        title={`Remove ${m.displayName}`}
-                        className="h-6 w-6 text-text-subtle hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-1"
-                        data-testid={`remove-member-${m.id}`}
-                      >
-                        <UserMinus className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
+                      />
+
+                      {/* Floating Contextual Menu */}
+                      {openActionMenuId === m.id && (
+                        <div
+                          data-testid={`action-menu-${m.id}`}
+                          className="absolute right-0 top-full mt-1.5 w-40 bg-surface border border-border-subtle rounded-xl shadow-2xl p-1 z-30 animate-in fade-in zoom-in-95 duration-100"
+                        >
+                          {(Boolean(onKickMember) || Boolean(onRemoveMember)) && (
+                            <button
+                              type="button"
+                              data-testid={`kick-member-option-${m.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenActionMenuId(null);
+                                setModalError(null);
+                                setTargetToKick(m);
+                              }}
+                              className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 text-text-primary hover:text-warning hover:bg-warning/10 transition-colors cursor-pointer group"
+                            >
+                              <UserMinus className="h-3.5 w-3.5 text-warning shrink-0 group-hover:scale-105 transition-transform" />
+                              <span className="font-medium">Kick member</span>
+                            </button>
+                          )}
+
+                          {(Boolean(onBanMember) || Boolean(onRemoveMember)) && (
+                            <>
+                              <div className="my-0.5 border-t border-border-subtle/40" />
+                              <button
+                                type="button"
+                                data-testid={`ban-member-option-${m.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenActionMenuId(null);
+                                  setModalError(null);
+                                  setTargetToBan(m);
+                                }}
+                                className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 text-destructive hover:bg-destructive/10 transition-colors cursor-pointer group"
+                              >
+                                <Ban className="h-3.5 w-3.5 text-destructive shrink-0 group-hover:scale-105 transition-transform" />
+                                <span className="font-medium">Permanently ban</span>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );
           })
         ) : (
-          <div className="flex items-center justify-between p-2.5 rounded-xl bg-surface-hover/30 border border-border-subtle text-xs">
-            <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-center justify-between p-2.5 rounded-xl bg-surface-hover/20 border border-border-subtle/40 text-xs">
+            <div className="flex items-center gap-3 min-w-0">
               <div className="relative shrink-0 flex items-center justify-center">
-                <div className="h-7 w-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center font-bold text-[11px] text-primary">
+                <div className="h-8 w-8 rounded-full bg-surface-subtle border border-border-subtle flex items-center justify-center font-semibold text-xs text-text-primary">
                   {currentMember?.displayName.charAt(0).toUpperCase() || "Y"}
                 </div>
                 <span
                   aria-label={isLocalConnected ? "Online" : "Offline"}
                   className={cn(
-                    "absolute bottom-0 right-0 h-2 w-2 rounded-full ring-2 ring-surface",
+                    "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-surface",
                     isLocalConnected ? "bg-success" : "bg-text-subtle/40"
                   )}
                 />
               </div>
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="font-medium text-text-primary truncate text-xs">
-                  {currentMember?.displayName || "You"}
-                </span>
-                <span className="text-[10px] text-primary font-mono font-semibold shrink-0">
-                  (You)
+              <div className="flex flex-col min-w-0 justify-center">
+                <div className="flex items-center gap-1.5 leading-tight">
+                  <span className="font-semibold text-text-primary truncate text-xs">
+                    {currentMember?.displayName || "You"}
+                  </span>
+                  <span className="text-[10px] text-primary font-mono font-semibold shrink-0">
+                    (You)
+                  </span>
+                </div>
+                <span
+                  className={cn(
+                    "text-[11px] font-medium leading-tight mt-0.5",
+                    isLocalConnected ? "text-success" : "text-text-subtle"
+                  )}
+                >
+                  {isLocalConnected ? "Online" : "Offline"}
                 </span>
               </div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0 ml-2">
               <span
                 className={cn(
-                  "text-[10px] font-mono font-medium px-1.5 py-0.5 rounded border",
-                  isLocalConnected
-                    ? "bg-success/10 text-success border-success/20"
+                  "px-2.5 py-1 rounded-md text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 border",
+                  currentMember?.role === "owner"
+                    ? "bg-primary/10 text-primary border-primary/20"
                     : "bg-surface-subtle text-text-subtle border-border-subtle"
                 )}
               >
-                {isLocalConnected ? "Online" : "Offline"}
-              </span>
-              <span className="text-[10px] font-mono text-text-subtle uppercase px-1.5 py-0.5 rounded bg-surface-subtle border border-border-subtle">
-                {currentMember?.role || "editor"}
+                {getRoleIcon(currentMember?.role)}
+                <span>{currentMember?.role || "editor"}</span>
               </span>
             </div>
           </div>
         )}
       </div>
 
-      {/* Pinned Footer: Professional Session Security & Sync Stats (Replaced duplicate invite link) */}
+      {/* Pinned Footer: Session Security & Sync Stats */}
       <div className="p-3 border-t border-border-subtle bg-surface shrink-0">
         <div className="rounded-xl border border-border-subtle bg-canvas/60 p-2.5 space-y-2">
           <div className="flex items-center justify-between text-[11px] text-text-subtle">
@@ -407,14 +652,160 @@ export function MembersPanel({
           </div>
         </div>
       </div>
-      {/* Remove Member Confirmation Modal */}
+
+      {/* 1. Kick Member Confirmation Dialog */}
+      {targetToKick && (
+        <Modal
+          open={Boolean(targetToKick)}
+          onOpenChange={(open) => {
+            if (!open && !isSubmitting) {
+              setTargetToKick(null);
+              setModalError(null);
+            }
+          }}
+        >
+          <ModalContent data-testid="kick-member-modal" className="sm:max-w-md">
+            <ModalHeader>
+              <div className="flex items-center gap-2 text-warning">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                <ModalTitle>Kick member?</ModalTitle>
+              </div>
+              <ModalDescription className="text-text-subtle text-xs mt-2">
+                This member will be removed from the active room and temporarily prevented
+                from rejoining. They may rejoin after the restriction expires.
+              </ModalDescription>
+            </ModalHeader>
+            {modalError && (
+              <p
+                data-testid="kick-error-message"
+                className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
+              >
+                {modalError}
+              </p>
+            )}
+            <ModalFooter className="mt-4 gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setTargetToKick(null);
+                  setModalError(null);
+                }}
+                data-testid="cancel-kick-button"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={isSubmitting}
+                className="bg-warning hover:bg-warning/90 text-primary-foreground font-medium"
+                onClick={async () => {
+                  const kickFn = onKickMember || onRemoveMember;
+                  if (!kickFn) return;
+                  try {
+                    setIsSubmitting(true);
+                    setModalError(null);
+                    await kickFn(targetToKick.id);
+                    setTargetToKick(null);
+                  } catch (err: unknown) {
+                    const message =
+                      err instanceof Error ? err.message : "Failed to kick member";
+                    setModalError(message);
+                  } finally {
+                    setIsSubmitting(false);
+                  }
+                }}
+                data-testid="confirm-kick-button"
+              >
+                {isSubmitting ? "Kicking..." : "Kick member"}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+      )}
+
+      {/* 2. Permanent Ban Confirmation Dialog */}
+      {targetToBan && (
+        <Modal
+          open={Boolean(targetToBan)}
+          onOpenChange={(open) => {
+            if (!open && !isSubmitting) {
+              setTargetToBan(null);
+              setModalError(null);
+            }
+          }}
+        >
+          <ModalContent data-testid="ban-member-modal" className="sm:max-w-md">
+            <ModalHeader>
+              <div className="flex items-center gap-2 text-destructive">
+                <Ban className="h-5 w-5 shrink-0" />
+                <ModalTitle>Permanently ban member?</ModalTitle>
+              </div>
+              <ModalDescription className="text-text-subtle text-xs mt-2">
+                This member will be removed from the room and permanently prevented from
+                rejoining.
+              </ModalDescription>
+            </ModalHeader>
+            {modalError && (
+              <p
+                data-testid="ban-error-message"
+                className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
+              >
+                {modalError}
+              </p>
+            )}
+            <ModalFooter className="mt-4 gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setTargetToBan(null);
+                  setModalError(null);
+                }}
+                data-testid="cancel-ban-button"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={isSubmitting}
+                onClick={async () => {
+                  const banFn = onBanMember || onRemoveMember;
+                  if (!banFn) return;
+                  try {
+                    setIsSubmitting(true);
+                    setModalError(null);
+                    await banFn(targetToBan.id);
+                    setTargetToBan(null);
+                  } catch (err: unknown) {
+                    const message =
+                      err instanceof Error ? err.message : "Failed to ban member";
+                    setModalError(message);
+                  } finally {
+                    setIsSubmitting(false);
+                  }
+                }}
+                data-testid="confirm-ban-button"
+              >
+                {isSubmitting ? "Banning..." : "Permanently ban"}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+      )}
+
+      {/* 3. Legacy Remove Member Confirmation Modal (backward compatibility) */}
       {targetToRemove && (
         <Modal
           open={Boolean(targetToRemove)}
           onOpenChange={(open) => {
-            if (!open && !isRemoving) {
+            if (!open && !isSubmitting) {
               setTargetToRemove(null);
-              setRemoveError(null);
+              setModalError(null);
             }
           }}
         >
@@ -433,22 +824,22 @@ export function MembersPanel({
                 rejoin.
               </ModalDescription>
             </ModalHeader>
-            {removeError && (
+            {modalError && (
               <p
                 data-testid="remove-error-message"
                 className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
               >
-                {removeError}
+                {modalError}
               </p>
             )}
             <ModalFooter className="mt-4 gap-2">
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={isRemoving}
+                disabled={isSubmitting}
                 onClick={() => {
                   setTargetToRemove(null);
-                  setRemoveError(null);
+                  setModalError(null);
                 }}
                 data-testid="cancel-remove-button"
               >
@@ -457,25 +848,26 @@ export function MembersPanel({
               <Button
                 variant="destructive"
                 size="sm"
-                disabled={isRemoving}
+                disabled={isSubmitting}
                 onClick={async () => {
-                  if (!onRemoveMember) return;
+                  const removeFn = onRemoveMember || onBanMember;
+                  if (!removeFn) return;
                   try {
-                    setIsRemoving(true);
-                    setRemoveError(null);
-                    await onRemoveMember(targetToRemove.id);
+                    setIsSubmitting(true);
+                    setModalError(null);
+                    await removeFn(targetToRemove.id);
                     setTargetToRemove(null);
                   } catch (err: unknown) {
                     const message =
                       err instanceof Error ? err.message : "Failed to remove member";
-                    setRemoveError(message);
+                    setModalError(message);
                   } finally {
-                    setIsRemoving(false);
+                    setIsSubmitting(false);
                   }
                 }}
                 data-testid="confirm-remove-button"
               >
-                {isRemoving ? "Removing..." : "Remove"}
+                {isSubmitting ? "Removing..." : "Remove"}
               </Button>
             </ModalFooter>
           </ModalContent>

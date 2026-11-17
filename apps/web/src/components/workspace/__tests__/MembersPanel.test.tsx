@@ -203,4 +203,195 @@ describe("MembersPanel component", () => {
 
     expect(onRemoveMember).toHaveBeenCalledWith("mem-2");
   });
+
+  it("renders interactive role dropdown for owners on non-owners and calls onUpdateRole", async () => {
+    const onUpdateRole = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember} // role: "owner"
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onUpdateRole={onUpdateRole}
+      />
+    );
+
+    // Bob is editor -> role dropdown should be rendered
+    const roleDropdown = screen.getByTestId("role-dropdown-mem-2");
+    expect(roleDropdown).toBeInTheDocument();
+    expect(roleDropdown).toHaveTextContent("editor");
+
+    // Open dropdown
+    await act(async () => {
+      fireEvent.click(roleDropdown);
+    });
+
+    // Options should be visible
+    const viewerOption = screen.getByTestId("role-option-viewer-mem-2");
+    expect(viewerOption).toBeInTheDocument();
+
+    // Click viewer option
+    await act(async () => {
+      fireEvent.click(viewerOption);
+    });
+
+    expect(onUpdateRole).toHaveBeenCalledWith("mem-2", "viewer");
+  });
+
+  it("renders three-dot contextual menu with separate Kick and Permanently Ban actions", async () => {
+    const onKickMember = vi.fn().mockResolvedValue(undefined);
+    const onBanMember = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember}
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onKickMember={onKickMember}
+        onBanMember={onBanMember}
+      />
+    );
+
+    // Open three-dot menu for mem-2
+    const actionsBtn = screen.getByTestId("member-actions-mem-2");
+    expect(actionsBtn).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(actionsBtn);
+    });
+
+    // Both options should be present
+    expect(screen.getByTestId("kick-member-option-mem-2")).toBeInTheDocument();
+    expect(screen.getByTestId("ban-member-option-mem-2")).toBeInTheDocument();
+  });
+
+  it("opens Kick confirmation modal with distinct message and calls onKickMember on confirm", async () => {
+    const onKickMember = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember}
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onKickMember={onKickMember}
+      />
+    );
+
+    // Open three-dot menu
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("member-actions-mem-2"));
+    });
+
+    // Click Kick option
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("kick-member-option-mem-2"));
+    });
+
+    // Kick modal should open with specific message
+    const modal = screen.getByTestId("kick-member-modal");
+    expect(modal).toBeInTheDocument();
+    expect(within(modal).getByText(/Kick member\?/)).toBeInTheDocument();
+    expect(
+      within(modal).getByText(/temporarily prevented from rejoining/)
+    ).toBeInTheDocument();
+
+    // Confirm kick
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("confirm-kick-button"));
+    });
+
+    expect(onKickMember).toHaveBeenCalledWith("mem-2");
+  });
+
+  it("opens Permanent Ban confirmation modal with distinct message and calls onBanMember on confirm", async () => {
+    const onBanMember = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember}
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onBanMember={onBanMember}
+      />
+    );
+
+    // Open three-dot menu
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("member-actions-mem-2"));
+    });
+
+    // Click Ban option
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("ban-member-option-mem-2"));
+    });
+
+    // Ban modal should open with specific message
+    const modal = screen.getByTestId("ban-member-modal");
+    expect(modal).toBeInTheDocument();
+    expect(within(modal).getByText(/Permanently ban member\?/)).toBeInTheDocument();
+    expect(
+      within(modal).getByText(/permanently prevented from rejoining/)
+    ).toBeInTheDocument();
+
+    // Confirm ban
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("confirm-ban-button"));
+    });
+
+    expect(onBanMember).toHaveBeenCalledWith("mem-2");
+  });
+
+  it("cancels kick modal without performing operation when Cancel is clicked", async () => {
+    const onKickMember = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MembersPanel
+        members={sampleMembers}
+        currentMember={currentMember}
+        isLocalConnected={true}
+        onlineCount={2}
+        totalMembersCount={3}
+        isMemberOnline={(m) => m.isOnline === true}
+        isOpen={true}
+        onToggle={vi.fn()}
+        onKickMember={onKickMember}
+      />
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("member-actions-mem-2"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("kick-member-option-mem-2"));
+    });
+
+    expect(screen.getByTestId("kick-member-modal")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("cancel-kick-button"));
+    });
+
+    expect(screen.queryByTestId("kick-member-modal")).toBeNull();
+    expect(onKickMember).not.toHaveBeenCalled();
+  });
 });

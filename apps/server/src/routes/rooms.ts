@@ -12,6 +12,7 @@ import {
 } from "@pairprep/shared";
 import { roomRepo } from "../repos/roomRepo.js";
 import { roomBanRepo } from "../repos/roomBanRepo.js";
+import { roomKickRepo } from "../repos/roomKickRepo.js";
 import { roomMemberRepo } from "../repos/roomMemberRepo.js";
 import { guestRepo } from "../repos/guestRepo.js";
 import { messageRepo } from "../repos/messageRepo.js";
@@ -211,6 +212,19 @@ roomsRouter.get(
             "MEMBER_BANNED"
           );
         }
+
+        const isKicked = await roomKickRepo.isKicked(
+          room.id,
+          currentPrincipal.type,
+          currentPrincipal.id
+        );
+        if (isKicked) {
+          throw new AppError(
+            "You have been temporarily removed from this room. Please try again later.",
+            403,
+            "MEMBER_KICKED"
+          );
+        }
       }
 
       const member = currentPrincipal
@@ -298,7 +312,7 @@ roomsRouter.post(
         );
       }
 
-      // Check if principal is banned from this room (P0-D re-entry prevention via canonical roomBanRepo)
+      // Check if principal is banned or kicked from this room (re-entry prevention)
       if (req.principal) {
         const isBanned = await roomBanRepo.isBanned(
           room.id,
@@ -310,6 +324,19 @@ roomsRouter.post(
             "You have been removed from this room by the host and cannot rejoin",
             403,
             "MEMBER_BANNED"
+          );
+        }
+
+        const isKicked = await roomKickRepo.isKicked(
+          room.id,
+          req.principal.type,
+          req.principal.id
+        );
+        if (isKicked) {
+          throw new AppError(
+            "You have been temporarily removed from this room. Please try again later.",
+            403,
+            "MEMBER_KICKED"
           );
         }
       }
@@ -696,21 +723,34 @@ roomsRouter.delete(
         );
       }
 
-      // Record permanent ban in canonical room_bans collection before destructive removal (P0-D)
+      // Differentiate temporary kick vs permanent ban
+      const action =
+        (req.query.action as string) || (req.body?.action as string) || "ban";
       const targetPrincipalType = targetMember.isGuest ? "guest" : "user";
-      await roomBanRepo.banPrincipal(
-        room.id,
-        { id: targetMember.memberId, type: targetPrincipalType },
-        req.principal!.id,
-        "kicked_by_owner"
-      );
+
+      if (action === "kick") {
+        // Record temporary kick restriction with expiration timestamp
+        await roomKickRepo.recordKick(
+          room.id,
+          { id: targetMember.memberId, type: targetPrincipalType },
+          req.principal!.id
+        );
+      } else {
+        // Record permanent ban in canonical room_bans collection (P0-D)
+        await roomBanRepo.banPrincipal(
+          room.id,
+          { id: targetMember.memberId, type: targetPrincipalType },
+          req.principal!.id,
+          "kicked_by_owner"
+        );
+      }
 
       // Immediately terminate active WebSocket connections for removed member (< 1s revocation)
       syncRegistry.closeConnectionsForMember(
         room.id,
         targetMember.memberId,
         4003,
-        "removed"
+        action === "kick" ? "kicked" : "removed"
       );
 
       // Durable outbox operation for member removal (CH-3 Option A departure notice)
@@ -729,9 +769,9 @@ roomsRouter.delete(
         payload: {
           memberDocId: targetMember.id,
           memberId: targetMember.memberId,
-          reason: "removed",
+          reason: action === "kick" ? "kicked" : "removed",
         },
-        messageText: `${targetMember.displayName} was removed from the room by the owner`,
+        messageText: `${targetMember.displayName} was ${action === "kick" ? "kicked" : "permanently banned"} from the room by the owner`,
         io,
         mutation: async () => {
           return roomMemberRepo.removeMember(room.id, targetMember.id, opId);
@@ -743,7 +783,7 @@ roomsRouter.delete(
 
       await roomRepo.touchActivity(room.id);
 
-      res.json({ status: "ok" });
+      res.json({ status: "ok", action });
     } catch (err) {
       handleRouteError(err, req, res, next);
     }

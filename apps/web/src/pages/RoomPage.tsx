@@ -58,6 +58,7 @@ import {
   X,
   LogOut,
   StopCircle,
+  Trash2,
 } from "lucide-react";
 
 export default function RoomPage() {
@@ -91,6 +92,12 @@ export default function RoomPage() {
   const [isEndModalOpen, setIsEndModalOpen] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
   const [endError, setEndError] = useState<string | null>(null);
+
+  // Delete Room state (Owner only)
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteConfirmationInput, setDeleteConfirmationInput] = useState("");
 
   // Three-column collaborative workspace layout states
   // On desktop (>= 1024px) start with members panel open; on mobile (< 1024px) start with drawers closed
@@ -651,10 +658,53 @@ export default function RoomPage() {
     }
   };
 
+  const isDeleteConfirmed = Boolean(
+    deleteConfirmationInput &&
+    (deleteConfirmationInput.trim() === room?.title ||
+      deleteConfirmationInput.trim() === room?.slug ||
+      deleteConfirmationInput.trim() === slug)
+  );
+
+  const handleDeleteRoom = async () => {
+    if (!slug || isDeleting) return;
+    try {
+      setIsDeleting(true);
+      setDeleteError(null);
+      await roomApi.deleteRoom(slug);
+      setIsDeleteModalOpen(false);
+      navigate("/dashboard", { replace: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to delete room";
+      setDeleteError(message);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const handleRemoveMember = async (memberDocId: string) => {
     if (!slug) return;
     await roomApi.removeMember(slug, memberDocId);
     setMembers((prev) => prev.filter((m) => m.id !== memberDocId));
+  };
+
+  const handleKickMember = async (memberDocId: string) => {
+    if (!slug) return;
+    await roomApi.kickMember(slug, memberDocId);
+    setMembers((prev) => prev.filter((m) => m.id !== memberDocId));
+  };
+
+  const handleBanMember = async (memberDocId: string) => {
+    if (!slug) return;
+    await roomApi.banMember(slug, memberDocId);
+    setMembers((prev) => prev.filter((m) => m.id !== memberDocId));
+  };
+
+  const handleUpdateRole = async (memberDocId: string, newRole: "editor" | "viewer") => {
+    if (!slug) return;
+    await roomApi.updateMemberRole(slug, memberDocId, newRole);
+    setMembers((prev) =>
+      prev.map((m) => (m.id === memberDocId ? { ...m, role: newRole } : m))
+    );
   };
 
   // 1. Loading State
@@ -1146,34 +1196,50 @@ export default function RoomPage() {
             </Button>
           )}
 
-          {/* End Practice Session (Owner only, when not ended) */}
-          {currentMember?.role === "owner" && !isEnded && (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => {
-                setEndError(null);
-                setIsEndModalOpen(true);
-              }}
-              className="gap-1.5 text-xs h-8 px-2.5"
-              title="End Practice Session"
-              data-testid="end-session-button"
+          {/* Dedicated Room Controls Section (Owner only) */}
+          {currentMember?.role === "owner" && (
+            <div
+              role="group"
+              aria-label="Room controls"
+              data-testid="room-controls-section"
+              className="flex items-center gap-1.5"
             >
-              <StopCircle className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">End Session</span>
-            </Button>
-          )}
+              {/* End Practice Session (when not ended) */}
+              {!isEnded && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => {
+                    setEndError(null);
+                    setIsEndModalOpen(true);
+                  }}
+                  className="gap-1.5 text-xs h-8 px-2.5"
+                  title="End Practice Session"
+                  data-testid="end-session-button"
+                >
+                  <StopCircle className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">End Session</span>
+                </Button>
+              )}
 
-          {/* Room Capacity Badge */}
-          <div
-            className="flex items-center gap-1 bg-surface-subtle border border-border-subtle rounded-lg px-2.5 py-1 text-xs"
-            title={`${totalMembersCount} of 6 maximum room members`}
-          >
-            <Users className="h-3.5 w-3.5 text-text-subtle mr-1" />
-            <span className="font-mono text-[11px] text-text-secondary font-medium">
-              {totalMembersCount}/6 members
-            </span>
-          </div>
+              {/* Delete Room */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setDeleteError(null);
+                  setDeleteConfirmationInput("");
+                  setIsDeleteModalOpen(true);
+                }}
+                className="gap-1.5 text-xs h-8 px-2.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+                title="Delete Room"
+                data-testid="delete-room-button"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Delete Room</span>
+              </Button>
+            </div>
+          )}
 
           {/* Keyboard Shortcuts Trigger */}
           <Button
@@ -1212,6 +1278,9 @@ export default function RoomPage() {
             isOpen={isMembersOpen}
             onToggle={() => setIsMembersOpen(false)}
             onRemoveMember={handleRemoveMember}
+            onKickMember={handleKickMember}
+            onBanMember={handleBanMember}
+            onUpdateRole={handleUpdateRole}
             triggerRef={membersTriggerRef}
             width={membersWidth}
             socketStatus={roomSocket.connectionStatus}
@@ -1507,6 +1576,91 @@ export default function RoomPage() {
                 data-testid="confirm-end-button"
               >
                 {isEnding ? "Ending..." : "End Session"}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+      )}
+
+      {/* Delete Room Modal (Owner only) */}
+      {isDeleteModalOpen && (
+        <Modal
+          open={isDeleteModalOpen}
+          onOpenChange={(open) => {
+            if (!open && !isDeleting) {
+              setIsDeleteModalOpen(false);
+              setDeleteError(null);
+              setDeleteConfirmationInput("");
+            }
+          }}
+        >
+          <ModalContent data-testid="delete-room-modal" className="sm:max-w-md">
+            <ModalHeader>
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                <ModalTitle>Delete Room Permanently</ModalTitle>
+              </div>
+              <ModalDescription className="text-text-subtle text-xs mt-2">
+                This action is permanent and cannot be undone. All active participants
+                will be immediately disconnected, and all code, chat messages, and room
+                data will be deleted.
+              </ModalDescription>
+            </ModalHeader>
+
+            <div className="space-y-3 py-2 text-xs">
+              <p className="text-text-secondary leading-relaxed">
+                To confirm deletion, please type{" "}
+                <span className="font-semibold text-text-primary select-all font-mono">
+                  {room?.title || slug}
+                </span>{" "}
+                or{" "}
+                <span className="font-semibold text-text-primary select-all font-mono">
+                  {room?.slug || slug}
+                </span>{" "}
+                below:
+              </p>
+              <Input
+                data-testid="delete-room-input"
+                value={deleteConfirmationInput}
+                onChange={(e) => setDeleteConfirmationInput(e.target.value)}
+                placeholder="Enter room name or slug to confirm"
+                disabled={isDeleting}
+                className="w-full text-xs"
+                autoFocus
+              />
+            </div>
+
+            {deleteError && (
+              <p
+                data-testid="delete-error-message"
+                className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20 mt-2"
+              >
+                {deleteError}
+              </p>
+            )}
+
+            <ModalFooter className="mt-4 gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isDeleting}
+                onClick={() => {
+                  setIsDeleteModalOpen(false);
+                  setDeleteError(null);
+                  setDeleteConfirmationInput("");
+                }}
+                data-testid="cancel-delete-button"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={!isDeleteConfirmed || isDeleting}
+                onClick={handleDeleteRoom}
+                data-testid="confirm-delete-button"
+              >
+                {isDeleting ? "Deleting..." : "Delete Room"}
               </Button>
             </ModalFooter>
           </ModalContent>

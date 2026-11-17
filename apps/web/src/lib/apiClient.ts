@@ -158,7 +158,46 @@ export const roomApi = {
     );
   },
 
+  kickMember: (
+    slug: string,
+    memberDocId: string,
+    options?: ApiRequestOptions
+  ): Promise<{ status: string }> => {
+    return apiClient.delete<{ status: string }>(
+      `/rooms/${slug}/members/${memberDocId}?action=kick`,
+      options
+    );
+  },
+
+  banMember: (
+    slug: string,
+    memberDocId: string,
+    options?: ApiRequestOptions
+  ): Promise<{ status: string }> => {
+    return apiClient.delete<{ status: string }>(
+      `/rooms/${slug}/members/${memberDocId}?action=ban`,
+      options
+    );
+  },
+
+  updateMemberRole: (
+    slug: string,
+    memberDocId: string,
+    role: "editor" | "viewer",
+    options?: ApiRequestOptions
+  ): Promise<{ room: unknown; member: unknown }> => {
+    return apiClient.patch<{ room: unknown; member: unknown }>(
+      `/rooms/${slug}/members/${memberDocId}`,
+      { role },
+      options
+    );
+  },
+
   endRoom: (slug: string, options?: ApiRequestOptions): Promise<{ room: unknown }> => {
     return apiClient.post<{ room: unknown }>(`/rooms/${slug}/end`, undefined, options);
+  },
+
+  deleteRoom: (slug: string, options?: ApiRequestOptions): Promise<void> => {
+    return apiClient.delete<void>(`/rooms/${slug}`, options);
   },
 };

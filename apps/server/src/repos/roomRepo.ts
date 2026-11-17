@@ -12,6 +12,7 @@ import { DurableOperationModel } from "../models/durable_operations.js";
 import { AppError } from "../errors/AppError.js";
 import { roomMutationBarrier } from "../events/roomMutationBarrier.js";
 import { roomBanRepo } from "./roomBanRepo.js";
+import { roomKickRepo } from "./roomKickRepo.js";
 
 export class RoomRepo {
   /**
@@ -246,6 +247,7 @@ export class RoomRepo {
     await ClientMapModel.deleteMany({ roomId }).exec();
     await RoomMemberModel.deleteMany({ roomId }).exec();
     await roomBanRepo.deleteBansForRoom(roomId);
+    await roomKickRepo.deleteKicksForRoom(roomId);
 
     // H-2: Safely transition any pending outbox records to abandoned so they are never silently deleted
     await DurableOperationModel.updateMany(
